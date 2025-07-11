@@ -1,8 +1,7 @@
-# ✅ main.py compatibile con Render.com e audio Nova TTS
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify
 import openai
 import os
-import tempfile
+from scraper_tecnaria import cerca_online_tecnaria
 
 app = Flask(__name__)
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -23,11 +22,17 @@ def home():
 def ask():
     user_message = request.json.get("message", "").strip()
 
+    # 📡 Esegui scraping mirato dal sito Tecnaria
+    contesto_scraping = cerca_online_tecnaria(user_message)
+
+    # 🔁 Prompt con contesto estratto
+    prompt = BASE_SYSTEM_PROMPT + "\n\nContesto dal sito ufficiale Tecnaria:\n" + contesto_scraping
+
     try:
         response = openai.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": BASE_SYSTEM_PROMPT},
+                {"role": "system", "content": prompt},
                 {"role": "user", "content": user_message}
             ]
         )
@@ -37,26 +42,5 @@ def ask():
 
     return jsonify({"response": risposta})
 
-@app.route("/audio", methods=["POST"])
-def audio():
-    data = request.json
-    testo = data.get("text", "")
-    if not testo:
-        return jsonify({"error": "Nessun testo fornito"}), 400
-
-    try:
-        speech_response = openai.audio.speech.create(
-            model="tts-1",
-            voice="nova",
-            input=testo
-        )
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-            tmp.write(speech_response.content)
-            tmp_path = tmp.name
-
-        return send_file(tmp_path, mimetype="audio/mpeg", as_attachment=False)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=10000)
+    app.run(host="0.0.0.0", port=10000)
