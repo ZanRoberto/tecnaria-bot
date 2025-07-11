@@ -1,13 +1,11 @@
-# ✅ File: funzione_audio.py
-# Riceve un testo e restituisce un file audio MP3 con la voce "nova" (OpenAI), integrato nel bot Flask
-
+# ✅ main.py compatibile con Render.com e audio Nova TTS
+from flask import Flask, render_template, request, jsonify, send_file
 import openai
 import os
-from flask import send_file, Flask, render_template, request, jsonify
-
-openai.api_key = os.getenv("OPENAI_API_KEY")
+import tempfile
 
 app = Flask(__name__)
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 BASE_SYSTEM_PROMPT = (
     "Agisci come assistente esperto della società TECNARIA S.p.A., con sede unica in Viale Pecori Giraldi 55, 36061 Bassano del Grappa (VI), Italia. "
@@ -46,16 +44,17 @@ def audio():
     if not testo:
         return jsonify({"error": "Nessun testo fornito"}), 400
 
-    nome_file = "output.mp3"
     try:
-        response = openai.audio.speech.create(
+        speech_response = openai.audio.speech.create(
             model="tts-1",
             voice="nova",
             input=testo
         )
-        with open(nome_file, "wb") as f:
-            f.write(response.read())
-        return send_file(nome_file, mimetype="audio/mpeg")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+            tmp.write(speech_response.content)
+            tmp_path = tmp.name
+
+        return send_file(tmp_path, mimetype="audio/mpeg", as_attachment=False)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
