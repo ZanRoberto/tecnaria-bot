@@ -1,7 +1,7 @@
 """
-ORACOLO COVOLO - WEB FALLBACK AUTOMATICO
-=========================================
-Se non trova documenti, cerca automaticamente su web
+ORACOLO COVOLO - CON CATALOGO PDF
+==================================
+Estrae immagini e specifiche da PDF cataloghi
 """
 
 import os
@@ -13,6 +13,9 @@ from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify
 import httpx
 from urllib.parse import quote
+from PyPDF2 import PdfReader
+from PIL import Image
+from io import BytesIO
 
 from macrorule_engine import MacroruleEngine
 from narrator_system import NarratorSystem
@@ -20,6 +23,7 @@ from narrator_system import NarratorSystem
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
+CATALOG_DIR = os.path.join(DATA_DIR, "catalogs")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
 MACRORULE_FILE = os.path.join(BASE_DIR, "macroregole_covolo_universe.json")
 
@@ -28,6 +32,7 @@ DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
 
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(CATALOG_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 macrorule_engine = MacroruleEngine(MACRORULE_FILE)
@@ -50,6 +55,14 @@ def init_covolo_db():
                   content TEXT,
                   azienda_id INTEGER,
                   upload_date TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS product_catalog
+                 (id INTEGER PRIMARY KEY,
+                  product_name TEXT,
+                  azienda_id INTEGER,
+                  image_base64 TEXT,
+                  specs TEXT,
+                  source_file TEXT)''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS queries
                  (id INTEGER PRIMARY KEY,
@@ -86,6 +99,92 @@ def init_covolo_db():
 init_covolo_db()
 app = Flask(__name__)
 
+def extract_images_from_pdf(pdf_path, azienda_id):
+    """Estrae immagini da PDF e le salva nel catalogo."""
+    try:
+        reader = PdfReader(pdf_path)
+        images_found = []
+        
+        for page_num, page in enumerate(reader.pages):
+            if "/XObject" in page["/Resources"]:
+                xObject = page["/Resources"]["/XObject"].get_object()
+                
+                for obj in xObject:
+                    obj_ref = xObject[obj]
+                    if obj_ref["/Subtype"] == "/Image":
+                        try:
+                            size = (int(obj_ref["/Width"]), int(obj_ref["/Height"]))
+                            data = obj_ref.get_data()
+                            
+                            if obj_ref["/ColorSpace"] == "/DeviceRGB":
+                                img = Image.frombytes("RGB", size, data)
+                            else:
+                                img = Image.frombytes("L", size, data)
+                            
+                            # Converti in base64
+                            img_byte_arr = BytesIO()
+                            img.save(img_byte_arr, format='JPEG')
+                            img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+                            
+                            images_found.append({
+                                'image': img_base64,
+                                'page': page_num,
+                                'filename': os.path.basename(pdf_path)
+                            })
+                        except:
+                            pass
+        
+        return images_found
+    except Exception as e:
+        print(f"Errore estrazione PDF: {e}")
+        return []
+
+def extract_product_names_from_pdf(pdf_path):
+    """Estrae nomi prodotti dal testo PDF."""
+    try:
+        reader = PdfReader(pdf_path)
+        text = ""
+        
+        for page in reader.pages:
+            text += page.extract_text() + "\n"
+        
+        # Pattern comuni per rubinetteria
+        patterns = [
+            r'(Gessi\s+[A-Z0-9]+)',
+            r'([A-Z][a-z]+\s+(?:316|304|Plus|Pro|Design))',
+            r'Model[lo]*\s*[:=]*\s*([A-Z0-9\-]+)',
+            r'Modello\s+([A-Za-z0-9\s]+)',
+        ]
+        
+        products = []
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            products.extend(matches)
+        
+        return list(set(products))[:10]
+    except:
+        return []
+
+def search_catalog_images(product_name, azienda_id):
+    """Cerca immagini nel catalogo per nome prodotto."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Ricerca per nome prodotto
+        c.execute('''SELECT image_base64 FROM product_catalog 
+                     WHERE azienda_id = ? AND 
+                     (product_name LIKE ? OR specs LIKE ?)
+                     LIMIT 3''',
+                  (azienda_id, f'%{product_name}%', f'%{product_name}%'))
+        
+        results = c.fetchall()
+        conn.close()
+        
+        return [row[0] for row in results]
+    except:
+        return []
+
 def search_web_bing(query):
     """Cerca su Bing e restituisce risultati."""
     try:
@@ -97,7 +196,6 @@ def search_web_bing(query):
         response = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
         
         if response.status_code == 200:
-            # Estrai snippet dai risultati
             snippets = re.findall(r'<p[^>]*>(.*?)</p>', response.text)
             cleaned = []
             for s in snippets[:5]:
@@ -110,39 +208,11 @@ def search_web_bing(query):
     except:
         return ""
 
-def search_product_images(product_name, azienda_nome=""):
-    """Cerca immagini del prodotto."""
-    try:
-        query = f"{product_name} {azienda_nome}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        url = f"https://www.bing.com/images/search?q={quote(query)}"
-        response = httpx.get(url, headers=headers, timeout=5, follow_redirects=True)
-        
-        images = []
-        if response.status_code == 200:
-            img_urls = re.findall(r'murl":"([^"]+\.jpg)"', response.text)
-            
-            for img_url in img_urls[:3]:
-                try:
-                    img_response = httpx.get(img_url, timeout=3, headers=headers)
-                    if img_response.status_code == 200:
-                        img_base64 = base64.b64encode(img_response.content).decode('utf-8')
-                        images.append(img_base64)
-                except:
-                    pass
-        
-        return images
-    except:
-        return []
-
 def extract_product_names(answer_text):
     """Estrae nomi prodotti dalla risposta."""
     products = []
     
-    gessi_pattern = r'Rubinetto\s+Gessi\s+([^\n,\.]+)'
+    gessi_pattern = r'Gessi\s*(?:316|modello)?\s+([^\n,\.]+)'
     products.extend(re.findall(gessi_pattern, answer_text, re.IGNORECASE))
     
     model_pattern = r'[Mm]odello\s+([A-Z0-9\-]+)'
@@ -152,7 +222,7 @@ def extract_product_names(answer_text):
     matches = re.findall(azienda_pattern, answer_text, re.IGNORECASE)
     products.extend([f"{m[0]} {m[1]}" for m in matches])
     
-    return list(set(products))[:3]
+    return list(set(products))[:5]
 
 @app.route('/')
 def index():
@@ -221,18 +291,20 @@ def index():
         .image-gallery {
             margin-top: 10px;
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
             gap: 8px;
         }
         .image-item {
             border-radius: 8px;
             overflow: hidden;
-            border: 1px solid rgba(59, 130, 245, 0.3);
+            border: 2px solid rgba(59, 130, 245, 0.5);
             cursor: pointer;
+            transition: transform 0.2s;
         }
+        .image-item:hover { transform: scale(1.05); }
         .image-item img {
             width: 100%;
-            height: 100px;
+            height: 120px;
             object-fit: cover;
         }
         .loading-spinner {
@@ -353,6 +425,17 @@ def index():
             font-size: 12px;
         }
         
+        .catalog-upload {
+            border: 2px solid rgba(16, 185, 129, 0.3);
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            margin-bottom: 15px;
+            font-size: 13px;
+            background: rgba(16, 185, 129, 0.05);
+        }
+        
         .modal {
             display: none;
             position: fixed;
@@ -401,9 +484,10 @@ def index():
             </div>
             <div id="presets-list"></div>
             
-            <h3>🌐 Web Search</h3>
-            <div class="web-toggle" id="web-toggle" onclick="toggleWeb()">
-                🔴 OFF
+            <h3>📚 Catalogo</h3>
+            <div class="catalog-upload" onclick="document.getElementById('catalog-input').click()">
+                📤 Upload Catalogo PDF
+                <input type="file" id="catalog-input" hidden accept=".pdf" onchange="uploadCatalog(this)">
             </div>
             
             <h3>📁 Documenti</h3>
@@ -417,7 +501,7 @@ def index():
         <div class="main">
             <div class="header">
                 <h1>🔮 Oracolo Covolo</h1>
-                <p>Consulente + Auto Web Search</p>
+                <p>Consulente + Catalogo Professionale</p>
             </div>
             
             <div class="chat-area">
@@ -438,7 +522,6 @@ def index():
     </div>
     
     <script>
-        let webEnabled = true;
         let selectedAziende = [];
         
         async function loadAziende() {
@@ -508,11 +591,27 @@ def index():
             }
         }
         
-        function toggleWeb() {
-            webEnabled = !webEnabled;
-            const btn = document.getElementById('web-toggle');
-            btn.textContent = webEnabled ? '🟢 ON' : '🔴 OFF';
-            btn.classList.toggle('on');
+        async function uploadCatalog(input) {
+            const file = input.files[0];
+            if (!file || selectedAziende.length === 0) {
+                alert('Seleziona azienda e PDF!');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('catalog', file);
+            formData.append('azienda_ids', selectedAziende.join(','));
+            
+            try {
+                const response = await fetch('/api/upload-catalog', { 
+                    method: 'POST', 
+                    body: formData 
+                });
+                const data = await response.json();
+                alert(data.message || 'Catalogo caricato!');
+            } catch (e) {
+                alert('Errore: ' + e);
+            }
         }
         
         async function sendQuestion() {
@@ -537,8 +636,7 @@ def index():
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         question: question,
-                        azienda_ids: selectedAziende,
-                        use_web: webEnabled
+                        azienda_ids: selectedAziende
                     })
                 });
                 const data = await response.json();
@@ -726,6 +824,42 @@ def upload():
     conn.close()
     return jsonify({"status": "success"})
 
+@app.route('/api/upload-catalog', methods=['POST'])
+def upload_catalog():
+    if 'catalog' not in request.files:
+        return jsonify({"message": "File mancante"}), 400
+    
+    file = request.files['catalog']
+    azienda_ids = request.form.get('azienda_ids', '1').split(',')
+    
+    try:
+        catalog_path = os.path.join(CATALOG_DIR, file.filename)
+        file.save(catalog_path)
+        
+        # Estrai immagini
+        images = extract_images_from_pdf(catalog_path, azienda_ids[0])
+        products = extract_product_names_from_pdf(catalog_path)
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        for idx, img in enumerate(images):
+            product_name = products[idx] if idx < len(products) else f"Prodotto {idx}"
+            
+            for aid in azienda_ids:
+                c.execute('''INSERT INTO product_catalog 
+                             (product_name, azienda_id, image_base64, source_file)
+                             VALUES (?, ?, ?, ?)''',
+                          (product_name, aid, img['image'], file.filename))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"message": f"Catalogo caricato! {len(images)} immagini estratte."})
+    
+    except Exception as e:
+        return jsonify({"message": f"Errore: {str(e)}"})
+
 @app.route('/api/documents/<filename>', methods=['DELETE'])
 def delete_document(filename):
     conn = sqlite3.connect(DB_PATH)
@@ -745,7 +879,6 @@ def ask():
     data = request.get_json()
     question = (data.get('question') or "").strip()
     azienda_ids = data.get('azienda_ids', [])
-    use_web = data.get('use_web', True)  # Default TRUE
     
     if not question:
         return jsonify({"answer": "Domanda vuota", "images": []})
@@ -753,7 +886,6 @@ def ask():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Cerca documenti
     docs = []
     if azienda_ids:
         placeholders = ','.join('?' * len(azienda_ids))
@@ -764,7 +896,6 @@ def ask():
     aziende_names = [row[0] for row in c.fetchall()] if azienda_ids else []
     conn.close()
     
-    # Se ha documenti, usa quelli
     if docs:
         doc_context = "\n".join([f"📄 {doc[0]}:\n{doc[1][:300]}" for doc in docs[:2]])
         
@@ -775,22 +906,19 @@ DOCUMENTI AZIENDA:
 
 DOMANDA: {question}
 
-Rispondi basandoti sui documenti. Se suggerisci prodotti, includi NOME e MODELLO."""
+Rispondi basandoti sui documenti. Se suggerisci prodotti, includi NOME e MODELLO specifico."""
     
-    # ALTRIMENTI usa web automaticamente
     else:
         web_content = search_web_bing(question)
-        if not web_content:
-            web_content = "No web content found"
         
         prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
 
 RICERCA WEB:
-{web_content}
+{web_content if web_content else 'No web results'}
 
 DOMANDA: {question}
 
-Rispondi da esperto, basandoti sulla ricerca web. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO."""
+Rispondi da esperto. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO."""
     
     try:
         response = httpx.post(
@@ -811,13 +939,14 @@ Rispondi da esperto, basandoti sulla ricerca web. Se suggerisci prodotti, includ
         if response.status_code == 200:
             answer = response.json()["choices"][0]["message"]["content"]
             
-            # Ricerca automatica immagini prodotti
+            # Ricerca immagini dal catalogo
             products = extract_product_names(answer)
             images = []
             
             for product in products:
-                product_images = search_product_images(product, " ".join(aziende_names))
-                images.extend(product_images)
+                for aid in azienda_ids:
+                    cat_images = search_catalog_images(product, aid)
+                    images.extend(cat_images)
             
             return jsonify({"answer": answer, "images": images[:5]})
         else:
