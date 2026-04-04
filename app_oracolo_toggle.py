@@ -416,11 +416,224 @@ Scrivi naturale, come a un cliente in un caffè."""
 # ============================================================
 
 @app.get("/")
-async def root() -> FileResponse:
-    index_path = os.path.join(STATIC_DIR, "index.html")
-    if not os.path.exists(index_path):
-        raise HTTPException(status_code=500, detail="index.html not found")
-    return FileResponse(index_path)
+async def root():
+    """Serve l'interfaccia Oracolo Covolo 3D."""
+    html = """
+    <!DOCTYPE html>
+    <html lang="it">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Oracolo Covolo - Sistema Intelligente</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { 
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #0f172e 0%, #1a1f3a 100%);
+                color: #e0e0e0;
+                min-height: 100vh;
+                display: flex;
+            }
+            .container { display: flex; width: 100%; height: 100vh; }
+            .sidebar {
+                width: 280px;
+                background: rgba(15, 23, 46, 0.8);
+                border-right: 1px solid rgba(59, 130, 245, 0.2);
+                padding: 20px;
+                overflow-y: auto;
+            }
+            .main {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+            }
+            .header {
+                background: rgba(59, 130, 245, 0.1);
+                border-bottom: 1px solid rgba(59, 130, 245, 0.2);
+                padding: 20px;
+                text-align: center;
+            }
+            .header h1 { color: #3b82f6; font-size: 28px; margin-bottom: 5px; }
+            .header p { color: #9ca3af; font-size: 14px; }
+            .chat-area {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                padding: 20px;
+                overflow-y: auto;
+            }
+            .messages { flex: 1; overflow-y: auto; margin-bottom: 20px; }
+            .message {
+                margin-bottom: 15px;
+                padding: 12px 15px;
+                border-radius: 8px;
+                max-width: 80%;
+                word-wrap: break-word;
+            }
+            .bot-message {
+                background: rgba(59, 130, 245, 0.2);
+                border-left: 3px solid #3b82f6;
+                align-self: flex-start;
+            }
+            .user-message {
+                background: rgba(168, 85, 247, 0.2);
+                border-left: 3px solid #a855f7;
+                align-self: flex-end;
+                margin-left: auto;
+            }
+            .input-area {
+                display: flex;
+                gap: 10px;
+                margin-top: 20px;
+            }
+            input {
+                flex: 1;
+                background: rgba(30, 41, 59, 0.8);
+                border: 1px solid rgba(59, 130, 245, 0.3);
+                color: #e0e0e0;
+                padding: 10px 15px;
+                border-radius: 6px;
+                font-size: 14px;
+            }
+            button {
+                background: #3b82f6;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 500;
+            }
+            button:hover { background: #2563eb; }
+            .upload-area {
+                border: 2px dashed rgba(59, 130, 245, 0.3);
+                border-radius: 8px;
+                padding: 15px;
+                text-align: center;
+                margin-bottom: 20px;
+                cursor: pointer;
+            }
+            .upload-area:hover { border-color: #3b82f6; }
+            .file-item {
+                background: rgba(59, 130, 245, 0.1);
+                padding: 8px 12px;
+                margin-bottom: 8px;
+                border-radius: 4px;
+                font-size: 12px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .delete-btn {
+                background: #ef4444;
+                padding: 2px 8px;
+                font-size: 11px;
+            }
+            .loading { color: #9ca3af; font-size: 12px; font-style: italic; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="sidebar">
+                <h3 style="color: #3b82f6; margin-bottom: 15px;">📁 Documenti</h3>
+                <div class="upload-area" onclick="document.getElementById('file-input').click()">
+                    <div>📤 Trascina file o clicca</div>
+                    <input type="file" id="file-input" hidden onchange="uploadFile(this)">
+                </div>
+                <div id="files-list"></div>
+            </div>
+            <div class="main">
+                <div class="header">
+                    <h1>🔮 Oracolo Covolo</h1>
+                    <p>Sistema Intelligente per Arredo Bagno</p>
+                </div>
+                <div class="chat-area">
+                    <div class="messages" id="messages"></div>
+                    <div class="input-area">
+                        <input type="text" id="question" placeholder="Fai una domanda..." onkeypress="if(event.key==='Enter') sendQuestion()">
+                        <button onclick="sendQuestion()">Invia</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script>
+            async function sendQuestion() {
+                const input = document.getElementById('question');
+                const question = input.value.trim();
+                if (!question) return;
+                
+                const messagesDiv = document.getElementById('messages');
+                messagesDiv.innerHTML += `<div class="message user-message">${question}</div>`;
+                input.value = '';
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                
+                try {
+                    const response = await fetch('/api/ask', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ question: question, use_web: null })
+                    });
+                    const data = await response.json();
+                    messagesDiv.innerHTML += `<div class="message bot-message">${data.answer || 'Errore nella risposta'}</div>`;
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                } catch (error) {
+                    messagesDiv.innerHTML += `<div class="message bot-message loading">Errore: ${error.message}</div>`;
+                }
+            }
+            
+            async function uploadFile(input) {
+                const file = input.files[0];
+                if (!file) return;
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                try {
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const data = await response.json();
+                    if (data.status === 'success') {
+                        loadFiles();
+                    }
+                } catch (error) {
+                    console.error('Errore upload:', error);
+                }
+            }
+            
+            async function loadFiles() {
+                try {
+                    const response = await fetch('/api/documents');
+                    const data = await response.json();
+                    const filesList = document.getElementById('files-list');
+                    filesList.innerHTML = data.documents.map(doc => `
+                        <div class="file-item">
+                            <span>📄 ${doc.filename}</span>
+                            <button class="delete-btn" onclick="deleteFile('${doc.filename}')">✕</button>
+                        </div>
+                    `).join('');
+                } catch (error) {
+                    console.error('Errore caricamento file:', error);
+                }
+            }
+            
+            async function deleteFile(filename) {
+                try {
+                    await fetch(`/api/documents/${filename}`, { method: 'DELETE' });
+                    loadFiles();
+                } catch (error) {
+                    console.error('Errore eliminazione:', error);
+                }
+            }
+            
+            loadFiles();
+        </script>
+    </body>
+    </html>
+    """
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html)
 
 @app.get("/api/status")
 async def status():
