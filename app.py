@@ -1,214 +1,422 @@
 """
-ORACOLO COVOLO - VERSIONE COMPLETA E FUNZIONANTE
-==================================================
-Doc Interni + Web Search + Smart Merge + 3 Agenti + Carrello
+ORACOLO COVOLO - CON WEB TOGGLE
+================================
+CRUD Aziende + Product Images + Web Toggle ON/OFF
 """
 
-import os, json, sqlite3, base64, re
+import os
+import json
+import sqlite3
+import base64
+import re
 from datetime import datetime
-from flask import Flask, render_template_string, request, jsonify, send_file
+from flask import Flask, render_template_string, request, jsonify
 import httpx
 from urllib.parse import quote
-from io import BytesIO
+
+from macrorule_engine import MacroruleEngine
+from narrator_system import NarratorSystem
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
+IMAGES_DIR = os.path.join(DATA_DIR, "product_images")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
+MACRORULE_FILE = os.path.join(BASE_DIR, "macroregole_covolo_universe.json")
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_MODEL = "deepseek-chat"
 
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(IMAGES_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
-def init_db():
+macrorule_engine = MacroruleEngine(MACRORULE_FILE)
+narrator = NarratorSystem()
+
+def init_covolo_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS aziende (id INTEGER PRIMARY KEY, nome TEXT UNIQUE)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, content TEXT, azienda_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS cart (id INTEGER PRIMARY KEY, product_name TEXT, response TEXT, source TEXT, images TEXT)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS aziende
+                 (id INTEGER PRIMARY KEY,
+                  nome TEXT UNIQUE,
+                  sito TEXT,
+                  categoria TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS documents
+                 (id INTEGER PRIMARY KEY,
+                  filename TEXT UNIQUE,
+                  content TEXT,
+                  azienda_id INTEGER,
+                  upload_date TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS product_images
+                 (id INTEGER PRIMARY KEY,
+                  product_name TEXT,
+                  azienda_id INTEGER,
+                  image_base64 TEXT,
+                  filename TEXT,
+                  upload_date TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS queries
+                 (id INTEGER PRIMARY KEY,
+                  question TEXT,
+                  answer TEXT,
+                  azienda_ids TEXT,
+                  timestamp TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS presets
+                 (id INTEGER PRIMARY KEY,
+                  nome TEXT UNIQUE,
+                  azienda_ids TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
     conn.commit()
     conn.close()
 
-init_db()
+init_covolo_db()
 app = Flask(__name__)
 
-# ============================================================================
-# FUNZIONI DI RICERCA
-# ============================================================================
-
-def search_documents(question, azienda_ids):
-    """Cerca nei documenti interni"""
+def search_catalog_images(product_name, azienda_id):
+    """Cerca immagini nel catalogo."""
     try:
-        if not azienda_ids or azienda_ids == ['']:
-            return None
-        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        placeholders = ','.join('?' * len(azienda_ids))
-        c.execute(f'SELECT filename, content FROM documents WHERE azienda_id IN ({placeholders})', azienda_ids)
-        docs = c.fetchall()
+        
+        search_term = product_name.lower().strip()
+        
+        c.execute('''SELECT image_base64 FROM product_images 
+                     WHERE azienda_id = ? AND 
+                     LOWER(product_name) LIKE ?
+                     LIMIT 5''',
+                  (azienda_id, f'%{search_term}%'))
+        
+        results = c.fetchall()
         conn.close()
         
-        if not docs:
-            return None
-        
-        keywords = re.findall(r'\b\w{3,}\b', question.lower())
-        best_match = None
-        best_score = 0
-        
-        for doc_file, doc_content in docs:
-            score = sum(1 for kw in keywords if kw in doc_content.lower())
-            if score > best_score:
-                best_score = score
-                best_match = (doc_file, doc_content)
-        
-        return best_match if best_score > 0 else None
+        return [row[0] for row in results]
     except:
-        return None
+        return []
 
-def search_web(question):
-    """Ricerca web + immagini"""
+def search_web_bing(query):
+    """Cerca su Bing."""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        url = f"https://www.bing.com/search?q={quote(question)}"
-        response = httpx.get(url, headers=headers, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
         
-        text = ""
+        url = f"https://www.bing.com/search?q={quote(query)}"
+        response = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
+        
         if response.status_code == 200:
             snippets = re.findall(r'<p[^>]*>(.*?)</p>', response.text)
-            for s in snippets[:8]:
-                s_clean = re.sub(r'<[^>]+>', '', s).strip()
-                if len(s_clean) > 40 and len(text) < 800:
-                    text += s_clean + " "
-        
-        images = []
-        try:
-            img_url = f"https://www.bing.com/images/search?q={quote(question)}"
-            img_resp = httpx.get(img_url, headers=headers, timeout=5)
-            if img_resp.status_code == 200:
-                img_urls = re.findall(r'murl":"([^"]+\.jpg)"', img_resp.text)
-                for iu in img_urls[:3]:
-                    try:
-                        img_data = httpx.get(iu, timeout=3, headers=headers)
-                        if img_data.status_code == 200:
-                            images.append(base64.b64encode(img_data.content).decode()[:150])
-                    except:
-                        pass
-        except:
-            pass
-        
-        return text.strip() if text else None, images
+            cleaned = []
+            for s in snippets[:5]:
+                text = re.sub(r'<[^>]+>', '', s)
+                if len(text) > 50:
+                    cleaned.append(text)
+            
+            return " ".join(cleaned[:3])
+        return ""
     except:
-        return None, []
+        return ""
 
-def deepseek_merge(question, doc_text, doc_file, web_text):
-    """Usa DeepSeek per sintetizzare doc + web"""
-    try:
-        prompt = f"""Sei consulente senior arredo bagno.
-DOMANDA: {question}
-DOC ({doc_file}): {doc_text[:300]}
-WEB: {web_text[:300]}
-Sintetizza meglio, priorità doc se specifico. 2-3 paragrafi."""
-        
-        resp = httpx.post(DEEPSEEK_API_URL,
-            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.5, "max_tokens": 800},
-            timeout=15)
-        
-        if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"]
-    except:
-        pass
+def extract_product_names(answer_text):
+    """Estrae nomi prodotti dalla risposta."""
+    products = []
     
-    return f"📚 {doc_text[:250]}\n\n🌐 {web_text[:250]}"
-
-# ============================================================================
-# LOGICA PRINCIPALE
-# ============================================================================
-
-def smart_answer(question, azienda_ids):
-    """Logica intelligente: doc → web → merge → sceglie migliore"""
+    gessi_pattern = r'Gessi\s*(\d+[A-Z]*)'
+    products.extend([f"Gessi{m}" for m in re.findall(gessi_pattern, answer_text, re.IGNORECASE)])
     
-    doc_result = search_documents(question, azienda_ids)
-    web_text, web_images = search_web(question)
+    model_pattern = r'[Mm]odello\s+([A-Z0-9\-]+)'
+    products.extend(re.findall(model_pattern, answer_text))
     
-    if doc_result and web_text:
-        # ENTRAMBI - Sintetizza
-        doc_file, doc_text = doc_result
-        answer = deepseek_merge(question, doc_text, doc_file, web_text)
-        source = "📚 DOC + 🌐 WEB (SINTETIZZATO)"
-        images = web_images
-    elif doc_result:
-        # SOLO DOC
-        doc_file, doc_text = doc_result
-        answer = f"📚 **Secondo nostri documenti** ({doc_file}):\n\n{doc_text[:500]}"
-        source = "📚 DOCUMENTO"
-        images = []
-    elif web_text:
-        # SOLO WEB
-        answer = f"🌐 **Ricerca web:**\n\n{web_text}"
-        source = "🌐 WEB"
-        images = web_images
-    else:
-        # NIENTE
-        answer = "❌ Nessuna informazione trovata"
-        source = "❌ NESSUNO"
-        images = []
+    azienda_pattern = r'(Gessi|Grohe|Hansgrohe|Ideal Standard|Duravit|Villeroy|[A-Za-z\s]+)\s+([A-Za-z0-9\s\-]+?)(?:[,\.\n]|$)'
+    matches = re.findall(azienda_pattern, answer_text, re.IGNORECASE)
+    products.extend([f"{m[0]} {m[1]}".strip() for m in matches])
     
-    return answer, images, source
-
-# ============================================================================
-# ROUTES
-# ============================================================================
+    return list(set(products))[:5]
 
 @app.route('/')
 def index():
-    html = """<!DOCTYPE html>
+    html = """
+<!DOCTYPE html>
 <html lang="it">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Oracolo Covolo</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system; background: linear-gradient(135deg, #0f172e 0%, #1a1f3a 100%); color: #e0e0e0; min-height: 100vh; display: flex; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f172e 0%, #1a1f3a 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+        }
         .container { display: flex; width: 100%; height: 100vh; }
-        .sidebar { width: 340px; background: rgba(15, 23, 46, 0.8); border-right: 1px solid rgba(59, 130, 245, 0.2); padding: 20px; overflow-y: auto; }
-        .main { flex: 1; display: flex; flex-direction: column; }
-        .header { background: rgba(59, 130, 245, 0.1); border-bottom: 1px solid rgba(59, 130, 245, 0.2); padding: 20px; text-align: center; }
+        .sidebar {
+            width: 340px;
+            background: rgba(15, 23, 46, 0.8);
+            border-right: 1px solid rgba(59, 130, 245, 0.2);
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: rgba(59, 130, 245, 0.1);
+            border-bottom: 1px solid rgba(59, 130, 245, 0.2);
+            padding: 20px;
+            text-align: center;
+        }
         .header h1 { color: #3b82f6; font-size: 28px; }
-        .agents-bar { background: rgba(59, 130, 245, 0.05); border-bottom: 1px solid rgba(59, 130, 245, 0.2); padding: 10px 20px; display: flex; gap: 10px; }
-        .agent-btn { background: #10b981; color: white; border: none; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
-        .agent-btn:hover { background: #059669; }
-        .agent-btn.disabled { background: #6b7280; cursor: not-allowed; }
-        .chat-area { flex: 1; display: flex; flex-direction: column; padding: 20px; overflow-y: auto; }
+        .header p { color: #9ca3af; font-size: 13px; }
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            overflow-y: auto;
+        }
         .messages { flex: 1; overflow-y: auto; margin-bottom: 20px; }
-        .message { margin-bottom: 15px; padding: 12px 15px; border-radius: 8px; max-width: 88%; word-wrap: break-word; }
-        .bot-message { background: rgba(59, 130, 245, 0.2); border-left: 3px solid #3b82f6; }
-        .user-message { background: rgba(168, 85, 247, 0.2); border-left: 3px solid #a855f7; margin-left: auto; }
-        .image-gallery { margin-top: 10px; display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
-        .image-item { border-radius: 8px; overflow: hidden; border: 2px solid rgba(16, 185, 129, 0.5); }
-        .image-item img { width: 100%; height: 80px; object-fit: cover; }
-        .btn-cart { background: #10b981; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; margin-top: 8px; }
-        .input-area { display: flex; gap: 10px; }
-        input { flex: 1; background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(59, 130, 245, 0.3); color: #e0e0e0; padding: 10px 15px; border-radius: 6px; }
-        button { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; }
-        .sidebar h3 { color: #3b82f6; margin-top: 20px; margin-bottom: 12px; font-size: 13px; text-transform: uppercase; }
+        .message {
+            margin-bottom: 15px;
+            padding: 12px 15px;
+            border-radius: 8px;
+            max-width: 85%;
+            word-wrap: break-word;
+            line-height: 1.4;
+        }
+        .bot-message {
+            background: rgba(59, 130, 245, 0.2);
+            border-left: 3px solid #3b82f6;
+        }
+        .user-message {
+            background: rgba(168, 85, 247, 0.2);
+            border-left: 3px solid #a855f7;
+            margin-left: auto;
+        }
+        .image-gallery {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 8px;
+        }
+        .image-item {
+            border-radius: 8px;
+            overflow: hidden;
+            border: 2px solid rgba(16, 185, 129, 0.5);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .image-item:hover { transform: scale(1.05); }
+        .image-item img {
+            width: 100%;
+            height: 120px;
+            object-fit: cover;
+        }
+        .loading-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(59, 130, 245, 0.3);
+            border-top: 2px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .input-area {
+            display: flex;
+            gap: 10px;
+        }
+        input {
+            flex: 1;
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(59, 130, 245, 0.3);
+            color: #e0e0e0;
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        button:hover { background: #2563eb; }
+        .sidebar h3 {
+            color: #3b82f6;
+            margin-top: 20px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
         .sidebar h3:first-child { margin-top: 0; }
-        .item { background: rgba(59, 130, 245, 0.1); padding: 8px; margin-bottom: 6px; border-radius: 4px; display: flex; justify-content: space-between; font-size: 12px; }
-        .badge { display: inline-block; background: #10b981; color: white; padding: 3px 8px; border-radius: 3px; font-size: 11px; margin-top: 8px; }
+        
+        .azienda-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            margin-bottom: 6px;
+            background: rgba(59, 130, 245, 0.1);
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .azienda-checkbox input {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 10px;
+        }
+        .input-group input {
+            flex: 1;
+            font-size: 12px;
+            padding: 6px;
+        }
+        .input-group button {
+            padding: 6px 12px;
+            font-size: 12px;
+            flex: 0 0 auto;
+        }
+        
+        .web-toggle {
+            background: #6b7280;
+            padding: 12px;
+            margin-bottom: 15px;
+            border-radius: 6px;
+            text-align: center;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+        .web-toggle.on {
+            background: #10b981;
+        }
+        .web-toggle.off {
+            background: #ef4444;
+        }
+        
+        .preset-item {
+            background: rgba(59, 130, 245, 0.15);
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+        }
+        .preset-item button {
+            padding: 2px 8px;
+            font-size: 11px;
+            background: #10b981;
+        }
+        .preset-item button.delete {
+            background: #ef4444;
+        }
+        
+        .file-item {
+            background: rgba(59, 130, 245, 0.1);
+            padding: 8px;
+            margin-bottom: 6px;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+        }
+        .file-item button {
+            padding: 2px 6px;
+            font-size: 11px;
+            background: #ef4444;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 999;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal.active {
+            display: flex;
+        }
+        .modal-content {
+            position: relative;
+            max-width: 90%;
+            max-height: 90%;
+        }
+        .modal-content img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .modal-close {
+            position: absolute;
+            top: 10px; right: 10px;
+            background: #ef4444;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="sidebar">
-            <h3>🏢 Aziende</h3>
-            <div style="display: flex; gap: 6px; margin-bottom: 10px;">
-                <input type="text" id="new-azienda" placeholder="Nome..." style="flex: 1; font-size: 12px; padding: 6px;">
-                <button onclick="addAzienda()" style="padding: 6px 12px; font-size: 12px;">➕</button>
+            <h3>🏢 Aziende (Gestisci)</h3>
+            <div class="input-group">
+                <input type="text" id="new-azienda-nome" placeholder="Nome..." style="flex: 1;">
+                <button onclick="addAzienda()" style="flex: 0 0 auto; padding: 6px 10px; font-size: 12px;">➕</button>
             </div>
             <div id="aziende-list"></div>
+            
+            <h3>🌐 Web Search</h3>
+            <div class="web-toggle off" id="web-toggle" onclick="toggleWeb()">
+                🔴 OFF
+            </div>
+            
+            <h3>💾 Preset</h3>
+            <div class="input-group">
+                <input type="text" id="preset-name" placeholder="Nome..." style="flex: 1;">
+                <button onclick="savePreset()" style="flex: 0 0 auto; padding: 6px 10px; font-size: 12px;">Salva</button>
+            </div>
+            <div id="presets-list"></div>
+            
+            <h3>🖼️ Immagini Prodotto</h3>
+            <div class="input-group">
+                <input type="text" id="product-name" placeholder="Nome prodotto..." style="flex: 1;">
+                <button onclick="document.getElementById('product-image-input').click()" style="padding: 6px 10px; font-size: 12px;">📤</button>
+                <input type="file" id="product-image-input" hidden accept=".png,.jpg,.jpeg,.gif" onchange="uploadProductImage(this)">
+            </div>
+            <div id="product-images-list"></div>
             
             <h3>📁 Documenti</h3>
             <div style="border: 2px dashed rgba(59, 130, 245, 0.3); padding: 10px; border-radius: 6px; text-align: center; cursor: pointer; margin-bottom: 12px; font-size: 12px;" onclick="document.getElementById('file-input').click()">
@@ -216,326 +424,600 @@ def index():
                 <input type="file" id="file-input" hidden multiple onchange="uploadFile(this)">
             </div>
             <div id="files-list"></div>
-            
-            <h3>🛒 Carrello</h3>
-            <div id="cart-list"></div>
-            <button onclick="generateOfferta()" style="width: 100%; margin-top: 10px; background: #10b981;">📄 OFFERTA</button>
         </div>
         
         <div class="main">
             <div class="header">
                 <h1>🔮 Oracolo Covolo</h1>
-                <p>Documenti + Web Intelligente</p>
-            </div>
-            
-            <div class="agents-bar">
-                <button class="agent-btn" id="btn-offerta" onclick="generateOfferta()" disabled>📄 OFFERTA</button>
-                <button class="agent-btn" id="btn-analisi" onclick="alert('Analisi prossimamente')" disabled>📊 ANALISI</button>
-                <button class="agent-btn" id="btn-proposta" onclick="alert('Proposta prossimamente')" disabled>🎯 PROPOSTA</button>
+                <p>Consulente Intelligente Arredo Bagno</p>
             </div>
             
             <div class="chat-area">
                 <div class="messages" id="messages"></div>
                 <div class="input-area">
-                    <input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key==='Enter') sendQuestion()">
+                    <input type="text" id="question" placeholder="Fai una domanda..." onkeypress="if(event.key==='Enter') sendQuestion()">
                     <button onclick="sendQuestion()">Invia</button>
                 </div>
             </div>
         </div>
     </div>
     
+    <div class="modal" id="image-modal">
+        <div class="modal-content">
+            <img id="modal-img" src="">
+            <button class="modal-close" onclick="closeModal()">✕</button>
+        </div>
+    </div>
+    
     <script>
         let selectedAziende = [];
-        let currentResponse = null;
-        let currentImages = [];
-        let currentSource = null;
+        let webEnabled = false;
         
-        function updateAgentButtons() {
-            const hasAziende = selectedAziende.length > 0;
-            document.getElementById('btn-offerta').disabled = !hasAziende;
-            document.getElementById('btn-analisi').disabled = !hasAziende;
-            document.getElementById('btn-proposta').disabled = !hasAziende;
+        async function loadAziende() {
+            const response = await fetch('/api/aziende');
+            const data = await response.json();
+            const container = document.getElementById('aziende-list');
+            
+            container.innerHTML = data.aziende.map(az => `
+                <div style="background: rgba(59, 130, 245, 0.1); padding: 8px; margin-bottom: 6px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
+                    <div style="flex: 1;">
+                        <input type="checkbox" id="az-${az.id}" value="${az.id}" onchange="updateSelectedAziende()" style="margin-right: 6px;">
+                        <label for="az-${az.id}">${az.nome}</label>
+                    </div>
+                    <button style="padding: 2px 6px; background: #ef4444; font-size: 11px;" onclick="deleteAzienda('${az.id}')">✕</button>
+                </div>
+            `).join('');
+        }
+        
+        async function addAzienda() {
+            const nome = document.getElementById('new-azienda-nome').value.trim();
+            if (!nome) {
+                alert('Nome azienda richiesto');
+                return;
+            }
+            
+            try {
+                await fetch('/api/aziende', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nome: nome })
+                });
+                
+                document.getElementById('new-azienda-nome').value = '';
+                loadAziende();
+            } catch (e) {
+                alert('Errore: ' + e);
+            }
+        }
+        
+        async function deleteAzienda(aziendaId) {
+            if (confirm('Elimina azienda?')) {
+                try {
+                    await fetch(`/api/aziende/${aziendaId}`, { method: 'DELETE' });
+                    loadAziende();
+                    updateSelectedAziende();
+                } catch (e) {
+                    alert('Errore: ' + e);
+                }
+            }
+        }
+        
+        function toggleWeb() {
+            webEnabled = !webEnabled;
+            const btn = document.getElementById('web-toggle');
+            btn.textContent = webEnabled ? '🟢 ON' : '🔴 OFF';
+            btn.classList.remove(webEnabled ? 'off' : 'on');
+            btn.classList.add(webEnabled ? 'on' : 'off');
+        }
+        
+        function updateSelectedAziende() {
+            selectedAziende = Array.from(document.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.value);
+            loadFiles();
+            loadProductImages();
+            document.getElementById('messages').innerHTML = '';
+        }
+        
+        async function loadPresets() {
+            const response = await fetch('/api/presets');
+            const data = await response.json();
+            const container = document.getElementById('presets-list');
+            
+            container.innerHTML = data.presets.map(preset => `
+                <div class="preset-item">
+                    <span>${preset.nome}</span>
+                    <div style="display: flex; gap: 4px;">
+                        <button onclick="loadPreset('${preset.nome}')" style="background: #10b981;">Carica</button>
+                        <button class="delete" onclick="deletePreset('${preset.nome}')">🗑</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        async function savePreset() {
+            const name = document.getElementById('preset-name').value.trim();
+            if (!name || selectedAziende.length === 0) {
+                alert('Nome e aziende richieste');
+                return;
+            }
+            
+            await fetch('/api/presets', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nome: name, azienda_ids: selectedAziende })
+            });
+            
+            document.getElementById('preset-name').value = '';
+            loadPresets();
+        }
+        
+        async function loadPreset(presetName) {
+            const response = await fetch(`/api/presets/${presetName}`);
+            const data = await response.json();
+            
+            document.querySelectorAll('input[type="checkbox"]').forEach(el => {
+                el.checked = data.azienda_ids.includes(el.value);
+            });
+            
+            updateSelectedAziende();
+        }
+        
+        async function deletePreset(presetName) {
+            if (confirm('Elimina?')) {
+                await fetch(`/api/presets/${presetName}`, { method: 'DELETE' });
+                loadPresets();
+            }
+        }
+        
+        async function uploadProductImage(input) {
+            const file = input.files[0];
+            const productName = document.getElementById('product-name').value.trim();
+            
+            if (!file || !productName || selectedAziende.length === 0) {
+                alert('Nome prodotto + immagine + azienda richiesti!');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('image', file);
+            formData.append('product_name', productName);
+            formData.append('azienda_ids', selectedAziende.join(','));
+            
+            try {
+                await fetch('/api/upload-product-image', { 
+                    method: 'POST', 
+                    body: formData 
+                });
+                
+                document.getElementById('product-name').value = '';
+                loadProductImages();
+                alert('Immagine caricata!');
+            } catch (e) {
+                alert('Errore: ' + e);
+            }
+        }
+        
+        async function loadProductImages() {
+            if (selectedAziende.length === 0) {
+                document.getElementById('product-images-list').innerHTML = '';
+                return;
+            }
+            
+            const response = await fetch(`/api/product-images?azienda_ids=${selectedAziende.join(',')}`);
+            const data = await response.json();
+            const imagesList = document.getElementById('product-images-list');
+            
+            imagesList.innerHTML = data.images.map(img => `
+                <div class="file-item">
+                    <span>🖼️ ${img.product_name}</span>
+                    <button onclick="deleteProductImage('${img.id}')">✕</button>
+                </div>
+            `).join('');
+        }
+        
+        async function deleteProductImage(imageId) {
+            if (confirm('Elimina immagine?')) {
+                await fetch(`/api/product-images/${imageId}`, { method: 'DELETE' });
+                loadProductImages();
+            }
         }
         
         async function sendQuestion() {
             const input = document.getElementById('question');
-            const q = input.value.trim();
-            if (!q) return;
+            const question = input.value.trim();
+            if (!question) return;
             
-            const msg = document.getElementById('messages');
-            msg.innerHTML += '<div class="message user-message">' + q + '</div>';
+            if (selectedAziende.length === 0) {
+                alert('Seleziona almeno un azienda!');
+                return;
+            }
             
-            const load = document.createElement('div');
-            load.className = 'message bot-message';
-            load.innerHTML = '⏳ Ricercando documenti + web...';
-            msg.appendChild(load);
+            const messagesDiv = document.getElementById('messages');
+            messagesDiv.innerHTML += `<div class="message user-message">${question}</div>`;
+            
+            const loadingMsg = document.createElement('div');
+            loadingMsg.className = 'message bot-message';
+            loadingMsg.innerHTML = `<div class="loading-spinner"></div> Ricerca in corso...`;
+            messagesDiv.appendChild(loadingMsg);
+            
             input.value = '';
-            msg.scrollTop = msg.scrollHeight;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
             
             try {
-                const res = await fetch('/api/ask', {
+                const response = await fetch('/api/ask', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({q: q, aids: selectedAziende})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        question: question,
+                        azienda_ids: selectedAziende,
+                        use_web: webEnabled
+                    })
                 });
-                const data = await res.json();
+                const data = await response.json();
                 
-                msg.removeChild(load);
-                currentResponse = data.answer;
-                currentImages = data.images || [];
-                currentSource = data.source || 'SCONOSCIUTO';
+                messagesDiv.removeChild(loadingMsg);
                 
-                let html = '<div class="message bot-message">' + data.answer + '<div class="badge">' + currentSource + '</div>';
-                
+                let msgHtml = `<div class="message bot-message">${data.answer}`;
                 if (data.images && data.images.length > 0) {
-                    html += '<div class="image-gallery">';
+                    msgHtml += '<div class="image-gallery">';
                     data.images.forEach(img => {
-                        html += '<div class="image-item"><img src="data:image/jpeg;base64,' + img.substring(0, 50) + '..."></div>';
+                        msgHtml += `<div class="image-item" onclick="openModal('data:image/jpeg;base64,${img}')"><img src="data:image/jpeg;base64,${img}"></div>`;
                     });
-                    html += '</div>';
+                    msgHtml += '</div>';
                 }
+                msgHtml += '</div>';
                 
-                html += '<button class="btn-cart" onclick="addCart()">✅ AGGIUNGI A PROPOSTA</button></div>';
-                msg.innerHTML += html;
-                msg.scrollTop = msg.scrollHeight;
+                messagesDiv.innerHTML += msgHtml;
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
             } catch (e) {
-                msg.removeChild(load);
-                msg.innerHTML += '<div class="message bot-message">❌ Errore: ' + e + '</div>';
+                messagesDiv.removeChild(loadingMsg);
+                messagesDiv.innerHTML += `<div class="message bot-message">Errore: ${e}</div>`;
             }
-        }
-        
-        function addCart() {
-            if (!currentResponse) return;
-            const name = prompt('Nome prodotto:');
-            if (!name) return;
-            
-            fetch('/api/add-cart', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: name, resp: currentResponse, img: JSON.stringify(currentImages), src: currentSource})
-            }).then(() => {
-                loadCart();
-                currentResponse = null;
-            });
-        }
-        
-        async function loadCart() {
-            const res = await fetch('/api/cart');
-            const data = await res.json();
-            document.getElementById('cart-list').innerHTML = data.items.map(i => 
-                '<div class="item"><span>' + i.name + '</span><button onclick="removeCart(' + i.id + ')" style="padding: 2px 6px; background: #ef4444; font-size: 11px;">✕</button></div>'
-            ).join('');
-        }
-        
-        async function removeCart(id) {
-            await fetch('/api/cart/' + id, {method: 'DELETE'});
-            loadCart();
-        }
-        
-        async function generateOfferta() {
-            const res = await fetch('/api/offerta', {method: 'POST'});
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'Proposta_' + new Date().toISOString().split('T')[0] + '.html';
-            a.click();
         }
         
         async function uploadFile(input) {
             const files = Array.from(input.files);
-            const fd = new FormData();
-            files.forEach(f => fd.append('files', f));
-            if (selectedAziende.length > 0) fd.append('aids', selectedAziende.join(','));
-            await fetch('/api/upload', {method: 'POST', body: fd});
-            loadFiles();
+            const formData = new FormData();
+            files.forEach(f => formData.append('files', f));
+            
+            if (selectedAziende.length > 0) {
+                formData.append('azienda_ids', selectedAziende.join(','));
+            }
+            
+            try {
+                await fetch('/api/upload', { method: 'POST', body: formData });
+                loadFiles();
+                alert('File caricati!');
+            } catch (e) {
+                console.error('Errore:', e);
+            }
         }
         
         async function loadFiles() {
-            if (!selectedAziende.length) {document.getElementById('files-list').innerHTML = ''; return;}
-            const res = await fetch('/api/files?aids=' + selectedAziende.join(','));
-            const data = await res.json();
-            document.getElementById('files-list').innerHTML = data.files.map(f => 
-                '<div class="item"><span>📄 ' + f + '</span><button onclick="deleteFile(\'' + f + '\')" style="padding: 2px 6px; background: #ef4444; font-size: 11px;">✕</button></div>'
-            ).join('');
+            if (selectedAziende.length === 0) {
+                document.getElementById('files-list').innerHTML = '';
+                return;
+            }
+            
+            const response = await fetch(`/api/documents?azienda_ids=${selectedAziende.join(',')}`);
+            const data = await response.json();
+            const filesList = document.getElementById('files-list');
+            filesList.innerHTML = data.documents.map(doc => `
+                <div class="file-item">
+                    <span>📄 ${doc.filename}</span>
+                    <button onclick="deleteFile('${doc.filename}')">✕</button>
+                </div>
+            `).join('');
         }
         
-        async function deleteFile(f) {
-            await fetch('/api/files/' + f, {method: 'DELETE'});
+        async function deleteFile(filename) {
+            await fetch(`/api/documents/${filename}`, { method: 'DELETE' });
             loadFiles();
         }
         
-        async function addAzienda() {
-            const name = document.getElementById('new-azienda').value.trim();
-            if (!name) return;
-            await fetch('/api/aziende', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({nome: name})});
-            document.getElementById('new-azienda').value = '';
-            loadAziende();
+        function openModal(src) {
+            document.getElementById('modal-img').src = src;
+            document.getElementById('image-modal').classList.add('active');
         }
         
-        async function loadAziende() {
-            const res = await fetch('/api/aziende');
-            const data = await res.json();
-            document.getElementById('aziende-list').innerHTML = data.items.map(a => 
-                '<div class="item"><input type="checkbox" value="' + a.id + '" onchange="updateAziende()" style="margin-right: 6px;"><label>' + a.nome + '</label><button style="padding: 2px 6px; background: #ef4444; font-size: 11px;" onclick="delAzienda(' + a.id + ')">✕</button></div>'
-            ).join('');
-        }
-        
-        function updateAziende() {
-            selectedAziende = Array.from(document.querySelectorAll('input[type=checkbox]:checked')).map(e => e.value);
-            loadFiles();
-            updateAgentButtons();
-        }
-        
-        async function delAzienda(id) {
-            if (!confirm('Elimina?')) return;
-            await fetch('/api/aziende/' + id, {method: 'DELETE'});
-            loadAziende();
-            updateAziende();
+        function closeModal() {
+            document.getElementById('image-modal').classList.remove('active');
         }
         
         loadAziende();
-        loadCart();
+        loadPresets();
     </script>
 </body>
-</html>"""
+</html>
+    """
     return render_template_string(html)
 
 @app.route('/api/aziende', methods=['GET'])
 def get_aziende():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('SELECT id, nome FROM aziende')
-    items = [{"id": str(r[0]), "nome": r[1]} for r in c.fetchall()]
+    c.execute('SELECT id, nome FROM aziende ORDER BY nome')
+    aziende = [{"id": str(row[0]), "nome": row[1]} for row in c.fetchall()]
     conn.close()
-    return jsonify({"items": items})
+    return jsonify({"aziende": aziende})
 
 @app.route('/api/aziende', methods=['POST'])
 def add_azienda():
     data = request.get_json()
+    nome = data.get('nome', '').strip()
+    
+    if not nome:
+        return jsonify({"status": "error"}), 400
+    
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute('INSERT INTO aziende (nome) VALUES (?)', (data['nome'],))
+        c.execute('INSERT INTO aziende (nome) VALUES (?)', (nome,))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+    except:
+        conn.close()
+        return jsonify({"status": "error"}), 400
+
+@app.route('/api/aziende/<azienda_id>', methods=['DELETE'])
+def delete_azienda(azienda_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM aziende WHERE id = ?', (azienda_id,))
+    c.execute('DELETE FROM documents WHERE azienda_id = ?', (azienda_id,))
+    c.execute('DELETE FROM product_images WHERE azienda_id = ?', (azienda_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success"})
+
+@app.route('/api/presets', methods=['GET'])
+def get_presets():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT nome, azienda_ids FROM presets ORDER BY nome')
+    presets = [{"nome": row[0], "azienda_ids": row[1].split(',')} for row in c.fetchall()]
+    conn.close()
+    return jsonify({"presets": presets})
+
+@app.route('/api/presets', methods=['POST'])
+def save_preset():
+    data = request.get_json()
+    nome = data.get('nome')
+    azienda_ids = ','.join(data.get('azienda_ids', []))
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('INSERT INTO presets (nome, azienda_ids) VALUES (?, ?)', (nome, azienda_ids))
         conn.commit()
     except:
         pass
     conn.close()
-    return jsonify({"ok": True})
+    return jsonify({"status": "success"})
 
-@app.route('/api/aziende/<aid>', methods=['DELETE'])
-def del_azienda(aid):
+@app.route('/api/presets/<nome>', methods=['GET'])
+def get_preset(nome):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('DELETE FROM aziende WHERE id=?', (aid,))
-    c.execute('DELETE FROM documents WHERE azienda_id=?', (aid,))
+    c.execute('SELECT azienda_ids FROM presets WHERE nome = ?', (nome,))
+    result = c.fetchone()
+    conn.close()
+    
+    if result:
+        return jsonify({"azienda_ids": result[0].split(',')})
+    return jsonify({"azienda_ids": []})
+
+@app.route('/api/presets/<nome>', methods=['DELETE'])
+def delete_preset(nome):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM presets WHERE nome = ?', (nome,))
     conn.commit()
     conn.close()
-    return jsonify({"ok": True})
+    return jsonify({"status": "success"})
 
-@app.route('/api/files', methods=['GET'])
-def get_files():
-    aids = request.args.get('aids', '').split(',')
-    if not aids or aids == ['']:
-        return jsonify({"files": []})
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    placeholders = ','.join('?' * len(aids))
-    c.execute(f'SELECT DISTINCT filename FROM documents WHERE azienda_id IN ({placeholders})', aids)
-    files = [r[0] for r in c.fetchall()]
-    conn.close()
-    return jsonify({"files": files})
-
-@app.route('/api/upload', methods=['POST'])
-def upload():
-    files = request.files.getlist('files')
-    aids = request.form.get('aids', '').split(',') if request.form.get('aids') else ['1']
+@app.route('/api/documents', methods=['GET'])
+def get_documents():
+    azienda_ids = request.args.get('azienda_ids', '').split(',')
+    if not azienda_ids or azienda_ids == ['']:
+        return jsonify({"documents": []})
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    for f in files:
-        if not f.filename:
-            continue
-        try:
-            path = os.path.join(UPLOADS_DIR, f.filename)
-            f.save(path)
-            with open(path, 'r', encoding='utf-8', errors='ignore') as fp:
-                content = fp.read()
-            for aid in aids:
-                c.execute('INSERT OR REPLACE INTO documents (filename, content, azienda_id) VALUES (?, ?, ?)',
-                          (f.filename, content, aid))
-        except:
-            pass
-    conn.commit()
+    
+    placeholders = ','.join('?' * len(azienda_ids))
+    c.execute(f'SELECT DISTINCT filename FROM documents WHERE azienda_id IN ({placeholders})', azienda_ids)
+    docs = [{"filename": row[0]} for row in c.fetchall()]
     conn.close()
-    return jsonify({"ok": True})
+    return jsonify({"documents": docs})
 
-@app.route('/api/files/<fname>', methods=['DELETE'])
-def del_file(fname):
+@app.route('/api/product-images', methods=['GET'])
+def get_product_images():
+    azienda_ids = request.args.get('azienda_ids', '').split(',')
+    if not azienda_ids or azienda_ids == ['']:
+        return jsonify({"images": []})
+    
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('DELETE FROM documents WHERE filename=?', (fname,))
+    
+    placeholders = ','.join('?' * len(azienda_ids))
+    c.execute(f'SELECT id, product_name FROM product_images WHERE azienda_id IN ({placeholders})', azienda_ids)
+    images = [{"id": str(row[0]), "product_name": row[1]} for row in c.fetchall()]
+    conn.close()
+    return jsonify({"images": images})
+
+@app.route('/api/upload-product-image', methods=['POST'])
+def upload_product_image():
+    if 'image' not in request.files:
+        return jsonify({"status": "error"}), 400
+    
+    file = request.files['image']
+    product_name = request.form.get('product_name', 'Unknown')
+    azienda_ids = request.form.get('azienda_ids', '1').split(',')
+    
+    try:
+        img_data = base64.b64encode(file.read()).decode('utf-8')
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        for aid in azienda_ids:
+            c.execute('''INSERT INTO product_images 
+                         (product_name, azienda_id, image_base64, filename)
+                         VALUES (?, ?, ?, ?)''',
+                      (product_name, aid, img_data, file.filename))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"status": "success"})
+    
+    except Exception as e:
+        return jsonify({"status": "error"})
+
+@app.route('/api/product-images/<image_id>', methods=['DELETE'])
+def delete_product_image(image_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM product_images WHERE id = ?', (image_id,))
     conn.commit()
     conn.close()
-    path = os.path.join(UPLOADS_DIR, fname)
-    if os.path.exists(path):
-        os.remove(path)
-    return jsonify({"ok": True})
+    return jsonify({"status": "success"})
+
+@app.route('/api/upload', methods=['POST'])
+def upload():
+    if 'files' not in request.files:
+        return jsonify({"status": "error"}), 400
+    
+    files = request.files.getlist('files')
+    azienda_ids = request.form.get('azienda_ids', '').split(',')
+    if not azienda_ids or azienda_ids == ['']:
+        azienda_ids = ['1']
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    for file in files:
+        if file.filename == '':
+            continue
+        
+        try:
+            doc_path = os.path.join(UPLOADS_DIR, file.filename)
+            file.save(doc_path)
+            
+            with open(doc_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            for aid in azienda_ids:
+                try:
+                    c.execute('INSERT OR REPLACE INTO documents (filename, content, azienda_id) VALUES (?, ?, ?)',
+                              (file.filename, content, aid))
+                except:
+                    pass
+        except Exception as e:
+            print(f"Errore: {e}")
+    
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success"})
+
+@app.route('/api/documents/<filename>', methods=['DELETE'])
+def delete_document(filename):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM documents WHERE filename = ?', (filename,))
+    conn.commit()
+    conn.close()
+    
+    file_path = os.path.join(UPLOADS_DIR, filename)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    
+    return jsonify({"status": "success"})
 
 @app.route('/api/ask', methods=['POST'])
 def ask():
     data = request.get_json()
-    q = data.get('q', '').strip()
-    aids = data.get('aids', [])
+    question = (data.get('question') or "").strip()
+    azienda_ids = data.get('azienda_ids', [])
+    use_web = data.get('use_web', False)
     
-    answer, images, source = smart_answer(q, aids)
+    if not question:
+        return jsonify({"answer": "Domanda vuota", "images": []})
     
-    return jsonify({"answer": answer, "images": images, "source": source})
-
-@app.route('/api/add-cart', methods=['POST'])
-def add_cart():
-    data = request.get_json()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('INSERT INTO cart (product_name, response, source, images) VALUES (?, ?, ?, ?)',
-              (data['name'], data['resp'], data['src'], data['img']))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-@app.route('/api/cart', methods=['GET'])
-def get_cart():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT id, product_name FROM cart')
-    items = [{"id": r[0], "name": r[1]} for r in c.fetchall()]
-    conn.close()
-    return jsonify({"items": items})
-
-@app.route('/api/cart/<cid>', methods=['DELETE'])
-def del_cart(cid):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM cart WHERE id=?', (cid,))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-@app.route('/api/offerta', methods=['POST'])
-def offerta():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT product_name, response, source FROM cart')
-    items = c.fetchall()
+    
+    docs = []
+    if azienda_ids:
+        placeholders = ','.join('?' * len(azienda_ids))
+        c.execute(f'SELECT filename, content FROM documents WHERE azienda_id IN ({placeholders})', azienda_ids)
+        docs = c.fetchall()
+    
+    c.execute('SELECT nome FROM aziende WHERE id IN ({})'.format(','.join('?' * len(azienda_ids)) if azienda_ids else '""'))
+    aziende_names = [row[0] for row in c.fetchall()] if azienda_ids else []
     conn.close()
     
-    html = f"""<html><head><meta charset='UTF-8'><style>body{{font-family: Arial; margin: 40px; background: #f5f5f5;}} h1{{color: #0066cc;}} li{{background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #0066cc; border-radius: 4px;}}</style></head><body>
-    <h1>PROPOSTA COMMERCIALE COVOLO - {datetime.now().strftime('%d/%m/%Y')}</h1>
-    <ul style="list-style: none; padding: 0;">{''.join([f'<li><h3>{i[0]}</h3><p>{i[1][:400]}</p><small>Fonte: {i[2]}</small></li>' for i in items])}</ul>
-    <h2>💰 Aggiungi prezzi da Excel</h2>
-    </body></html>"""
+    if docs:
+        doc_context = "\n".join([f"📄 {doc[0]}:\n{doc[1][:300]}" for doc in docs[:2]])
+        
+        prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
+
+DOCUMENTI AZIENDA:
+{doc_context}
+
+DOMANDA: {question}
+
+Rispondi basandoti sui documenti. Se suggerisci prodotti, includi NOME ESATTO e MODELLO."""
     
-    return send_file(BytesIO(html.encode('utf-8')), mimetype='text/html', as_attachment=True, download_name=f'Proposta_{datetime.now().strftime("%d%m%Y")}.html')
+    elif use_web:
+        web_content = search_web_bing(question)
+        
+        prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
+
+RICERCA WEB:
+{web_content if web_content else 'Info da esperienza'}
+
+DOMANDA: {question}
+
+Rispondi da esperto. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO ESATTO."""
+    
+    else:
+        return jsonify({"answer": "⚠️ Nessun documento trovato e Web Search disattivato. Abilita Web Search o carica documenti.", "images": []})
+    
+    try:
+        response = httpx.post(
+            DEEPSEEK_API_URL,
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": DEEPSEEK_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.4,
+                "max_tokens": 1500,
+            },
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            answer = response.json()["choices"][0]["message"]["content"]
+            
+            products = extract_product_names(answer)
+            images = []
+            
+            for product in products:
+                for aid in azienda_ids:
+                    cat_images = search_catalog_images(product, aid)
+                    images.extend(cat_images)
+            
+            return jsonify({"answer": answer, "images": images[:5]})
+        else:
+            return jsonify({"answer": "Errore risposta API", "images": []})
+    
+    except Exception as e:
+        return jsonify({"answer": f"Errore: {str(e)}", "images": []})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)), debug=False)
