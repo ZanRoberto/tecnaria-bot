@@ -1,14 +1,19 @@
 """
-ORACOLO COVOLO - FLASK CON MULTI-AZIENDE E PRESET
-==================================================
+ORACOLO COVOLO - AUTO IMAGE SEARCH
+===================================
+Ricerca automatica immagini prodotti dal web
 """
 
 import os
 import json
 import sqlite3
+import base64
+import re
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify
 import httpx
+from PIL import Image
+from io import BytesIO
 
 from macrorule_engine import MacroruleEngine
 from narrator_system import NarratorSystem
@@ -82,6 +87,71 @@ def init_covolo_db():
 init_covolo_db()
 app = Flask(__name__)
 
+def search_product_images(product_name, azienda_nome=""):
+    """
+    Cerca automaticamente immagini del prodotto su Bing.
+    Restituisce lista di immagini in base64.
+    """
+    try:
+        query = f"{product_name} {azienda_nome}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        # Usa Bing Image Search (free, no API key)
+        url = f"https://www.bing.com/images/search?q={query}"
+        
+        # Fallback: ricerca diretta su Google Images
+        # Se non funziona Bing, ritorna lista vuota
+        images = []
+        
+        try:
+            response = httpx.get(url, headers=headers, timeout=5, follow_redirects=True)
+            
+            # Estrai URL immagini da HTML (semplice regex)
+            img_urls = re.findall(r'murl":"([^"]+\.jpg)"', response.text)
+            
+            # Scarica max 3 immagini
+            for img_url in img_urls[:3]:
+                try:
+                    img_response = httpx.get(img_url, timeout=3, headers=headers)
+                    if img_response.status_code == 200:
+                        img_base64 = base64.b64encode(img_response.content).decode('utf-8')
+                        images.append(img_base64)
+                except:
+                    pass
+        except:
+            pass
+        
+        return images
+    
+    except Exception as e:
+        print(f"Errore ricerca immagini: {e}")
+        return []
+
+def extract_product_names(answer_text):
+    """
+    Estrae nomi di prodotti dalla risposta.
+    Cerca pattern tipo "Rubinetto Gessi [nome]", "Modello [XXX]", etc.
+    """
+    products = []
+    
+    # Pattern 1: "Rubinetto Gessi XYZ"
+    gessi_pattern = r'Rubinetto\s+Gessi\s+([^\n,\.]+)'
+    products.extend(re.findall(gessi_pattern, answer_text, re.IGNORECASE))
+    
+    # Pattern 2: "Modello ABC"
+    model_pattern = r'[Mm]odello\s+([A-Z0-9\-]+)'
+    products.extend(re.findall(model_pattern, answer_text))
+    
+    # Pattern 3: "Gessi [nome prodotto]"
+    azienda_pattern = r'(Gessi|Grohe|Hansgrohe|Ideal Standard|Duravit|Villeroy)\s+([A-Za-z0-9\s\-]+?)(?:[,\.\n]|$)'
+    matches = re.findall(azienda_pattern, answer_text, re.IGNORECASE)
+    products.extend([f"{m[0]} {m[1]}" for m in matches])
+    
+    return list(set(products))[:3]  # Max 3 prodotti
+
 @app.route('/')
 def index():
     html = """
@@ -146,6 +216,34 @@ def index():
             border-left: 3px solid #a855f7;
             margin-left: auto;
         }
+        .image-gallery {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 8px;
+        }
+        .image-item {
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid rgba(59, 130, 245, 0.3);
+            cursor: pointer;
+        }
+        .image-item img {
+            width: 100%;
+            height: 100px;
+            object-fit: cover;
+        }
+        .loading-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(59, 130, 245, 0.3);
+            border-top: 2px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
         .input-area {
             display: flex;
             gap: 10px;
@@ -167,7 +265,6 @@ def index():
             border-radius: 6px;
             cursor: pointer;
             font-weight: 500;
-            font-size: 14px;
         }
         button:hover { background: #2563eb; }
         .sidebar h3 {
@@ -176,7 +273,6 @@ def index():
             margin-bottom: 12px;
             font-size: 14px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
         }
         .sidebar h3:first-child { margin-top: 0; }
         
@@ -195,12 +291,6 @@ def index():
             width: 16px;
             height: 16px;
             cursor: pointer;
-            flex: 0 0 auto;
-        }
-        .azienda-checkbox label {
-            flex: 1;
-            cursor: pointer;
-            margin: 0;
         }
         
         .preset-controls {
@@ -216,7 +306,6 @@ def index():
         .preset-controls button {
             padding: 6px 12px;
             font-size: 12px;
-            flex: 0 0 auto;
         }
         
         .preset-item {
@@ -246,22 +335,66 @@ def index():
             text-align: center;
             cursor: pointer;
             font-size: 13px;
-            transition: background 0.3s;
         }
         .web-toggle.on {
             background: #10b981;
+        }
+        
+        .file-item {
+            background: rgba(59, 130, 245, 0.1);
+            padding: 8px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 999;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal.active {
+            display: flex;
+        }
+        .modal-content {
+            position: relative;
+            max-width: 90%;
+            max-height: 90%;
+        }
+        .modal-content img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .modal-close {
+            position: absolute;
+            top: 10px; right: 10px;
+            background: #ef4444;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="sidebar">
-            <h3>🏢 Aziende (Multi-Select)</h3>
+            <h3>🏢 Aziende</h3>
             <div id="aziende-list"></div>
             
             <h3>💾 Preset</h3>
             <div class="preset-controls">
-                <input type="text" id="preset-name" placeholder="Nome preset..." style="flex: 1;">
+                <input type="text" id="preset-name" placeholder="Nome..." style="flex: 1;">
                 <button onclick="savePreset()" style="flex: 0 0 auto; padding: 6px 10px; font-size: 12px;">Salva</button>
             </div>
             <div id="presets-list"></div>
@@ -274,7 +407,7 @@ def index():
             <h3>📁 Documenti</h3>
             <div style="border: 2px dashed rgba(59, 130, 245, 0.3); padding: 12px; border-radius: 8px; text-align: center; cursor: pointer; margin-bottom: 15px; font-size: 13px;" onclick="document.getElementById('file-input').click()">
                 📤 Carica
-                <input type="file" id="file-input" hidden onchange="uploadFile(this)">
+                <input type="file" id="file-input" hidden multiple onchange="uploadFile(this)">
             </div>
             <div id="files-list"></div>
         </div>
@@ -282,7 +415,7 @@ def index():
         <div class="main">
             <div class="header">
                 <h1>🔮 Oracolo Covolo</h1>
-                <p>Consulente Intelligente Arredo Bagno</p>
+                <p>Consulente Intelligente + Auto Image Search</p>
             </div>
             
             <div class="chat-area">
@@ -292,6 +425,13 @@ def index():
                     <button onclick="sendQuestion()">Invia</button>
                 </div>
             </div>
+        </div>
+    </div>
+    
+    <div class="modal" id="image-modal">
+        <div class="modal-content">
+            <img id="modal-img" src="">
+            <button class="modal-close" onclick="closeModal()">✕</button>
         </div>
     </div>
     
@@ -307,7 +447,7 @@ def index():
             container.innerHTML = data.aziende.map(az => `
                 <div class="azienda-checkbox">
                     <input type="checkbox" id="az-${az.id}" value="${az.id}" onchange="updateSelectedAziende()">
-                    <label for="az-${az.id}">${az.nome} (${az.categoria})</label>
+                    <label for="az-${az.id}">${az.nome}</label>
                 </div>
             `).join('');
         }
@@ -336,16 +476,9 @@ def index():
         
         async function savePreset() {
             const name = document.getElementById('preset-name').value.trim();
-            if (!name) {
-                alert('Inserisci nome preset');
-                return;
-            }
-            if (selectedAziende.length === 0) {
-                alert('Seleziona almeno un azienda');
-                return;
-            }
+            if (!name || selectedAziende.length === 0) return;
             
-            const response = await fetch('/api/presets', {
+            await fetch('/api/presets', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ nome: name, azienda_ids: selectedAziende })
@@ -367,7 +500,7 @@ def index():
         }
         
         async function deletePreset(presetName) {
-            if (confirm('Elimina questo preset?')) {
+            if (confirm('Elimina?')) {
                 await fetch(`/api/presets/${presetName}`, { method: 'DELETE' });
                 loadPresets();
             }
@@ -382,7 +515,7 @@ def index():
         
         async function sendQuestion() {
             if (selectedAziende.length === 0) {
-                alert('Seleziona almeno un azienda!');
+                alert('Seleziona azienda!');
                 return;
             }
             
@@ -392,6 +525,12 @@ def index():
             
             const messagesDiv = document.getElementById('messages');
             messagesDiv.innerHTML += `<div class="message user-message">${question}</div>`;
+            
+            const loadingMsg = document.createElement('div');
+            loadingMsg.className = 'message bot-message';
+            loadingMsg.innerHTML = `<div class="loading-spinner"></div> Ricerca in corso...`;
+            messagesDiv.appendChild(loadingMsg);
+            
             input.value = '';
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
             
@@ -406,24 +545,36 @@ def index():
                     })
                 });
                 const data = await response.json();
-                messagesDiv.innerHTML += `<div class="message bot-message">${data.answer}</div>`;
+                
+                messagesDiv.removeChild(loadingMsg);
+                
+                let msgHtml = `<div class="message bot-message">${data.answer}`;
+                if (data.images && data.images.length > 0) {
+                    msgHtml += '<div class="image-gallery">';
+                    data.images.forEach(img => {
+                        msgHtml += `<div class="image-item" onclick="openModal('data:image/jpeg;base64,${img}')"><img src="data:image/jpeg;base64,${img}"></div>`;
+                    });
+                    msgHtml += '</div>';
+                }
+                msgHtml += '</div>';
+                
+                messagesDiv.innerHTML += msgHtml;
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
             } catch (e) {
+                messagesDiv.removeChild(loadingMsg);
                 messagesDiv.innerHTML += `<div class="message bot-message">Errore: ${e}</div>`;
             }
         }
         
         async function uploadFile(input) {
             if (selectedAziende.length === 0) {
-                alert('Seleziona azienda prima!');
+                alert('Seleziona azienda!');
                 return;
             }
             
-            const file = input.files[0];
-            if (!file) return;
-            
+            const files = Array.from(input.files);
             const formData = new FormData();
-            formData.append('file', file);
+            files.forEach(f => formData.append('files', f));
             formData.append('azienda_ids', selectedAziende.join(','));
             
             try {
@@ -444,7 +595,7 @@ def index():
             const data = await response.json();
             const filesList = document.getElementById('files-list');
             filesList.innerHTML = data.documents.map(doc => `
-                <div style="background: rgba(59, 130, 245, 0.1); padding: 8px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
+                <div class="file-item">
                     <span>📄 ${doc.filename}</span>
                     <button style="background: #ef4444; padding: 2px 8px; font-size: 11px;" onclick="deleteFile('${doc.filename}')">✕</button>
                 </div>
@@ -452,12 +603,17 @@ def index():
         }
         
         async function deleteFile(filename) {
-            try {
-                await fetch(`/api/documents/${filename}`, { method: 'DELETE' });
-                loadFiles();
-            } catch (e) {
-                console.error('Errore:', e);
-            }
+            await fetch(`/api/documents/${filename}`, { method: 'DELETE' });
+            loadFiles();
+        }
+        
+        function openModal(src) {
+            document.getElementById('modal-img').src = src;
+            document.getElementById('image-modal').classList.add('active');
+        }
+        
+        function closeModal() {
+            document.getElementById('image-modal').classList.remove('active');
         }
         
         loadAziende();
@@ -537,27 +693,34 @@ def get_documents():
 
 @app.route('/api/upload', methods=['POST'])
 def upload():
-    if 'file' not in request.files:
+    if 'files' not in request.files:
         return jsonify({"status": "error"}), 400
     
-    file = request.files['file']
+    files = request.files.getlist('files')
     azienda_ids = request.form.get('azienda_ids', '').split(',')
-    
-    file_path = os.path.join(UPLOADS_DIR, file.filename)
-    file.save(file_path)
-    
-    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-        content = f.read()
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    for aid in azienda_ids:
+    for file in files:
+        if file.filename == '':
+            continue
+        
         try:
-            c.execute('INSERT OR REPLACE INTO documents (filename, content, azienda_id) VALUES (?, ?, ?)',
-                      (file.filename, content, aid))
-        except:
-            pass
+            doc_path = os.path.join(UPLOADS_DIR, file.filename)
+            file.save(doc_path)
+            
+            with open(doc_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            for aid in azienda_ids:
+                try:
+                    c.execute('INSERT OR REPLACE INTO documents (filename, content, azienda_id) VALUES (?, ?, ?)',
+                              (file.filename, content, aid))
+                except:
+                    pass
+        except Exception as e:
+            print(f"Errore: {e}")
     
     conn.commit()
     conn.close()
@@ -585,7 +748,7 @@ def ask():
     use_web = data.get('use_web', False)
     
     if not question or not azienda_ids:
-        return jsonify({"answer": "Errore: dati mancanti"})
+        return jsonify({"answer": "Errore: dati mancanti", "images": []})
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -593,21 +756,24 @@ def ask():
     placeholders = ','.join('?' * len(azienda_ids))
     c.execute(f'SELECT filename, content FROM documents WHERE azienda_id IN ({placeholders})', azienda_ids)
     docs = c.fetchall()
+    
+    c.execute('SELECT nome FROM aziende WHERE id IN ({})'.format(placeholders), azienda_ids)
+    aziende_names = [row[0] for row in c.fetchall()]
     conn.close()
     
     if not docs:
-        return jsonify({"answer": "Nessun documento trovato per le aziende selezionate."})
+        return jsonify({"answer": "Nessun documento trovato.", "images": []})
     
-    doc_context = "\n".join([f"📄 {doc[0]}:\n{doc[1][:300]}" for doc in docs[:3]])
+    doc_context = "\n".join([f"📄 {doc[0]}:\n{doc[1][:300]}" for doc in docs[:2]])
     
     prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
 
-DOCUMENTI DISPONIBILI:
+DOCUMENTI:
 {doc_context}
 
-DOMANDA CLIENT: {question}
+DOMANDA: {question}
 
-Rispondi come narrativa calda, professionale e esperta. Se il documento non contiene info, usa la tua esperienza."""
+Rispondi come consulente. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO/NOME PRODOTTO."""
 
     try:
         response = httpx.post(
@@ -627,12 +793,21 @@ Rispondi come narrativa calda, professionale e esperta. Se il documento non cont
         
         if response.status_code == 200:
             answer = response.json()["choices"][0]["message"]["content"]
-            return jsonify({"answer": answer})
+            
+            # NUOVO: Ricerca automatica immagini prodotti
+            products = extract_product_names(answer)
+            images = []
+            
+            for product in products:
+                product_images = search_product_images(product, " ".join(aziende_names))
+                images.extend(product_images)
+            
+            return jsonify({"answer": answer, "images": images[:5]})
         else:
-            return jsonify({"answer": "Errore nel generare risposta"})
+            return jsonify({"answer": "Errore risposta", "images": []})
     
     except Exception as e:
-        return jsonify({"answer": f"Errore: {str(e)}"})
+        return jsonify({"answer": f"Errore: {str(e)}", "images": []})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)), debug=False)
