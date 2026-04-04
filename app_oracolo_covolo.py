@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import httpx
 
 # ============================================================
 # CONFIG BASE
@@ -20,6 +21,11 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 DATA_DIR = os.path.join(STATIC_DIR, "data")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
+
+# DeepSeek API
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_MODEL = "deepseek-chat"
 
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -57,7 +63,7 @@ init_db()
 # FASTAPI APP
 # ============================================================
 
-app = FastAPI(title="Oracolo Covolo - Universal Bot")
+app = FastAPI(title="Oracolo Covolo - Universal Bot con DeepSeek")
 
 app.add_middleware(
     CORSMiddleware,
@@ -215,8 +221,6 @@ def search_documents(query: str) -> List[Dict[str, Any]]:
             {
                 "filename": result[0],
                 "content": result[1],
-                "match_preview": result[1][max(0, result[1].lower().find(query.lower())-50):
-                                          min(len(result[1]), result[1].lower().find(query.lower())+150)]
             }
             for result in results
         ]
@@ -225,36 +229,25 @@ def search_documents(query: str) -> List[Dict[str, Any]]:
         return []
 
 # ============================================================
-# TEXT NORMALIZATION
-# ============================================================
-
-def normalize(text: str) -> str:
-    """Normalize text for matching."""
-    text = text.lower()
-    text = re.sub(r"[^\w\sàèéìòóùç]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-# ============================================================
-# RESPONSE BUILDING
+# DeepSeek AI INTEGRATION
 # ============================================================
 
 def build_oracolo_prompt(question: str, documents: List[Dict], web_results: List[str]) -> str:
-    """Build prompt for Claude with document context."""
+    """Build prompt for DeepSeek with document context."""
     
     doc_context = ""
     if documents:
         doc_context = "DOCUMENTI CARICATI:\n"
-        for doc in documents[:3]:  # Use top 3 matches
+        for doc in documents[:3]:
             doc_context += f"\n📄 {doc['filename']}:\n{doc['content'][:1000]}\n"
     
     web_context = ""
     if web_results:
-        web_context = "\nINFORMAZIONI DA WEB (AGGIORNAMENTI):\n"
+        web_context = "\nINFORMAZIONI DA WEB:\n"
         for result in web_results[:2]:
             web_context += f"\n🌐 {result}\n"
     
-    prompt = f"""Tu sei l'Oracolo Covolo - un assistente esperto che conosce TUTTI i dati aziendali di Covolo.
+    prompt = f"""Tu sei l'Oracolo Covolo - un assistente esperto che conosce TUTTI i dati aziendali di Covolo SRL.
 
 DOCUMENTI DISPONIBILI:
 {doc_context}
@@ -263,17 +256,64 @@ DOCUMENTI DISPONIBILI:
 
 DOMANDA DELL'UTENTE: {question}
 
-REGOLE:
-1. Rispondi SOLO basandoti sui documenti caricati + web search se appropriato
-2. Cita sempre il documento da cui hai preso l'informazione
-3. Se l'informazione non è nei documenti, dillo chiaramente
-4. Sii preciso, chiaro, tecnico
+REGOLE OBBLIGATORIE:
+1. Rispondi SOLO basandoti sui documenti caricati
+2. Se l'informazione non è nei documenti, dillo chiaramente
+3. Cita sempre il documento/file da cui hai preso l'informazione
+4. Sii preciso, chiaro, tecnico-commerciale
 5. Usa codici prodotto, prezzi, lead time quando disponibili
 6. Se serve informazione web per aggiornare, includila
+7. Non inventare MAI dati non presenti nei documenti
+8. Rispondi in italiano, professionale ma leggibile
+9. Struttura la risposta in modo chiaro (se serve numera)
 
-Fornisci una risposta completa e accurata:"""
+Fornisci una risposta completa e accurata basata SOLO sui tuoi documenti:"""
     
     return prompt
+
+async def call_deepseek(prompt: str, temperature: float = 0.3) -> str:
+    """Call DeepSeek API."""
+    if not DEEPSEEK_API_KEY:
+        return "DeepSeek API key non configurato. Configura DEEPSEEK_API_KEY nelle environment variables."
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                DEEPSEEK_API_URL,
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": DEEPSEEK_MODEL,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "Sei un assistente professionale per aziende. Rispondi sempre basandoti su dati reali, non inventare mai."
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": 2000,
+                    "top_p": 1.0
+                },
+                timeout=30.0
+            )
+            
+            if response.status_code != 200:
+                return f"Errore DeepSeek: {response.text}"
+            
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+            
+    except httpx.TimeoutException:
+        return "Timeout nella risposta da DeepSeek. Riprova tra un momento."
+    except Exception as e:
+        print(f"[ERROR] DeepSeek API: {e}")
+        return f"Errore nella comunicazione con DeepSeek: {str(e)}"
 
 # ============================================================
 # ENDPOINTS
@@ -292,8 +332,9 @@ async def status():
     """Status dell'Oracolo."""
     docs = get_all_documents()
     return {
-        "status": "Oracolo Covolo Online",
+        "status": "Oracolo Covolo Online - DeepSeek Powered",
         "documents_loaded": len(docs),
+        "deepseek_configured": bool(DEEPSEEK_API_KEY),
         "timestamp": datetime.now().isoformat()
     }
 
@@ -306,16 +347,12 @@ async def list_documents():
 async def upload_document(file: UploadFile = File(...)):
     """Upload and process document."""
     try:
-        # Save file
         file_path = os.path.join(UPLOADS_DIR, file.filename)
         with open(file_path, 'wb') as f:
             content = await file.read()
             f.write(content)
         
-        # Extract text
         text_content = extract_text_from_file(file_path)
-        
-        # Save to DB
         file_size = len(content)
         saved = save_document_to_db(file.filename, text_content, file_size)
         
@@ -350,17 +387,21 @@ async def api_ask(req: QuestionRequest):
         # 1. Search documents
         matching_docs = search_documents(question_raw)
         
-        # 2. Build prompt
+        if not matching_docs:
+            return AnswerResponse(
+                answer="Non ho trovato informazioni sui tuoi documenti per questa domanda. Carica il documento pertinente e riprova.",
+                sources=[],
+                timestamp=datetime.now().isoformat(),
+                meta={"documents_searched": 0, "response_type": "no_match"}
+            )
+        
+        # 2. Build prompt with document context
         prompt = build_oracolo_prompt(question_raw, matching_docs, [])
         
-        # 3. Call Claude (using Anthropic API via artifact)
-        # For now, simulate response
-        answer = f"""Basandomi sui documenti caricati:
-
-{question_raw}
-
-Risposta costruita dal tuo database Covolo e web research."""
+        # 3. Call DeepSeek
+        answer = await call_deepseek(prompt, temperature=0.2)
         
+        # 4. Extract sources
         sources = [doc['filename'] for doc in matching_docs]
         
         return AnswerResponse(
@@ -369,7 +410,8 @@ Risposta costruita dal tuo database Covolo e web research."""
             timestamp=datetime.now().isoformat(),
             meta={
                 "documents_searched": len(matching_docs),
-                "response_type": "from_documents"
+                "response_type": "deepseek_powered",
+                "ai_model": DEEPSEEK_MODEL
             }
         )
     
