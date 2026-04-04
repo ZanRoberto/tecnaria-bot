@@ -1,7 +1,7 @@
 """
-ORACOLO COVOLO - CON CATALOGO PDF
-==================================
-Estrae immagini e specifiche da PDF cataloghi
+ORACOLO COVOLO - CON WEB TOGGLE
+================================
+CRUD Aziende + Product Images + Web Toggle ON/OFF
 """
 
 import os
@@ -13,9 +13,6 @@ from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify
 import httpx
 from urllib.parse import quote
-from PyPDF2 import PdfReader
-from PIL import Image
-from io import BytesIO
 
 from macrorule_engine import MacroruleEngine
 from narrator_system import NarratorSystem
@@ -23,7 +20,7 @@ from narrator_system import NarratorSystem
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
-CATALOG_DIR = os.path.join(DATA_DIR, "catalogs")
+IMAGES_DIR = os.path.join(DATA_DIR, "product_images")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
 MACRORULE_FILE = os.path.join(BASE_DIR, "macroregole_covolo_universe.json")
 
@@ -32,7 +29,7 @@ DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
 
 os.makedirs(UPLOADS_DIR, exist_ok=True)
-os.makedirs(CATALOG_DIR, exist_ok=True)
+os.makedirs(IMAGES_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 macrorule_engine = MacroruleEngine(MACRORULE_FILE)
@@ -45,9 +42,9 @@ def init_covolo_db():
     c.execute('''CREATE TABLE IF NOT EXISTS aziende
                  (id INTEGER PRIMARY KEY,
                   nome TEXT UNIQUE,
-                  suffisso TEXT,
                   sito TEXT,
-                  categoria TEXT)''')
+                  categoria TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS documents
                  (id INTEGER PRIMARY KEY,
@@ -56,13 +53,13 @@ def init_covolo_db():
                   azienda_id INTEGER,
                   upload_date TIMESTAMP)''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS product_catalog
+    c.execute('''CREATE TABLE IF NOT EXISTS product_images
                  (id INTEGER PRIMARY KEY,
                   product_name TEXT,
                   azienda_id INTEGER,
                   image_base64 TEXT,
-                  specs TEXT,
-                  source_file TEXT)''')
+                  filename TEXT,
+                  upload_date TIMESTAMP)''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS queries
                  (id INTEGER PRIMARY KEY,
@@ -77,106 +74,25 @@ def init_covolo_db():
                   azienda_ids TEXT,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
-    aziende = [
-        (1, "Gessi", "rubinetteria", "https://www.gessi.com", "Rubinetteria"),
-        (2, "Ideal Standard", "sanitari", "https://www.idealstandard.com", "Sanitari"),
-        (3, "Duravit", "ceramica", "https://www.duravit.com", "Ceramica"),
-        (4, "Villeroy&Boch", "piastrelle", "https://www.villeroy-boch.com", "Piastrelle"),
-        (5, "Grohe", "rubinetteria", "https://www.grohe.com", "Rubinetteria"),
-        (6, "Hansgrohe", "rubinetteria", "https://www.hansgrohe.com", "Rubinetteria"),
-    ]
-    
-    for aid, nome, suffisso, sito, categoria in aziende:
-        try:
-            c.execute('INSERT INTO aziende (id, nome, suffisso, sito, categoria) VALUES (?, ?, ?, ?, ?)',
-                      (aid, nome, suffisso, sito, categoria))
-        except:
-            pass
-    
     conn.commit()
     conn.close()
 
 init_covolo_db()
 app = Flask(__name__)
 
-def extract_images_from_pdf(pdf_path, azienda_id):
-    """Estrae immagini da PDF e le salva nel catalogo."""
-    try:
-        reader = PdfReader(pdf_path)
-        images_found = []
-        
-        for page_num, page in enumerate(reader.pages):
-            if "/XObject" in page["/Resources"]:
-                xObject = page["/Resources"]["/XObject"].get_object()
-                
-                for obj in xObject:
-                    obj_ref = xObject[obj]
-                    if obj_ref["/Subtype"] == "/Image":
-                        try:
-                            size = (int(obj_ref["/Width"]), int(obj_ref["/Height"]))
-                            data = obj_ref.get_data()
-                            
-                            if obj_ref["/ColorSpace"] == "/DeviceRGB":
-                                img = Image.frombytes("RGB", size, data)
-                            else:
-                                img = Image.frombytes("L", size, data)
-                            
-                            # Converti in base64
-                            img_byte_arr = BytesIO()
-                            img.save(img_byte_arr, format='JPEG')
-                            img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
-                            
-                            images_found.append({
-                                'image': img_base64,
-                                'page': page_num,
-                                'filename': os.path.basename(pdf_path)
-                            })
-                        except:
-                            pass
-        
-        return images_found
-    except Exception as e:
-        print(f"Errore estrazione PDF: {e}")
-        return []
-
-def extract_product_names_from_pdf(pdf_path):
-    """Estrae nomi prodotti dal testo PDF."""
-    try:
-        reader = PdfReader(pdf_path)
-        text = ""
-        
-        for page in reader.pages:
-            text += page.extract_text() + "\n"
-        
-        # Pattern comuni per rubinetteria
-        patterns = [
-            r'(Gessi\s+[A-Z0-9]+)',
-            r'([A-Z][a-z]+\s+(?:316|304|Plus|Pro|Design))',
-            r'Model[lo]*\s*[:=]*\s*([A-Z0-9\-]+)',
-            r'Modello\s+([A-Za-z0-9\s]+)',
-        ]
-        
-        products = []
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            products.extend(matches)
-        
-        return list(set(products))[:10]
-    except:
-        return []
-
 def search_catalog_images(product_name, azienda_id):
-    """Cerca immagini nel catalogo per nome prodotto."""
+    """Cerca immagini nel catalogo."""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Ricerca per nome prodotto
-        c.execute('''SELECT image_base64 FROM product_catalog 
+        search_term = product_name.lower().strip()
+        
+        c.execute('''SELECT image_base64 FROM product_images 
                      WHERE azienda_id = ? AND 
-                     (product_name LIKE ? OR specs LIKE ?)
-                     LIMIT 3''',
-                  (azienda_id, f'%{product_name}%', f'%{product_name}%'))
+                     LOWER(product_name) LIKE ?
+                     LIMIT 5''',
+                  (azienda_id, f'%{search_term}%'))
         
         results = c.fetchall()
         conn.close()
@@ -186,7 +102,7 @@ def search_catalog_images(product_name, azienda_id):
         return []
 
 def search_web_bing(query):
-    """Cerca su Bing e restituisce risultati."""
+    """Cerca su Bing."""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -212,15 +128,15 @@ def extract_product_names(answer_text):
     """Estrae nomi prodotti dalla risposta."""
     products = []
     
-    gessi_pattern = r'Gessi\s*(?:316|modello)?\s+([^\n,\.]+)'
-    products.extend(re.findall(gessi_pattern, answer_text, re.IGNORECASE))
+    gessi_pattern = r'Gessi\s*(\d+[A-Z]*)'
+    products.extend([f"Gessi{m}" for m in re.findall(gessi_pattern, answer_text, re.IGNORECASE)])
     
     model_pattern = r'[Mm]odello\s+([A-Z0-9\-]+)'
     products.extend(re.findall(model_pattern, answer_text))
     
-    azienda_pattern = r'(Gessi|Grohe|Hansgrohe|Ideal Standard|Duravit|Villeroy)\s+([A-Za-z0-9\s\-]+?)(?:[,\.\n]|$)'
+    azienda_pattern = r'(Gessi|Grohe|Hansgrohe|Ideal Standard|Duravit|Villeroy|[A-Za-z\s]+)\s+([A-Za-z0-9\s\-]+?)(?:[,\.\n]|$)'
     matches = re.findall(azienda_pattern, answer_text, re.IGNORECASE)
-    products.extend([f"{m[0]} {m[1]}" for m in matches])
+    products.extend([f"{m[0]} {m[1]}".strip() for m in matches])
     
     return list(set(products))[:5]
 
@@ -244,7 +160,7 @@ def index():
         }
         .container { display: flex; width: 100%; height: 100vh; }
         .sidebar {
-            width: 320px;
+            width: 340px;
             background: rgba(15, 23, 46, 0.8);
             border-right: 1px solid rgba(59, 130, 245, 0.2);
             padding: 20px;
@@ -297,7 +213,7 @@ def index():
         .image-item {
             border-radius: 8px;
             overflow: hidden;
-            border: 2px solid rgba(59, 130, 245, 0.5);
+            border: 2px solid rgba(16, 185, 129, 0.5);
             cursor: pointer;
             transition: transform 0.2s;
         }
@@ -343,10 +259,11 @@ def index():
         button:hover { background: #2563eb; }
         .sidebar h3 {
             color: #3b82f6;
-            margin-top: 25px;
+            margin-top: 20px;
             margin-bottom: 12px;
-            font-size: 14px;
+            font-size: 13px;
             text-transform: uppercase;
+            font-weight: 600;
         }
         .sidebar h3:first-child { margin-top: 0; }
         
@@ -367,19 +284,38 @@ def index():
             cursor: pointer;
         }
         
-        .preset-controls {
+        .input-group {
             display: flex;
             gap: 6px;
-            margin-bottom: 12px;
+            margin-bottom: 10px;
         }
-        .preset-controls input {
+        .input-group input {
             flex: 1;
             font-size: 12px;
             padding: 6px;
         }
-        .preset-controls button {
+        .input-group button {
             padding: 6px 12px;
             font-size: 12px;
+            flex: 0 0 auto;
+        }
+        
+        .web-toggle {
+            background: #6b7280;
+            padding: 12px;
+            margin-bottom: 15px;
+            border-radius: 6px;
+            text-align: center;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+        .web-toggle.on {
+            background: #10b981;
+        }
+        .web-toggle.off {
+            background: #ef4444;
         }
         
         .preset-item {
@@ -401,39 +337,20 @@ def index():
             background: #ef4444;
         }
         
-        .web-toggle {
-            background: #6b7280;
-            padding: 10px;
-            margin-bottom: 15px;
-            border-radius: 6px;
-            text-align: center;
-            cursor: pointer;
-            font-size: 13px;
-        }
-        .web-toggle.on {
-            background: #10b981;
-        }
-        
         .file-item {
             background: rgba(59, 130, 245, 0.1);
             padding: 8px;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             border-radius: 4px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             font-size: 12px;
         }
-        
-        .catalog-upload {
-            border: 2px solid rgba(16, 185, 129, 0.3);
-            padding: 12px;
-            border-radius: 8px;
-            text-align: center;
-            cursor: pointer;
-            margin-bottom: 15px;
-            font-size: 13px;
-            background: rgba(16, 185, 129, 0.05);
+        .file-item button {
+            padding: 2px 6px;
+            font-size: 11px;
+            background: #ef4444;
         }
         
         .modal {
@@ -474,24 +391,35 @@ def index():
 <body>
     <div class="container">
         <div class="sidebar">
-            <h3>🏢 Aziende</h3>
+            <h3>🏢 Aziende (Gestisci)</h3>
+            <div class="input-group">
+                <input type="text" id="new-azienda-nome" placeholder="Nome..." style="flex: 1;">
+                <button onclick="addAzienda()" style="flex: 0 0 auto; padding: 6px 10px; font-size: 12px;">➕</button>
+            </div>
             <div id="aziende-list"></div>
             
+            <h3>🌐 Web Search</h3>
+            <div class="web-toggle off" id="web-toggle" onclick="toggleWeb()">
+                🔴 OFF
+            </div>
+            
             <h3>💾 Preset</h3>
-            <div class="preset-controls">
+            <div class="input-group">
                 <input type="text" id="preset-name" placeholder="Nome..." style="flex: 1;">
                 <button onclick="savePreset()" style="flex: 0 0 auto; padding: 6px 10px; font-size: 12px;">Salva</button>
             </div>
             <div id="presets-list"></div>
             
-            <h3>📚 Catalogo</h3>
-            <div class="catalog-upload" onclick="document.getElementById('catalog-input').click()">
-                📤 Upload Catalogo PDF
-                <input type="file" id="catalog-input" hidden accept=".pdf" onchange="uploadCatalog(this)">
+            <h3>🖼️ Immagini Prodotto</h3>
+            <div class="input-group">
+                <input type="text" id="product-name" placeholder="Nome prodotto..." style="flex: 1;">
+                <button onclick="document.getElementById('product-image-input').click()" style="padding: 6px 10px; font-size: 12px;">📤</button>
+                <input type="file" id="product-image-input" hidden accept=".png,.jpg,.jpeg,.gif" onchange="uploadProductImage(this)">
             </div>
+            <div id="product-images-list"></div>
             
             <h3>📁 Documenti</h3>
-            <div style="border: 2px dashed rgba(59, 130, 245, 0.3); padding: 12px; border-radius: 8px; text-align: center; cursor: pointer; margin-bottom: 15px; font-size: 13px;" onclick="document.getElementById('file-input').click()">
+            <div style="border: 2px dashed rgba(59, 130, 245, 0.3); padding: 10px; border-radius: 6px; text-align: center; cursor: pointer; margin-bottom: 12px; font-size: 12px;" onclick="document.getElementById('file-input').click()">
                 📤 Carica
                 <input type="file" id="file-input" hidden multiple onchange="uploadFile(this)">
             </div>
@@ -501,7 +429,7 @@ def index():
         <div class="main">
             <div class="header">
                 <h1>🔮 Oracolo Covolo</h1>
-                <p>Consulente + Catalogo Professionale</p>
+                <p>Consulente Intelligente Arredo Bagno</p>
             </div>
             
             <div class="chat-area">
@@ -523,6 +451,7 @@ def index():
     
     <script>
         let selectedAziende = [];
+        let webEnabled = false;
         
         async function loadAziende() {
             const response = await fetch('/api/aziende');
@@ -530,16 +459,61 @@ def index():
             const container = document.getElementById('aziende-list');
             
             container.innerHTML = data.aziende.map(az => `
-                <div class="azienda-checkbox">
-                    <input type="checkbox" id="az-${az.id}" value="${az.id}" onchange="updateSelectedAziende()">
-                    <label for="az-${az.id}">${az.nome}</label>
+                <div style="background: rgba(59, 130, 245, 0.1); padding: 8px; margin-bottom: 6px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
+                    <div style="flex: 1;">
+                        <input type="checkbox" id="az-${az.id}" value="${az.id}" onchange="updateSelectedAziende()" style="margin-right: 6px;">
+                        <label for="az-${az.id}">${az.nome}</label>
+                    </div>
+                    <button style="padding: 2px 6px; background: #ef4444; font-size: 11px;" onclick="deleteAzienda('${az.id}')">✕</button>
                 </div>
             `).join('');
+        }
+        
+        async function addAzienda() {
+            const nome = document.getElementById('new-azienda-nome').value.trim();
+            if (!nome) {
+                alert('Nome azienda richiesto');
+                return;
+            }
+            
+            try {
+                await fetch('/api/aziende', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nome: nome })
+                });
+                
+                document.getElementById('new-azienda-nome').value = '';
+                loadAziende();
+            } catch (e) {
+                alert('Errore: ' + e);
+            }
+        }
+        
+        async function deleteAzienda(aziendaId) {
+            if (confirm('Elimina azienda?')) {
+                try {
+                    await fetch(`/api/aziende/${aziendaId}`, { method: 'DELETE' });
+                    loadAziende();
+                    updateSelectedAziende();
+                } catch (e) {
+                    alert('Errore: ' + e);
+                }
+            }
+        }
+        
+        function toggleWeb() {
+            webEnabled = !webEnabled;
+            const btn = document.getElementById('web-toggle');
+            btn.textContent = webEnabled ? '🟢 ON' : '🔴 OFF';
+            btn.classList.remove(webEnabled ? 'off' : 'on');
+            btn.classList.add(webEnabled ? 'on' : 'off');
         }
         
         function updateSelectedAziende() {
             selectedAziende = Array.from(document.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.value);
             loadFiles();
+            loadProductImages();
             document.getElementById('messages').innerHTML = '';
         }
         
@@ -561,7 +535,10 @@ def index():
         
         async function savePreset() {
             const name = document.getElementById('preset-name').value.trim();
-            if (!name || selectedAziende.length === 0) return;
+            if (!name || selectedAziende.length === 0) {
+                alert('Nome e aziende richieste');
+                return;
+            }
             
             await fetch('/api/presets', {
                 method: 'POST',
@@ -591,26 +568,56 @@ def index():
             }
         }
         
-        async function uploadCatalog(input) {
+        async function uploadProductImage(input) {
             const file = input.files[0];
-            if (!file || selectedAziende.length === 0) {
-                alert('Seleziona azienda e PDF!');
+            const productName = document.getElementById('product-name').value.trim();
+            
+            if (!file || !productName || selectedAziende.length === 0) {
+                alert('Nome prodotto + immagine + azienda richiesti!');
                 return;
             }
             
             const formData = new FormData();
-            formData.append('catalog', file);
+            formData.append('image', file);
+            formData.append('product_name', productName);
             formData.append('azienda_ids', selectedAziende.join(','));
             
             try {
-                const response = await fetch('/api/upload-catalog', { 
+                await fetch('/api/upload-product-image', { 
                     method: 'POST', 
                     body: formData 
                 });
-                const data = await response.json();
-                alert(data.message || 'Catalogo caricato!');
+                
+                document.getElementById('product-name').value = '';
+                loadProductImages();
+                alert('Immagine caricata!');
             } catch (e) {
                 alert('Errore: ' + e);
+            }
+        }
+        
+        async function loadProductImages() {
+            if (selectedAziende.length === 0) {
+                document.getElementById('product-images-list').innerHTML = '';
+                return;
+            }
+            
+            const response = await fetch(`/api/product-images?azienda_ids=${selectedAziende.join(',')}`);
+            const data = await response.json();
+            const imagesList = document.getElementById('product-images-list');
+            
+            imagesList.innerHTML = data.images.map(img => `
+                <div class="file-item">
+                    <span>🖼️ ${img.product_name}</span>
+                    <button onclick="deleteProductImage('${img.id}')">✕</button>
+                </div>
+            `).join('');
+        }
+        
+        async function deleteProductImage(imageId) {
+            if (confirm('Elimina immagine?')) {
+                await fetch(`/api/product-images/${imageId}`, { method: 'DELETE' });
+                loadProductImages();
             }
         }
         
@@ -618,6 +625,11 @@ def index():
             const input = document.getElementById('question');
             const question = input.value.trim();
             if (!question) return;
+            
+            if (selectedAziende.length === 0) {
+                alert('Seleziona almeno un azienda!');
+                return;
+            }
             
             const messagesDiv = document.getElementById('messages');
             messagesDiv.innerHTML += `<div class="message user-message">${question}</div>`;
@@ -636,7 +648,8 @@ def index():
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         question: question,
-                        azienda_ids: selectedAziende
+                        azienda_ids: selectedAziende,
+                        use_web: webEnabled
                     })
                 });
                 const data = await response.json();
@@ -673,6 +686,7 @@ def index():
             try {
                 await fetch('/api/upload', { method: 'POST', body: formData });
                 loadFiles();
+                alert('File caricati!');
             } catch (e) {
                 console.error('Errore:', e);
             }
@@ -690,7 +704,7 @@ def index():
             filesList.innerHTML = data.documents.map(doc => `
                 <div class="file-item">
                     <span>📄 ${doc.filename}</span>
-                    <button style="background: #ef4444; padding: 2px 8px; font-size: 11px;" onclick="deleteFile('${doc.filename}')">✕</button>
+                    <button onclick="deleteFile('${doc.filename}')">✕</button>
                 </div>
             `).join('');
         }
@@ -725,6 +739,36 @@ def get_aziende():
     aziende = [{"id": str(row[0]), "nome": row[1]} for row in c.fetchall()]
     conn.close()
     return jsonify({"aziende": aziende})
+
+@app.route('/api/aziende', methods=['POST'])
+def add_azienda():
+    data = request.get_json()
+    nome = data.get('nome', '').strip()
+    
+    if not nome:
+        return jsonify({"status": "error"}), 400
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('INSERT INTO aziende (nome) VALUES (?)', (nome,))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+    except:
+        conn.close()
+        return jsonify({"status": "error"}), 400
+
+@app.route('/api/aziende/<azienda_id>', methods=['DELETE'])
+def delete_azienda(azienda_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM aziende WHERE id = ?', (azienda_id,))
+    c.execute('DELETE FROM documents WHERE azienda_id = ?', (azienda_id,))
+    c.execute('DELETE FROM product_images WHERE azienda_id = ?', (azienda_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success"})
 
 @app.route('/api/presets', methods=['GET'])
 def get_presets():
@@ -787,6 +831,59 @@ def get_documents():
     conn.close()
     return jsonify({"documents": docs})
 
+@app.route('/api/product-images', methods=['GET'])
+def get_product_images():
+    azienda_ids = request.args.get('azienda_ids', '').split(',')
+    if not azienda_ids or azienda_ids == ['']:
+        return jsonify({"images": []})
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    placeholders = ','.join('?' * len(azienda_ids))
+    c.execute(f'SELECT id, product_name FROM product_images WHERE azienda_id IN ({placeholders})', azienda_ids)
+    images = [{"id": str(row[0]), "product_name": row[1]} for row in c.fetchall()]
+    conn.close()
+    return jsonify({"images": images})
+
+@app.route('/api/upload-product-image', methods=['POST'])
+def upload_product_image():
+    if 'image' not in request.files:
+        return jsonify({"status": "error"}), 400
+    
+    file = request.files['image']
+    product_name = request.form.get('product_name', 'Unknown')
+    azienda_ids = request.form.get('azienda_ids', '1').split(',')
+    
+    try:
+        img_data = base64.b64encode(file.read()).decode('utf-8')
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        for aid in azienda_ids:
+            c.execute('''INSERT INTO product_images 
+                         (product_name, azienda_id, image_base64, filename)
+                         VALUES (?, ?, ?, ?)''',
+                      (product_name, aid, img_data, file.filename))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"status": "success"})
+    
+    except Exception as e:
+        return jsonify({"status": "error"})
+
+@app.route('/api/product-images/<image_id>', methods=['DELETE'])
+def delete_product_image(image_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM product_images WHERE id = ?', (image_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success"})
+
 @app.route('/api/upload', methods=['POST'])
 def upload():
     if 'files' not in request.files:
@@ -824,42 +921,6 @@ def upload():
     conn.close()
     return jsonify({"status": "success"})
 
-@app.route('/api/upload-catalog', methods=['POST'])
-def upload_catalog():
-    if 'catalog' not in request.files:
-        return jsonify({"message": "File mancante"}), 400
-    
-    file = request.files['catalog']
-    azienda_ids = request.form.get('azienda_ids', '1').split(',')
-    
-    try:
-        catalog_path = os.path.join(CATALOG_DIR, file.filename)
-        file.save(catalog_path)
-        
-        # Estrai immagini
-        images = extract_images_from_pdf(catalog_path, azienda_ids[0])
-        products = extract_product_names_from_pdf(catalog_path)
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        for idx, img in enumerate(images):
-            product_name = products[idx] if idx < len(products) else f"Prodotto {idx}"
-            
-            for aid in azienda_ids:
-                c.execute('''INSERT INTO product_catalog 
-                             (product_name, azienda_id, image_base64, source_file)
-                             VALUES (?, ?, ?, ?)''',
-                          (product_name, aid, img['image'], file.filename))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({"message": f"Catalogo caricato! {len(images)} immagini estratte."})
-    
-    except Exception as e:
-        return jsonify({"message": f"Errore: {str(e)}"})
-
 @app.route('/api/documents/<filename>', methods=['DELETE'])
 def delete_document(filename):
     conn = sqlite3.connect(DB_PATH)
@@ -879,6 +940,7 @@ def ask():
     data = request.get_json()
     question = (data.get('question') or "").strip()
     azienda_ids = data.get('azienda_ids', [])
+    use_web = data.get('use_web', False)
     
     if not question:
         return jsonify({"answer": "Domanda vuota", "images": []})
@@ -906,19 +968,22 @@ DOCUMENTI AZIENDA:
 
 DOMANDA: {question}
 
-Rispondi basandoti sui documenti. Se suggerisci prodotti, includi NOME e MODELLO specifico."""
+Rispondi basandoti sui documenti. Se suggerisci prodotti, includi NOME ESATTO e MODELLO."""
     
-    else:
+    elif use_web:
         web_content = search_web_bing(question)
         
         prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
 
 RICERCA WEB:
-{web_content if web_content else 'No web results'}
+{web_content if web_content else 'Info da esperienza'}
 
 DOMANDA: {question}
 
-Rispondi da esperto. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO."""
+Rispondi da esperto. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO ESATTO."""
+    
+    else:
+        return jsonify({"answer": "⚠️ Nessun documento trovato e Web Search disattivato. Abilita Web Search o carica documenti.", "images": []})
     
     try:
         response = httpx.post(
@@ -939,7 +1004,6 @@ Rispondi da esperto. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO."""
         if response.status_code == 200:
             answer = response.json()["choices"][0]["message"]["content"]
             
-            # Ricerca immagini dal catalogo
             products = extract_product_names(answer)
             images = []
             
