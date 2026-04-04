@@ -1,0 +1,580 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "asset": "COVOLO_ARREDO_BAGNO",
+    "created": "2026-04-04",
+    "description": "Universo completo macroregole Covolo - Sistema intelligente autonomo",
+    "author": "Claude + Roberto"
+  },
+
+  "macroregole": [
+
+    # ========================================================================
+    # CATEGORIA: INCOMPATIBILITÀ CRITICHE
+    # ========================================================================
+    # Quando cliente chiede QUESTA cosa + QUESTA cosa = NON FUNZIONA
+
+    {
+      "id": "MR_DOCCIA_INCASSO_RICHIEDE_CARTONGESSO",
+      "categoria": "incompatibilita_critica",
+      "priority": 1,
+      "regola": "Doccia incasso richiede OBBLIGATORIAMENTE parete cartongesso",
+      "problema": "Doccia incasso in superficie su piastrella = NON funziona",
+      "trigger": {
+        "product_type": "doccia",
+        "installation": "incasso"
+      },
+      "requirements": ["cartongesso_parete"],
+      "confidence": 0.99,
+      "se_non_presente": {
+        "warning": "BLOCCA",
+        "message": "Doccia incasso NON compatibile con parete piastrella diretta",
+        "alternative_1": {
+          "type": "doccia_esterna",
+          "brand": "Gessi",
+          "model": "Inciso",
+          "price_delta": -250,
+          "installation_same_day": true
+        },
+        "alternative_2": {
+          "type": "parete_cartongesso",
+          "lead_time_days": 5,
+          "installation_days": 3,
+          "cost": 450,
+          "then_use": "doccia_incasso"
+        }
+      },
+      "technical_notes": "Doccia incasso richiede: predisposizione tubature, spessore cartongesso 10cm"
+    },
+
+    {
+      "id": "MR_VASCA_FREESTANDING_RICHIEDE_SPAZIO",
+      "categoria": "incompatibilita_critica",
+      "priority": 1,
+      "regola": "Vasca freestanding richiede spazio minimo 3mq libero",
+      "trigger": {
+        "product_type": "vasca",
+        "style": "freestanding"
+      },
+      "requirements": ["spazio_minimo_3mq"],
+      "confidence": 0.98,
+      "se_non_presente": {
+        "warning": "BLOCCA",
+        "message": "Spazio insufficiente per vasca freestanding",
+        "alternative": {
+          "type": "vasca_incasso",
+          "space_required_sqm": 1.5,
+          "price_delta": -400
+        }
+      }
+    },
+
+    {
+      "id": "MR_MISCELATORE_FORO_1_POLLICE",
+      "categoria": "incompatibilita_critica",
+      "priority": 1,
+      "regola": "Miscelatore Gessi standard richiede foro esattamente 1 pollice (25.4mm)",
+      "trigger": {
+        "brand": "Gessi",
+        "product_type": "miscelatore"
+      },
+      "requirements": ["foro_1_pollice"],
+      "confidence": 0.97,
+      "se_non_presente": {
+        "warning": "AVVISO",
+        "message": "Foro non compatibile - serve adattatore",
+        "solution": {
+          "type": "adattatore_gessi",
+          "cost": 45,
+          "installation_easy": true
+        }
+      },
+      "technical_notes": "Foro standard: 25.4mm. Se più grande: usa guarnizione più spessa. Se più piccolo: non montabile."
+    },
+
+    {
+      "id": "MR_RUBINETTERIA_CORPO_INCASSO",
+      "categoria": "incompatibilita_critica",
+      "priority": 1,
+      "regola": "Rubinetteria corpo incasso richiede spazio dietro parete 30cm",
+      "trigger": {
+        "rubinetteria_type": "corpo_incasso"
+      },
+      "requirements": ["spazio_retro_parete_30cm"],
+      "confidence": 0.96,
+      "se_non_presente": {
+        "warning": "BLOCCA",
+        "message": "Spazio insufficiente dietro parete",
+        "alternative": {
+          "type": "rubinetteria_semi_incasso",
+          "price_delta": -150
+        }
+      }
+    },
+
+    # ========================================================================
+    # CATEGORIA: REQUIREMENTS (Cosa RICHIEDE cosa)
+    # ========================================================================
+
+    {
+      "id": "MR_PIASTRELLA_60x60_ADESIVO_CEMENTIZIO",
+      "categoria": "requirement",
+      "priority": 2,
+      "regola": "Piastrella 60x60 FUNZIONA MEGLIO con adesivo cementizio",
+      "trigger": {
+        "product_type": "piastrella",
+        "size": "60x60"
+      },
+      "recommendations": ["adesivo_cementizio"],
+      "confidence": 0.94,
+      "why": "Piastrelle grandi con adesivo epossidico costano +40% e richiedono 2gg posa (vs 1gg cemento)",
+      "alternatives": {
+        "adesivo_epossidico": {
+          "cost_delta": 120,
+          "durability": "maggiore",
+          "installation_days": 2,
+          "best_for": "ambienti molto umidi"
+        }
+      }
+    },
+
+    {
+      "id": "MR_PIASTRELLA_30x30_ADESIVO_QUALUNQUE",
+      "categoria": "requirement",
+      "priority": 3,
+      "regola": "Piastrella 30x30 funziona con qualsiasi adesivo",
+      "trigger": {
+        "product_type": "piastrella",
+        "size": "30x30"
+      },
+      "recommendations": ["adesivo_cementizio", "adesivo_epossidico"],
+      "confidence": 0.99,
+      "notes": "Piccole piastrelle: meno stress, qualsiasi adesivo va bene"
+    },
+
+    {
+      "id": "MR_CARTONGESSO_RICHIEDE_ISOLAMENTO_UMIDITA",
+      "categoria": "requirement",
+      "priority": 1,
+      "regola": "Cartongesso in bagno RICHIEDE isolamento umidità",
+      "trigger": {
+        "product_type": "cartongesso",
+        "location": "bagno"
+      },
+      "requirements": ["membrana_impermeabile"],
+      "confidence": 0.98,
+      "cost": 150,
+      "installation_days": 1,
+      "notes": "Membrane: Mapei, Ceresit, Ardex. Critiche per evitare muffa."
+    },
+
+    {
+      "id": "MR_DOCCIA_RICHIEDE_SCARICO_SIFONE",
+      "categoria": "requirement",
+      "priority": 1,
+      "regola": "Doccia RICHIEDE sifone scarico + tubo Ø75mm minimo",
+      "trigger": {
+        "product_type": "doccia"
+      },
+      "requirements": ["sifone_scarico", "tubo_75mm"],
+      "confidence": 0.99,
+      "cost": 80,
+      "notes": "Se tubatura esistente Ø50mm: rischio allagamento."
+    },
+
+    {
+      "id": "MR_VASCA_RICHIEDE_CASSONE_MURATO",
+      "categoria": "requirement",
+      "priority": 1,
+      "regola": "Vasca incasso RICHIEDE cassone murato sotto",
+      "trigger": {
+        "product_type": "vasca",
+        "style": "incasso"
+      },
+      "requirements": ["cassone_muratura"],
+      "confidence": 0.97,
+      "cost": 200,
+      "installation_days": 2,
+      "notes": "Cassone sostiene vasca: criticamente importante"
+    },
+
+    # ========================================================================
+    # CATEGORIA: BEST PRACTICE (Cosa funziona BENE insieme)
+    # ========================================================================
+
+    {
+      "id": "MR_GESSI_COMBO_LAVABO_MISCELATORE",
+      "categoria": "best_practice",
+      "priority": 2,
+      "regola": "Combo Gessi: Lavabo + Miscelatore Gessi = 98% compatibilità",
+      "trigger": {
+        "product_type": "lavabo",
+        "brand": "Gessi"
+      },
+      "recommendations": ["miscelatore_gessi"],
+      "confidence": 0.98,
+      "why": "Stessi design, fori standardizzati, installazione immediata",
+      "synergy_bonus": "Prezzo cliente -5%, installazione +1gg rispetto singoli"
+    },
+
+    {
+      "id": "MR_DOCCIA_INCASSO_SOFFIONE_PIOGGIA",
+      "categoria": "best_practice",
+      "priority": 2,
+      "regola": "Doccia incasso si abbina benissimo a soffione pioggia",
+      "trigger": {
+        "product_type": "doccia",
+        "installation": "incasso"
+      },
+      "recommendations": ["soffione_pioggia"],
+      "confidence": 0.95,
+      "cost_delta": 150,
+      "aesthetic_value": "alta",
+      "installation_days": 1
+    },
+
+    {
+      "id": "MR_PIASTRELLA_RIVESTIMENTO_COORDINATE",
+      "categoria": "best_practice",
+      "priority": 3,
+      "regola": "Piastrella + rivestimento della STESSA collezione = armonia",
+      "trigger": {
+        "product_type": "piastrella"
+      },
+      "recommendations": ["rivestimento_stessa_collezione"],
+      "confidence": 0.92,
+      "why": "Colori coordinati, texture coerenti, effetto professionale",
+      "customer_satisfaction": "85% più alto"
+    },
+
+    {
+      "id": "MR_SPECCHIO_LED_LUMINOSITA",
+      "categoria": "best_practice",
+      "priority": 2,
+      "regola": "Specchio grande (120x80cm) + LED integrato = lusso funzionale",
+      "trigger": {
+        "product_type": "specchio",
+        "size": ["120x80", "150x80"]
+      },
+      "recommendations": ["led_integrato"],
+      "confidence": 0.90,
+      "cost_delta": 200,
+      "customer_satisfaction": "molto_alta"
+    },
+
+    # ========================================================================
+    # CATEGORIA: TIMELINE (Lead time, coordinamento, sequenze)
+    # ========================================================================
+
+    {
+      "id": "MR_LEAD_TIME_GESSI",
+      "categoria": "timeline",
+      "priority": 1,
+      "regola": "Lead time Gessi: 6-10 giorni (add +3gg buffer)",
+      "trigger": {
+        "brand": "Gessi"
+      },
+      "lead_time_min": 6,
+      "lead_time_max": 10,
+      "buffer_days": 3,
+      "realistic_total": 13,
+      "confidence": 0.93,
+      "notes": "Variabile per colori speciali (0 stock)"
+    },
+
+    {
+      "id": "MR_LEAD_TIME_MATTONELLE_STANDARD",
+      "categoria": "timeline",
+      "priority": 1,
+      "regola": "Lead time mattonelle standard: 3-5 giorni",
+      "trigger": {
+        "product_type": "piastrella",
+        "custom": false
+      },
+      "lead_time_min": 3,
+      "lead_time_max": 5,
+      "buffer_days": 2,
+      "confidence": 0.95
+    },
+
+    {
+      "id": "MR_INSTALLATION_DOCCIA_INCASSO",
+      "categoria": "timeline",
+      "priority": 1,
+      "regola": "Installazione doccia incasso: 5-7 giorni (cartongesso + impianto)",
+      "trigger": {
+        "product_type": "doccia",
+        "installation": "incasso"
+      },
+      "prerequisite": "cartongesso_parete",
+      "days_cartongesso": 3,
+      "days_impianto": 2,
+      "days_finitura": 2,
+      "total_days": 7,
+      "confidence": 0.94
+    },
+
+    {
+      "id": "MR_INSTALLATION_POSA_PIASTRELLA",
+      "categoria": "timeline",
+      "priority": 1,
+      "regola": "Posa piastrella: 1gg per 2-3 mq (adesivo cementizio)",
+      "trigger": {
+        "product_type": "piastrella"
+      },
+      "sqm_per_day": 2.5,
+      "buffer_days": 1,
+      "drying_time_hours": 24,
+      "confidence": 0.96
+    },
+
+    {
+      "id": "MR_SEQUENZA_LOGICA_BAGNO",
+      "categoria": "timeline",
+      "priority": 1,
+      "regola": "Sequenza OBBLIGATORIA: 1.Cartongesso 2.Impianti 3.Piastrelle 4.Rubinetteria",
+      "sequenza": [
+        {
+          "step": 1,
+          "activity": "Cartongesso + isolamento umidità",
+          "days": 3,
+          "notes": "PRIMA di tutto"
+        },
+        {
+          "step": 2,
+          "activity": "Impianti idraulici + scarichi",
+          "days": 2,
+          "notes": "Prima di piastrelle"
+        },
+        {
+          "step": 3,
+          "activity": "Posa piastrelle + rivestimenti",
+          "days": 3,
+          "notes": "Dopo impianti"
+        },
+        {
+          "step": 4,
+          "activity": "Rubinetteria + accessori",
+          "days": 1,
+          "notes": "ULTIMO, dopo asciugatura"
+        }
+      ],
+      "total_realistic": 10,
+      "confidence": 0.97
+    },
+
+    # ========================================================================
+    # CATEGORIA: CERTIFICAZIONI E NORME
+    # ========================================================================
+
+    {
+      "id": "MR_PIASTRELLA_ANTISCIVOLO_DOCCIA",
+      "categoria": "certificazione",
+      "priority": 1,
+      "regola": "Piastrelle zona doccia DEVONO essere antiscivolo (R10 minimo)",
+      "trigger": {
+        "product_type": "piastrella",
+        "location": "doccia"
+      },
+      "requirement": "antiscivolo_R10_minimo",
+      "confidence": 0.99,
+      "legal": "Norma DIN 51130",
+      "se_non_presente": {
+        "warning": "BLOCCA",
+        "message": "Piastrella liscia in doccia = rischio infortunio legale"
+      }
+    },
+
+    {
+      "id": "MR_IMPIANTO_DOCCIA_VALVOLA_MISCELAZIONE",
+      "categoria": "certificazione",
+      "priority": 1,
+      "regola": "Impianto doccia RICHIEDE valvola termostatica (max 38°C)",
+      "trigger": {
+        "product_type": "doccia"
+      },
+      "requirement": "valvola_termostatica",
+      "max_temp": 38,
+      "confidence": 0.98,
+      "legal": "Norma UNI EN 1287",
+      "cost": 80,
+      "safety": "critica"
+    },
+
+    {
+      "id": "MR_ISOLAMENTO_ACUSTICO_BAGNO",
+      "categoria": "best_practice",
+      "priority": 2,
+      "regola": "Bagno in appartamento DOVREBBE avere isolamento acustico",
+      "trigger": {
+        "location": "bagno",
+        "building_type": "appartamento"
+      },
+      "recommendations": ["isolamento_acustico"],
+      "cost": 300,
+      "confidence": 0.85,
+      "notes": "Non obbligatorio ma molto apprezzato dai clienti"
+    },
+
+    # ========================================================================
+    # CATEGORIA: COSTI E MARGINI
+    # ========================================================================
+
+    {
+      "id": "MR_MARGINE_MINIMO_RUBINETTERIA",
+      "categoria": "commerciale",
+      "priority": 2,
+      "regola": "Margine minimo su rubinetteria Gessi: 30%",
+      "trigger": {
+        "product_type": "rubinetteria",
+        "brand": "Gessi"
+      },
+      "min_margin_percent": 30,
+      "typical_margin_percent": 45,
+      "confidence": 0.90,
+      "notes": "Se cliente negozia: non scendere sotto 25%"
+    },
+
+    {
+      "id": "MR_MARGINE_INSTALLAZIONE_POSA",
+      "categoria": "commerciale",
+      "priority": 2,
+      "regola": "Installazione posa piastrelle: margine 50-60%",
+      "trigger": {
+        "service_type": "installazione",
+        "service": "posa_piastrelle"
+      },
+      "min_margin_percent": 50,
+      "typical_margin_percent": 55,
+      "confidence": 0.92
+    },
+
+    {
+      "id": "MR_PREVENTIVO_MARGINE_TOTALE",
+      "categoria": "commerciale",
+      "priority": 1,
+      "regola": "Margine totale progetto bagno: minimo 25%, target 35%",
+      "trigger": {
+        "project_type": "bagno_completo"
+      },
+      "min_total_margin": 0.25,
+      "target_total_margin": 0.35,
+      "confidence": 0.91,
+      "notes": "Ragionare su TOTAL, non singolo prodotto"
+    },
+
+    # ========================================================================
+    # CATEGORIA: WORKFLOW INTELLIGENTE
+    # ========================================================================
+
+    {
+      "id": "MR_FLOW_PREVENTIVO_COMPLETO",
+      "categoria": "workflow",
+      "priority": 1,
+      "regola": "Flusso preventivo completo: Misure → Materiali → Impianti → Tempi → Prezzo",
+      "workflow": [
+        {
+          "step": 1,
+          "question": "Quali sono le MISURE del bagno (larghezza x profondità)?",
+          "why": "Determina spazio per vasca, doccia, movimenti"
+        },
+        {
+          "step": 2,
+          "question": "Stile preferito cliente (moderno, classico, lusso)?",
+          "why": "Guida selezione marche e finiture"
+        },
+        {
+          "step": 3,
+          "question": "Tipo parete attuale (cartongesso o piastrella diretta)?",
+          "why": "Determina se doccia incasso è possibile"
+        },
+        {
+          "step": 4,
+          "question": "Vasca o doccia o entrambi?",
+          "why": "Scelta cruciale di layout"
+        },
+        {
+          "step": 5,
+          "question": "Impianti esistenti ok o completamente nuovi?",
+          "why": "Costi e tempi variano drasticamente"
+        },
+        {
+          "step": 6,
+          "question": "Timeline quanto prima?",
+          "why": "Lead time fornitori + installazione"
+        }
+      ],
+      "confidence": 0.95
+    },
+
+    {
+      "id": "MR_DECISIONE_DOCCIA_vs_VASCA",
+      "categoria": "workflow",
+      "priority": 2,
+      "regola": "Se spazio < 3mq: CONSIGLIA doccia. Se > 4mq: CONSIGLIA vasca + doccia",
+      "decision_tree": {
+        "spazio_mq": [
+          {
+            "range": "< 2",
+            "recommendation": "Doccia piccola (60x60 minimo)",
+            "why": "Unica soluzione possibile"
+          },
+          {
+            "range": "2-3",
+            "recommendation": "Doccia (o vasca piccola, non entrambi)",
+            "why": "Spazio limitato"
+          },
+          {
+            "range": "3-4",
+            "recommendation": "Doccia + bidet (vasca se molto compatto)",
+            "why": "Soluzione pratica"
+          },
+          {
+            "range": "> 4",
+            "recommendation": "Vasca + doccia separata (LUSSO)",
+            "why": "Spazio consente entrambi"
+          }
+        ]
+      },
+      "confidence": 0.93
+    },
+
+    {
+      "id": "MR_GESTIONE_CLIENTE_INDECISO",
+      "categoria": "workflow",
+      "priority": 2,
+      "regola": "Se cliente indeciso: CONSIGLIA preventivo 2 scenari diversi",
+      "scenario": [
+        {
+          "name": "Soluzione Economica",
+          "price_range": "€3000-5000",
+          "features": ["Doccia standard", "Piastrelle basic", "Rubinetteria entry", "Margine: 25%"]
+        },
+        {
+          "name": "Soluzione Standard",
+          "price_range": "€6000-9000",
+          "features": ["Doccia incasso", "Piastrelle Gessi", "Rubinetteria Gessi", "Margine: 35%"]
+        },
+        {
+          "name": "Soluzione Lusso",
+          "price_range": "€10000+",
+          "features": ["Vasca + doccia incasso", "Marble/Lusso", "Gessi premium", "Margine: 40%"]
+        }
+      ],
+      "confidence": 0.94
+    }
+
+  ],
+
+  # ========================================================================
+  # REGOLE DI AUTO-GENERAZIONE CAPSULE
+  # ========================================================================
+
+  "capsule_generation_rules": {
+    "rule_1": "Ogni macrorègola con confidence >= 0.95 genera LEARNED CAPSULE con priority 1",
+    "rule_2": "Ogni macrorègola con confidence < 0.95 genera LEARNED CAPSULE con priority 3",
+    "rule_3": "Se cliente contravviene una macrorègola → System propone automaticamente alternativa",
+    "rule_4": "Se cliente ACCETTA alternativa → Track in log (per future learning)",
+    "rule_5": "Ogni 10 trade simili → Valida macrorègola o propone update"
+  }
+}
