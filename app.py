@@ -1,7 +1,7 @@
 """
-ORACOLO COVOLO - AUTO IMAGE SEARCH
-===================================
-Ricerca automatica immagini prodotti dal web
+ORACOLO COVOLO - WEB FALLBACK AUTOMATICO
+=========================================
+Se non trova documenti, cerca automaticamente su web
 """
 
 import os
@@ -12,8 +12,7 @@ import re
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify
 import httpx
-from PIL import Image
-from io import BytesIO
+from urllib.parse import quote
 
 from macrorule_engine import MacroruleEngine
 from narrator_system import NarratorSystem
@@ -87,32 +86,45 @@ def init_covolo_db():
 init_covolo_db()
 app = Flask(__name__)
 
-def search_product_images(product_name, azienda_nome=""):
-    """
-    Cerca automaticamente immagini del prodotto su Bing.
-    Restituisce lista di immagini in base64.
-    """
+def search_web_bing(query):
+    """Cerca su Bing e restituisce risultati."""
     try:
-        query = f"{product_name} {azienda_nome}"
-        
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         
-        # Usa Bing Image Search (free, no API key)
-        url = f"https://www.bing.com/images/search?q={query}"
+        url = f"https://www.bing.com/search?q={quote(query)}"
+        response = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
         
-        # Fallback: ricerca diretta su Google Images
-        # Se non funziona Bing, ritorna lista vuota
-        images = []
-        
-        try:
-            response = httpx.get(url, headers=headers, timeout=5, follow_redirects=True)
+        if response.status_code == 200:
+            # Estrai snippet dai risultati
+            snippets = re.findall(r'<p[^>]*>(.*?)</p>', response.text)
+            cleaned = []
+            for s in snippets[:5]:
+                text = re.sub(r'<[^>]+>', '', s)
+                if len(text) > 50:
+                    cleaned.append(text)
             
-            # Estrai URL immagini da HTML (semplice regex)
+            return " ".join(cleaned[:3])
+        return ""
+    except:
+        return ""
+
+def search_product_images(product_name, azienda_nome=""):
+    """Cerca immagini del prodotto."""
+    try:
+        query = f"{product_name} {azienda_nome}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        url = f"https://www.bing.com/images/search?q={quote(query)}"
+        response = httpx.get(url, headers=headers, timeout=5, follow_redirects=True)
+        
+        images = []
+        if response.status_code == 200:
             img_urls = re.findall(r'murl":"([^"]+\.jpg)"', response.text)
             
-            # Scarica max 3 immagini
             for img_url in img_urls[:3]:
                 try:
                     img_response = httpx.get(img_url, timeout=3, headers=headers)
@@ -121,36 +133,26 @@ def search_product_images(product_name, azienda_nome=""):
                         images.append(img_base64)
                 except:
                     pass
-        except:
-            pass
         
         return images
-    
-    except Exception as e:
-        print(f"Errore ricerca immagini: {e}")
+    except:
         return []
 
 def extract_product_names(answer_text):
-    """
-    Estrae nomi di prodotti dalla risposta.
-    Cerca pattern tipo "Rubinetto Gessi [nome]", "Modello [XXX]", etc.
-    """
+    """Estrae nomi prodotti dalla risposta."""
     products = []
     
-    # Pattern 1: "Rubinetto Gessi XYZ"
     gessi_pattern = r'Rubinetto\s+Gessi\s+([^\n,\.]+)'
     products.extend(re.findall(gessi_pattern, answer_text, re.IGNORECASE))
     
-    # Pattern 2: "Modello ABC"
     model_pattern = r'[Mm]odello\s+([A-Z0-9\-]+)'
     products.extend(re.findall(model_pattern, answer_text))
     
-    # Pattern 3: "Gessi [nome prodotto]"
     azienda_pattern = r'(Gessi|Grohe|Hansgrohe|Ideal Standard|Duravit|Villeroy)\s+([A-Za-z0-9\s\-]+?)(?:[,\.\n]|$)'
     matches = re.findall(azienda_pattern, answer_text, re.IGNORECASE)
     products.extend([f"{m[0]} {m[1]}" for m in matches])
     
-    return list(set(products))[:3]  # Max 3 prodotti
+    return list(set(products))[:3]
 
 @app.route('/')
 def index():
@@ -415,7 +417,7 @@ def index():
         <div class="main">
             <div class="header">
                 <h1>🔮 Oracolo Covolo</h1>
-                <p>Consulente Intelligente + Auto Image Search</p>
+                <p>Consulente + Auto Web Search</p>
             </div>
             
             <div class="chat-area">
@@ -436,7 +438,7 @@ def index():
     </div>
     
     <script>
-        let webEnabled = false;
+        let webEnabled = true;
         let selectedAziende = [];
         
         async function loadAziende() {
@@ -514,11 +516,6 @@ def index():
         }
         
         async function sendQuestion() {
-            if (selectedAziende.length === 0) {
-                alert('Seleziona azienda!');
-                return;
-            }
-            
             const input = document.getElementById('question');
             const question = input.value.trim();
             if (!question) return;
@@ -567,15 +564,13 @@ def index():
         }
         
         async function uploadFile(input) {
-            if (selectedAziende.length === 0) {
-                alert('Seleziona azienda!');
-                return;
-            }
-            
             const files = Array.from(input.files);
             const formData = new FormData();
             files.forEach(f => formData.append('files', f));
-            formData.append('azienda_ids', selectedAziende.join(','));
+            
+            if (selectedAziende.length > 0) {
+                formData.append('azienda_ids', selectedAziende.join(','));
+            }
             
             try {
                 await fetch('/api/upload', { method: 'POST', body: formData });
@@ -628,8 +623,8 @@ def index():
 def get_aziende():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('SELECT id, nome, categoria FROM aziende ORDER BY nome')
-    aziende = [{"id": str(row[0]), "nome": row[1], "categoria": row[2]} for row in c.fetchall()]
+    c.execute('SELECT id, nome FROM aziende ORDER BY nome')
+    aziende = [{"id": str(row[0]), "nome": row[1]} for row in c.fetchall()]
     conn.close()
     return jsonify({"aziende": aziende})
 
@@ -682,6 +677,9 @@ def delete_preset(nome):
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
     azienda_ids = request.args.get('azienda_ids', '').split(',')
+    if not azienda_ids or azienda_ids == ['']:
+        return jsonify({"documents": []})
+    
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
@@ -698,6 +696,8 @@ def upload():
     
     files = request.files.getlist('files')
     azienda_ids = request.form.get('azienda_ids', '').split(',')
+    if not azienda_ids or azienda_ids == ['']:
+        azienda_ids = ['1']
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -745,36 +745,53 @@ def ask():
     data = request.get_json()
     question = (data.get('question') or "").strip()
     azienda_ids = data.get('azienda_ids', [])
-    use_web = data.get('use_web', False)
+    use_web = data.get('use_web', True)  # Default TRUE
     
-    if not question or not azienda_ids:
-        return jsonify({"answer": "Errore: dati mancanti", "images": []})
+    if not question:
+        return jsonify({"answer": "Domanda vuota", "images": []})
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    placeholders = ','.join('?' * len(azienda_ids))
-    c.execute(f'SELECT filename, content FROM documents WHERE azienda_id IN ({placeholders})', azienda_ids)
-    docs = c.fetchall()
+    # Cerca documenti
+    docs = []
+    if azienda_ids:
+        placeholders = ','.join('?' * len(azienda_ids))
+        c.execute(f'SELECT filename, content FROM documents WHERE azienda_id IN ({placeholders})', azienda_ids)
+        docs = c.fetchall()
     
-    c.execute('SELECT nome FROM aziende WHERE id IN ({})'.format(placeholders), azienda_ids)
-    aziende_names = [row[0] for row in c.fetchall()]
+    c.execute('SELECT nome FROM aziende WHERE id IN ({})'.format(','.join('?' * len(azienda_ids)) if azienda_ids else '""'))
+    aziende_names = [row[0] for row in c.fetchall()] if azienda_ids else []
     conn.close()
     
-    if not docs:
-        return jsonify({"answer": "Nessun documento trovato.", "images": []})
-    
-    doc_context = "\n".join([f"📄 {doc[0]}:\n{doc[1][:300]}" for doc in docs[:2]])
-    
-    prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
+    # Se ha documenti, usa quelli
+    if docs:
+        doc_context = "\n".join([f"📄 {doc[0]}:\n{doc[1][:300]}" for doc in docs[:2]])
+        
+        prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
 
-DOCUMENTI:
+DOCUMENTI AZIENDA:
 {doc_context}
 
 DOMANDA: {question}
 
-Rispondi come consulente. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO/NOME PRODOTTO."""
+Rispondi basandoti sui documenti. Se suggerisci prodotti, includi NOME e MODELLO."""
+    
+    # ALTRIMENTI usa web automaticamente
+    else:
+        web_content = search_web_bing(question)
+        if not web_content:
+            web_content = "No web content found"
+        
+        prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
 
+RICERCA WEB:
+{web_content}
+
+DOMANDA: {question}
+
+Rispondi da esperto, basandoti sulla ricerca web. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO."""
+    
     try:
         response = httpx.post(
             DEEPSEEK_API_URL,
@@ -794,7 +811,7 @@ Rispondi come consulente. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO
         if response.status_code == 200:
             answer = response.json()["choices"][0]["message"]["content"]
             
-            # NUOVO: Ricerca automatica immagini prodotti
+            # Ricerca automatica immagini prodotti
             products = extract_product_names(answer)
             images = []
             
@@ -804,7 +821,7 @@ Rispondi come consulente. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO
             
             return jsonify({"answer": answer, "images": images[:5]})
         else:
-            return jsonify({"answer": "Errore risposta", "images": []})
+            return jsonify({"answer": "Errore risposta API", "images": []})
     
     except Exception as e:
         return jsonify({"answer": f"Errore: {str(e)}", "images": []})
