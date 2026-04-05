@@ -82,6 +82,45 @@ def add_azienda():
         conn.close()
         return jsonify({"error": str(e)}), 400
 
+def parse_excel_to_text(base64_content, filename):
+    """Converte Excel/CSV da base64 in testo leggibile da DeepSeek"""
+    try:
+        import io
+        # Rimuove il prefisso data:...;base64,
+        if ',' in base64_content:
+            base64_content = base64_content.split(',', 1)[1]
+        raw = base64.b64decode(base64_content)
+        
+        if filename.lower().endswith('.csv'):
+            import csv
+            text = raw.decode('utf-8', errors='replace')
+            reader = csv.reader(io.StringIO(text))
+            rows = list(reader)
+        else:
+            # Excel
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+            ws = wb.active
+            rows = []
+            for row in ws.iter_rows(values_only=True):
+                if any(cell is not None for cell in row):
+                    rows.append([str(cell) if cell is not None else '' for cell in row])
+        
+        if not rows:
+            return None
+        
+        # Converti in testo tabellare leggibile
+        lines = []
+        headers = rows[0] if rows else []
+        lines.append(' | '.join(str(h) for h in headers))
+        lines.append('-' * 80)
+        for row in rows[1:]:
+            lines.append(' | '.join(str(c) for c in row))
+        
+        return '\n'.join(lines)
+    except Exception as e:
+        return None
+
 @app.route('/api/upload-document', methods=['POST'])
 def upload_document():
     data = request.get_json()
@@ -90,6 +129,16 @@ def upload_document():
     brand = data.get('brand', '')
     visibility = data.get('visibility', 'public')
     access_code = data.get('access_code', '')
+    
+    # Se è un Excel/CSV, converti in testo leggibile
+    is_tabular = '[EXCEL]' in filename or filename.lower().endswith(('.xlsx','.xls','.csv'))
+    if is_tabular:
+        parsed = parse_excel_to_text(content, filename.replace(' [EXCEL]',''))
+        if parsed:
+            content = f"[LISTINO PRODOTTI - {filename}]\n\n{parsed}"
+        else:
+            return jsonify({"error": "Impossibile leggere il file Excel. Verifica che non sia corrotto."}), 400
+    
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
