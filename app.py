@@ -661,12 +661,21 @@ def index():
             
             const html = filtered.map(brand => `
                 <div class="brand-item ${selectedBrands.includes(brand) ? 'selected' : ''}" 
-                     onclick="toggleBrand('${brand}')">
+                     data-brand="${brand}">
                     ${brand}
                 </div>
             `).join('');
             
-            document.getElementById('brand-list').innerHTML = html;
+            const container = document.getElementById('brand-list');
+            container.innerHTML = html;
+            
+            // Event delegation - click su items
+            container.querySelectorAll('.brand-item').forEach(item => {
+                item.addEventListener('click', function() {
+                    const brand = this.getAttribute('data-brand');
+                    toggleBrand(brand);
+                });
+            });
         }
         
         function filterBrandList() {
@@ -703,11 +712,19 @@ def index():
                 container.innerHTML = '<span style="font-size: 11px; color: #9ca3af;">Nessun brand selezionato</span>';
             } else {
                 container.innerHTML = selectedBrands.map(brand => `
-                    <div class="brand-badge">
+                    <div class="brand-badge" data-brand="${brand}">
                         ${brand}
-                        <button onclick="removeBrand('${brand}')">✕</button>
+                        <button class="remove-brand-btn">✕</button>
                     </div>
                 `).join('');
+                
+                // Event delegation per remove button
+                container.querySelectorAll('.remove-brand-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const brand = this.parentElement.getAttribute('data-brand');
+                        removeBrand(brand);
+                    });
+                });
             }
         }
         
