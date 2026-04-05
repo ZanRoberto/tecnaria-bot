@@ -648,7 +648,7 @@ def index():
             try {
                 const res = await fetch('/api/aziende');
                 const data = await res.json();
-                allBrands = data.items.map(item => item.nome);
+                allBrands = data.aziende.map(item => item.nome);
                 renderBrandList();
             } catch (e) {
                 console.error('Errore caricamento brand:', e);
