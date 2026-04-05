@@ -295,7 +295,7 @@ button:hover { background: #2563eb; }
 </div>
 
 <script>
-const BRANDS = ''' + brands_json + ''';
+const BRANDS = JSON.parse(''' + brands_json + ''');
 let selectedBrands = [];
 let webEnabled = true;
 let accessCode = null;
