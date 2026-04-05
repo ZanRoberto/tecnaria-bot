@@ -301,12 +301,14 @@ let webEnabled = true;
 let accessCode = null;
 let accessLevel = "public";
 let groups = JSON.parse(localStorage.getItem('oracolo_groups')) || {};
+let brandsLoaded = false; // TRACKING!
 
 // Carica brand dal backend
 fetch('/api/get-brands')
     .then(r => r.json())
     .then(data => {
         BRANDS = data.brands || [];
+        brandsLoaded = true; // ✅ CARICATI!
         console.log("✅ App caricata - " + BRANDS.length + " brand dal backend");
     })
     .catch(e => {
@@ -325,6 +327,7 @@ fetch('/api/get-brands')
             "Sichenia", "Simas", "Schlüter Systems", "SDR", "Sterneldesign", "Stüv",
             "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires",
             "Tubes", "Valdama", "Vismara Vetro", "Wedi"];
+        brandsLoaded = true; // ✅ FALLBACK CARICATO!
         console.log("✅ App caricata - " + BRANDS.length + " brand (FALLBACK)");
     });
 
@@ -439,6 +442,10 @@ function loadAziende() {
 // FINE GRUPPI
 
 function toggleDropdown() {
+    if (!brandsLoaded) { 
+        alert('⏳ Brand in caricamento... aspetta un momento!'); 
+        return; 
+    }
     const dd = document.getElementById('brand-dropdown');
     dd.classList.toggle('show');
     if (dd.classList.contains('show')) {
@@ -527,7 +534,7 @@ function uploadFile(brand, visibility, access_code, fileInput) {
     
     const reader = new FileReader();
     reader.onload = function(e) {
-        const content = e.target.result;
+        const content = e.target.result; // Base64
         
         fetch('/api/upload-document', {
             method: 'POST',
@@ -537,13 +544,14 @@ function uploadFile(brand, visibility, access_code, fileInput) {
                 content: content,
                 brand: brand,
                 visibility: visibility,
-                access_code: access_code || null
+                access_code: access_code || null,
+                file_type: file.type || 'application/octet-stream'
             })
         })
         .then(r => r.json())
         .then(data => {
             if (data.ok) {
-                alert('✅ Documento caricato nel cassetto ' + brand);
+                alert('✅ Documento caricato nel cassetto ' + brand + '\nFile: ' + file.name);
                 closeUploadModal();
                 loadDocuments();
             } else {
@@ -552,7 +560,7 @@ function uploadFile(brand, visibility, access_code, fileInput) {
         })
         .catch(e => alert('❌ Errore upload: ' + e));
     };
-    reader.readAsText(file);
+    reader.readAsDataURL(file); // Legge come Base64!
 }
 
 function closeUploadModal() {
