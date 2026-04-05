@@ -252,6 +252,13 @@ button:hover { background: #2563eb; }
 <h3>📊 Gruppi Salvati</h3>
 <div id="groups-list" style="max-height: 150px; overflow-y: auto;"></div>
 
+<h3>📋 Gestisci Aziende Custom</h3>
+<div style="display: flex; gap: 6px; margin-bottom: 10px;">
+<input type="text" id="new-azienda" placeholder="Nuova azienda..." style="flex: 1; padding: 6px; font-size: 11px; background: rgba(15,23,46,0.8); border: 1px solid rgba(59,130,245,0.3); color: #e0e0e0; border-radius: 4px;">
+<button onclick="addAzienda()" style="padding: 6px 10px; font-size: 11px; background: #10b981;">➕</button>
+</div>
+<div id="aziende-list" style="max-height: 120px; overflow-y: auto; font-size: 11px;"></div>
+
 <div class="access-section">
 <h3 style="margin-top: 0; font-size: 11px;">🔐 Accesso Privato</h3>
 <input type="password" id="access-code" placeholder="Codice accesso..." style="width: 100%; padding: 6px; font-size: 11px; margin-bottom: 6px;">
@@ -337,7 +344,55 @@ function updateGroupAdd(groupName) {
     alert('✅ Gruppo aggiornato! Aggiunti: ' + newBrands.join(', '));
 }
 
-function loadGroups() {
+// AZIENDE CUSTOM FUNCTIONS
+function addAzienda() {
+    const nome = document.getElementById('new-azienda').value.trim();
+    if (!nome) { alert('Inserisci nome azienda'); return; }
+    
+    fetch('/api/add-azienda', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({nome: nome})
+    }).then(() => {
+        document.getElementById('new-azienda').value = '';
+        loadAziende();
+        alert('✅ Azienda aggiunta!');
+    }).catch(e => alert('❌ Errore: ' + e));
+}
+
+function deleteAzienda(id) {
+    if (confirm('Elimina azienda?')) {
+        fetch('/api/delete-azienda/' + id, {method: 'DELETE'})
+            .then(() => loadAziende())
+            .catch(e => alert('❌ Errore: ' + e));
+    }
+}
+
+function loadAziende() {
+    fetch('/api/aziende')
+        .then(r => r.json())
+        .then(data => {
+            const container = document.getElementById('aziende-list');
+            if (!data.aziende || data.aziende.length === 0) {
+                container.innerHTML = '<div style="color: #9ca3af;">Nessuna azienda custom</div>';
+                return;
+            }
+            
+            const html = data.aziende.map(az => `
+                <div style="background: rgba(59,130,245,0.1); padding: 6px; margin-bottom: 4px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
+                    <span>${az.nome}</span>
+                    <button onclick="deleteAzienda(${az.id})" style="padding: 2px 6px; font-size: 10px; background: #ef4444; border: none; color: white; border-radius: 3px; cursor: pointer;">✕</button>
+                </div>
+            `).join('');
+            
+            container.innerHTML = html;
+        })
+        .catch(e => console.error('Errore caricamento aziende:', e));
+}
+
+// FINE AZIENDE
+
+
     const container = document.getElementById('groups-list');
     if (Object.keys(groups).length === 0) {
         container.innerHTML = '<div style="font-size: 11px; color: #9ca3af; padding: 6px;">Nessun gruppo</div>';
@@ -477,8 +532,57 @@ async function sendQuestion() {
 
 console.log("✅ JavaScript caricato");
 loadGroups();
+loadAziende();
 </script>
 </body></html>''')
+
+@app.route('/api/aziende', methods=['GET'])
+def get_aziende():
+    """Ritorna lista aziende (custom + seed)"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, nome FROM aziende ORDER BY nome')
+    aziende = [{"id": row[0], "nome": row[1]} for row in c.fetchall()]
+    conn.close()
+    return jsonify({"aziende": aziende})
+
+@app.route('/api/add-azienda', methods=['POST'])
+def add_azienda():
+    """Aggiungi azienda custom"""
+    data = request.get_json()
+    nome = data.get('nome', '').strip()
+    
+    if not nome:
+        return jsonify({"error": "Nome richiesto"}), 400
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('INSERT INTO aziende (nome) VALUES (?)', (nome,))
+        conn.commit()
+        result = {"ok": True, "nome": nome}
+    except Exception as e:
+        result = {"error": str(e)}
+    finally:
+        conn.close()
+    
+    return jsonify(result)
+
+@app.route('/api/delete-azienda/<int:azienda_id>', methods=['DELETE'])
+def delete_azienda(azienda_id):
+    """Elimina azienda"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('DELETE FROM aziende WHERE id = ?', (azienda_id,))
+        conn.commit()
+        result = {"ok": True}
+    except Exception as e:
+        result = {"error": str(e)}
+    finally:
+        conn.close()
+    
+    return jsonify(result)
 
 @app.route('/api/ask', methods=['POST'])
 def ask():
