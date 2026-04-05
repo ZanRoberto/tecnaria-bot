@@ -442,14 +442,21 @@ function loadAziende() {
 // FINE GRUPPI
 
 function toggleDropdown() {
-    if (!brandsLoaded) { 
+    console.log("🔽 Dropdown clicked - BRANDS length:", BRANDS.length, "- brandsLoaded:", brandsLoaded);
+    
+    if (BRANDS.length === 0) { 
         alert('⏳ Brand in caricamento... aspetta un momento!'); 
+        console.error("❌ BRANDS vuoto!");
         return; 
     }
+    
     const dd = document.getElementById('brand-dropdown');
     dd.classList.toggle('show');
+    console.log("Dropdown now:", dd.classList.contains('show') ? 'OPEN' : 'CLOSED');
+    
     if (dd.classList.contains('show')) {
         filterBrands();
+        console.log("filterBrands called - brands-list innerHTML length:", document.getElementById('brands-list').innerHTML.length);
         setTimeout(() => document.getElementById('brand-search').focus(), 100);
     }
 }
