@@ -136,19 +136,35 @@ def deepseek_ask(prompt, selected_brands):
         brands_context = ", ".join(selected_brands) if selected_brands else "Covolo"
         full_prompt = f"""Sei consulente esperto arredo bagno per: {brands_context}
 
-{prompt}
+DOMANDA CLIENTE: {prompt}
 
-Rispondi SOLO per questi brand. Se la domanda riguarda altri brand, rispondi: 'Posso aiutarti solo con {brands_context}'"""
+ISTRUZIONI:
+- Rispondi come esperto per i brand selezionati
+- Fornisci consigli specifici e utili
+- Sii conciso e pratico
+- Se serve, cita le caratteristiche positive di questi brand
+
+RISPOSTA:"""
+        
+        print(f"[DEBUG] Calling DeepSeek with key: {DEEPSEEK_API_KEY[:20]}...")
+        print(f"[DEBUG] Brands: {brands_context}")
         
         resp = httpx.post(DEEPSEEK_API_URL,
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "deepseek-chat", "messages": [{"role": "user", "content": full_prompt}], "temperature": 0.5, "max_tokens": 800},
-            timeout=15)
+            json={"model": "deepseek-chat", "messages": [{"role": "user", "content": full_prompt}], "temperature": 0.7, "max_tokens": 1000},
+            timeout=20)
+        
+        print(f"[DEBUG] DeepSeek status: {resp.status_code}")
         
         if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"]
-    except:
-        pass
+            result = resp.json()["choices"][0]["message"]["content"]
+            print(f"[DEBUG] DeepSeek response: {result[:100]}...")
+            return result
+        else:
+            print(f"[DEBUG] DeepSeek error: {resp.status_code} - {resp.text[:200]}")
+    except Exception as e:
+        print(f"[DEBUG] Exception in deepseek_ask: {str(e)}")
+    
     return None
 
 @app.route('/')
@@ -331,14 +347,20 @@ def ask():
     if not selected_brands:
         return jsonify({"answer": "❌ Seleziona almeno 1 brand!"})
     
+    print(f"\n[REQUEST] Question: {q}")
+    print(f"[REQUEST] Brands: {selected_brands}")
+    print(f"[REQUEST] Web: {use_web}")
+    
     # Ricerca nei documenti (GUARDRAIL: solo brand selezionati)
     doc_match, doc_brand = search_documents(q, selected_brands)
-    doc_text = f"[DOC: {doc_match[0]}] {doc_match[1]}" if doc_match else None
+    doc_text = f"[DOC: {doc_match[0]}] {doc_match[1][:300]}" if doc_match else None
+    print(f"[SEARCH] Documents found: {doc_text is not None}")
     
     # Ricerca web (GUARDRAIL: solo brand selezionati)
     web_text = None
     if use_web:
         web_text, _ = search_web(q, selected_brands)
+        print(f"[SEARCH] Web found: {web_text is not None}")
     
     # Genera risposta
     brands_str = ", ".join(selected_brands)
@@ -348,15 +370,21 @@ def ask():
     if web_text:
         context += f"\nWEB:\n{web_text}"
     
-    prompt = f"""Domanda: {q}
-Brand selezionati (GUARDRAIL): {brands_str}
+    prompt = f"""Domanda del cliente: {q}
+
+Brand di riferimento (GUARDRAIL): {brands_str}
 {context}
 
-Rispondi SOLO per i brand selezionati. Se la domanda non riguarda questi brand, rispondi: 'Posso aiutarti solo con {brands_str}'"""
+Rispondi come esperto di arredo bagno per questi brand. Sii pratico e utile. La risposta deve essere DIVERSA dalla domanda."""
     
+    print(f"[DEEPSEEK] Calling with prompt...")
     answer = deepseek_ask(prompt, selected_brands)
+    
     if not answer:
-        answer = f"Consiglio su {q} per {brands_str}"
+        print(f"[FALLBACK] DeepSeek failed, using fallback")
+        answer = f"🏢 Consiglio per {brands_str}:\n\nSu {q}, questi brand offrono soluzioni di qualità. Ti consiglio di contattarci per una consulenza personalizzata basata sulla domanda specifica."
+    
+    print(f"[RESPONSE] Answer: {answer[:100]}...")
     
     return jsonify({
         "answer": answer,
