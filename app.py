@@ -1,41 +1,36 @@
 """
-ORACOLO COVOLO - CON WEB TOGGLE
-================================
-CRUD Aziende + Product Images + Web Toggle ON/OFF
+ORACOLO COVOLO - VERSIONE RISOLTA
 """
-
-import os
-import json
-import sqlite3
-import base64
-import re
+import os, sqlite3, base64, re, json
 from datetime import datetime
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, send_file
 import httpx
 from urllib.parse import quote
-
-from macrorule_engine import MacroruleEngine
-from narrator_system import NarratorSystem
+from io import BytesIO
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
-UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
-IMAGES_DIR = os.path.join(DATA_DIR, "product_images")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
-MACRORULE_FILE = os.path.join(BASE_DIR, "macroregole_covolo_universe.json")
+
+os.makedirs(DATA_DIR, exist_ok=True)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
 
-os.makedirs(UPLOADS_DIR, exist_ok=True)
-os.makedirs(IMAGES_DIR, exist_ok=True)
-os.makedirs(DATA_DIR, exist_ok=True)
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('CREATE TABLE IF NOT EXISTS aziende (id INTEGER PRIMARY KEY, nome TEXT UNIQUE)')
+    c.execute('CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, content TEXT, azienda_id INTEGER)')
+    c.execute('CREATE TABLE IF NOT EXISTS product_images (id INTEGER PRIMARY KEY, product_name TEXT, azienda_id INTEGER, image_base64 TEXT)')
+    c.execute('CREATE TABLE IF NOT EXISTS presets (id INTEGER PRIMARY KEY, nome TEXT UNIQUE, azienda_ids TEXT)')
+    conn.commit()
+    conn.close()
 
-macrorule_engine = MacroruleEngine(MACRORULE_FILE)
-narrator = NarratorSystem()
+init_db()
+app = Flask(__name__)
 
-COVOLO_BRANDS = [
+BRANDS = [
     "Artesia", "Ariostea", "Madegan", "Tonalite", "Gruppo Bardelli",
     "Schlüter Systems", "Murexin", "BGP", "Gridiron", "Cerasarda",
     "Gigacer", "FAP Ceramiche", "Caesar", "Cottodeste", "Piastrelle d'Arredo",
@@ -53,1346 +48,222 @@ COVOLO_BRANDS = [
     "Sterneldesign", "Sunshower Wellness"
 ]
 
-def init_covolo_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS aziende
-                 (id INTEGER PRIMARY KEY,
-                  nome TEXT UNIQUE,
-                  sito TEXT,
-                  categoria TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS documents
-                 (id INTEGER PRIMARY KEY,
-                  filename TEXT UNIQUE,
-                  content TEXT,
-                  azienda_id INTEGER,
-                  upload_date TIMESTAMP)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS product_images
-                 (id INTEGER PRIMARY KEY,
-                  product_name TEXT,
-                  azienda_id INTEGER,
-                  image_base64 TEXT,
-                  filename TEXT,
-                  upload_date TIMESTAMP)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS queries
-                 (id INTEGER PRIMARY KEY,
-                  question TEXT,
-                  answer TEXT,
-                  azienda_ids TEXT,
-                  timestamp TIMESTAMP)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS presets
-                 (id INTEGER PRIMARY KEY,
-                  nome TEXT UNIQUE,
-                  azienda_ids TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    conn.commit()
-    
-    # SEED BRANDS - carica solo se vuota
-    c.execute('SELECT COUNT(*) FROM aziende')
-    count = c.fetchone()[0]
-    
-    if count == 0:
-        # Prima volta - carica tutti i brand
-        for brand in COVOLO_BRANDS:
-            try:
-                c.execute('INSERT INTO aziende (nome) VALUES (?)', (brand,))
-            except:
-                pass
-        conn.commit()
-    
-    conn.close()
-
-init_covolo_db()
-app = Flask(__name__)
-
-def search_catalog_images(product_name, azienda_id):
-    """Cerca immagini nel catalogo."""
+def search_web(q):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        search_term = product_name.lower().strip()
-        
-        c.execute('''SELECT image_base64 FROM product_images 
-                     WHERE azienda_id = ? AND 
-                     LOWER(product_name) LIKE ?
-                     LIMIT 5''',
-                  (azienda_id, f'%{search_term}%'))
-        
-        results = c.fetchall()
-        conn.close()
-        
-        return [row[0] for row in results]
-    except:
-        return []
-
-def search_web_bing(query):
-    """Cerca su Bing."""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        url = f"https://www.bing.com/search?q={quote(query)}"
-        response = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
-        
-        if response.status_code == 200:
-            snippets = re.findall(r'<p[^>]*>(.*?)</p>', response.text)
-            cleaned = []
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        url = f"https://www.bing.com/search?q={quote(q)}"
+        resp = httpx.get(url, headers=headers, timeout=10)
+        text = ""
+        if resp.status_code == 200:
+            snippets = re.findall(r'<p[^>]*>(.*?)</p>', resp.text)
             for s in snippets[:5]:
-                text = re.sub(r'<[^>]+>', '', s)
-                if len(text) > 50:
-                    cleaned.append(text)
-            
-            return " ".join(cleaned[:3])
-        return ""
+                clean = re.sub(r'<[^>]+>', '', s).strip()
+                if len(clean) > 40: text += clean + " "
+        return text[:500] if text else None
     except:
-        return ""
+        return None
 
-def extract_product_names(answer_text):
-    """Estrae nomi prodotti dalla risposta."""
-    products = []
-    
-    gessi_pattern = r'Gessi\s*(\d+[A-Z]*)'
-    products.extend([f"Gessi{m}" for m in re.findall(gessi_pattern, answer_text, re.IGNORECASE)])
-    
-    model_pattern = r'[Mm]odello\s+([A-Z0-9\-]+)'
-    products.extend(re.findall(model_pattern, answer_text))
-    
-    azienda_pattern = r'(Gessi|Grohe|Hansgrohe|Ideal Standard|Duravit|Villeroy|[A-Za-z\s]+)\s+([A-Za-z0-9\s\-]+?)(?:[,\.\n]|$)'
-    matches = re.findall(azienda_pattern, answer_text, re.IGNORECASE)
-    products.extend([f"{m[0]} {m[1]}".strip() for m in matches])
-    
-    return list(set(products))[:5]
+def deepseek_ask(prompt):
+    try:
+        resp = httpx.post(DEEPSEEK_API_URL,
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.5, "max_tokens": 800},
+            timeout=15)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"]
+    except:
+        pass
+    return None
 
 @app.route('/')
 def index():
-    html = """
-<!DOCTYPE html>
-<html lang="it">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Oracolo Covolo</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #0f172e 0%, #1a1f3a 100%);
-            color: #e0e0e0;
-            min-height: 100vh;
-            display: flex;
-        }
-        .container { display: flex; width: 100%; height: 100vh; }
-        .sidebar {
-            width: 340px;
-            background: rgba(15, 23, 46, 0.8);
-            border-right: 1px solid rgba(59, 130, 245, 0.2);
-            padding: 20px;
-            overflow-y: auto;
-        }
-        .main {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-        .header {
-            background: rgba(59, 130, 245, 0.1);
-            border-bottom: 1px solid rgba(59, 130, 245, 0.2);
-            padding: 20px;
-            text-align: center;
-        }
-        .header h1 { color: #3b82f6; font-size: 28px; }
-        .header p { color: #9ca3af; font-size: 13px; }
-        .actions-bar {
-            background: rgba(59, 130, 245, 0.05);
-            border-bottom: 1px solid rgba(59, 130, 245, 0.2);
-            padding: 10px 20px;
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-        }
-        .action-btn {
-            background: #10b981;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        .action-btn:hover { background: #059669; }
-        .action-btn.disabled { background: #6b7280; cursor: not-allowed; }
-        .search-filter {
-            margin-bottom: 10px;
-            padding: 8px;
-            background: rgba(30, 41, 59, 0.8);
-            border: 1px solid rgba(59, 130, 245, 0.3);
-            border-radius: 4px;
-            color: #e0e0e0;
-            font-size: 12px;
-        }
-        .brand-selector-btn {
-            background: #3b82f6;
-            color: white;
-            border: none;
-            padding: 10px 15px;
-            border-radius: 6px;
-            cursor: pointer;
-            width: 100%;
-            margin-bottom: 10px;
-            font-weight: 600;
-        }
-        .brand-selector-btn:hover { background: #2563eb; }
-        .brand-dropdown {
-            background: rgba(30, 41, 59, 0.95);
-            border: 1px solid rgba(59, 130, 245, 0.5);
-            border-radius: 6px;
-            padding: 10px;
-            margin-bottom: 10px;
-            max-height: 250px;
-            overflow-y: auto;
-            display: none;
-        }
-        .brand-dropdown.show { display: block; }
-        .brand-search {
-            width: 100%;
-            padding: 8px;
-            background: rgba(15, 23, 46, 0.8);
-            border: 1px solid rgba(59, 130, 245, 0.3);
-            border-radius: 4px;
-            color: #e0e0e0;
-            margin-bottom: 10px;
-            font-size: 12px;
-        }
-        .brand-list {
-            max-height: 200px;
-            overflow-y: auto;
-        }
-        .brand-item {
-            padding: 8px;
-            cursor: pointer;
-            border-radius: 4px;
-            font-size: 12px;
-            margin-bottom: 4px;
-        }
-        .brand-item:hover { background: rgba(59, 130, 245, 0.3); }
-        .brand-item.selected { background: #10b981; color: white; }
-        .selected-brands {
-            background: rgba(59, 130, 245, 0.1);
-            padding: 8px;
-            border-radius: 4px;
-            margin-bottom: 10px;
-            min-height: 30px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            align-items: center;
-        }
-        .brand-badge {
-            background: #10b981;
-            color: white;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .brand-badge button {
-            background: transparent;
-            color: white;
-            border: none;
-            cursor: pointer;
-            padding: 0;
-            font-size: 12px;
-        }
-        .chat-area {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            padding: 20px;
-            overflow-y: auto;
-        }
-        .messages { flex: 1; overflow-y: auto; margin-bottom: 20px; }
-        .message {
-            margin-bottom: 15px;
-            padding: 12px 15px;
-            border-radius: 8px;
-            max-width: 85%;
-            word-wrap: break-word;
-            line-height: 1.4;
-        }
-        .bot-message {
-            background: rgba(59, 130, 245, 0.2);
-            border-left: 3px solid #3b82f6;
-        }
-        .user-message {
-            background: rgba(168, 85, 247, 0.2);
-            border-left: 3px solid #a855f7;
-            margin-left: auto;
-        }
-        .image-gallery {
-            margin-top: 10px;
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-            gap: 8px;
-        }
-        .image-item {
-            border-radius: 8px;
-            overflow: hidden;
-            border: 2px solid rgba(16, 185, 129, 0.5);
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        .image-item:hover { transform: scale(1.05); }
-        .image-item img {
-            width: 100%;
-            height: 120px;
-            object-fit: cover;
-        }
-        .loading-spinner {
-            display: inline-block;
-            width: 16px;
-            height: 16px;
-            border: 2px solid rgba(59, 130, 245, 0.3);
-            border-top: 2px solid #3b82f6;
-            border-radius: 50%;
-            animation: spin 0.6s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        
-        .input-area {
-            display: flex;
-            gap: 10px;
-        }
-        input {
-            flex: 1;
-            background: rgba(30, 41, 59, 0.8);
-            border: 1px solid rgba(59, 130, 245, 0.3);
-            color: #e0e0e0;
-            padding: 10px 15px;
-            border-radius: 6px;
-            font-size: 14px;
-        }
-        button {
-            background: #3b82f6;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: 500;
-        }
-        button:hover { background: #2563eb; }
-        .sidebar h3 {
-            color: #3b82f6;
-            margin-top: 20px;
-            margin-bottom: 12px;
-            font-size: 13px;
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-        .sidebar h3:first-child { margin-top: 0; }
-        
-        .azienda-checkbox {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px;
-            margin-bottom: 6px;
-            background: rgba(59, 130, 245, 0.1);
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 13px;
-        }
-        .azienda-checkbox input {
-            width: 16px;
-            height: 16px;
-            cursor: pointer;
-        }
-        
-        .input-group {
-            display: flex;
-            gap: 6px;
-            margin-bottom: 10px;
-        }
-        .input-group input {
-            flex: 1;
-            font-size: 12px;
-            padding: 6px;
-        }
-        .input-group button {
-            padding: 6px 12px;
-            font-size: 12px;
-            flex: 0 0 auto;
-        }
-        
-        .web-toggle {
-            background: #6b7280;
-            padding: 12px;
-            margin-bottom: 15px;
-            border-radius: 6px;
-            text-align: center;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: background 0.3s;
-        }
-        .web-toggle.on {
-            background: #10b981;
-        }
-        .web-toggle.off {
-            background: #ef4444;
-        }
-        
-        .preset-item {
-            background: rgba(59, 130, 245, 0.15);
-            padding: 8px;
-            border-radius: 4px;
-            margin-bottom: 6px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 12px;
-        }
-        .preset-item button {
-            padding: 2px 8px;
-            font-size: 11px;
-            background: #10b981;
-        }
-        .preset-item button.delete {
-            background: #ef4444;
-        }
-        
-        .file-item {
-            background: rgba(59, 130, 245, 0.1);
-            padding: 8px;
-            margin-bottom: 6px;
-            border-radius: 4px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 12px;
-        }
-        .file-item button {
-            padding: 2px 6px;
-            font-size: 11px;
-            background: #ef4444;
-        }
-        
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: rgba(0,0,0,0.9);
-            z-index: 999;
-            justify-content: center;
-            align-items: center;
-        }
-        .modal.active {
-            display: flex;
-        }
-        .modal-content {
-            position: relative;
-            max-width: 90%;
-            max-height: 90%;
-        }
-        .modal-content img {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-        .modal-close {
-            position: absolute;
-            top: 10px; right: 10px;
-            background: #ef4444;
-            color: white;
-            border: none;
-            padding: 5px 10px;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        
-        /* RESPONSIVE MOBILE */
-        @media (max-width: 768px) {
-            .container { flex-direction: column; }
-            .sidebar { 
-                width: 100%; 
-                height: auto;
-                max-height: 200px;
-                overflow-x: auto;
-                overflow-y: hidden;
-                display: flex;
-                gap: 15px;
-                padding: 10px;
-                border-right: none;
-                border-bottom: 1px solid rgba(59, 130, 245, 0.2);
-            }
-            .sidebar > * { flex-shrink: 0; }
-            .main { flex: 1; }
-            .header h1 { font-size: 20px; }
-            .header p { font-size: 11px; }
-            .message { max-width: 95%; padding: 8px 10px; font-size: 13px; }
-            .input-group { flex-direction: column; gap: 4px; }
-            .input-group input, .input-group button { width: 100%; }
-            .input-area { flex-direction: column; gap: 6px; }
-            .input-area input, .input-area button { width: 100%; }
-            .chat-area { padding: 10px; }
-            .image-gallery { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
-        }
-        
-        @media (max-width: 480px) {
-            .sidebar { 
-                max-height: 150px;
-                padding: 8px;
-            }
-            .header { padding: 15px 10px; }
-            .header h1 { font-size: 18px; }
-            .chat-area { padding: 8px; }
-            .message { font-size: 12px; padding: 6px 8px; margin-bottom: 10px; }
-            .input-area { padding: 0; gap: 4px; }
-            .input-area input { padding: 8px 10px; font-size: 14px; }
-            .input-area button { padding: 8px 12px; font-size: 12px; }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="sidebar">
-            <h3>🏢 SELEZIONA BRAND</h3>
-            <button class="brand-selector-btn" onclick="toggleBrandDropdown()">🔽 AGGIUNGI BRAND</button>
-            
-            <div class="brand-dropdown" id="brand-dropdown">
-                <input type="text" class="brand-search" id="brand-search" placeholder="Ricerca brand..." onkeyup="filterBrandList()">
-                <div class="brand-list" id="brand-list"></div>
-            </div>
-            
-            <div class="selected-brands" id="selected-brands">
-                <span style="font-size: 11px; color: #9ca3af;">Nessun brand selezionato</span>
-            </div>
-            
-            <h3>🌐 Web Search</h3>
-            <div class="web-toggle on" id="web-toggle" onclick="toggleWeb()">
-                🟢 ON
-            </div>
-            
-            <h3>💾 Preset</h3>
-            <div class="input-group">
-                <input type="text" id="preset-name" placeholder="Nome..." style="flex: 1;">
-                <button onclick="savePreset()" style="flex: 0 0 auto; padding: 6px 10px; font-size: 12px;">Salva</button>
-            </div>
-            <div id="presets-list"></div>
-            
-            <h3>🖼️ Immagini Prodotto</h3>
-            <div class="input-group">
-                <input type="text" id="product-name" placeholder="Nome prodotto..." style="flex: 1;">
-                <button onclick="document.getElementById('product-image-input').click()" style="padding: 6px 10px; font-size: 12px;">📤</button>
-                <input type="file" id="product-image-input" hidden accept=".png,.jpg,.jpeg,.gif" onchange="uploadProductImage(this)">
-            </div>
-            <div id="product-images-list"></div>
-            
-            <h3>📁 Documenti</h3>
-            <div style="border: 2px dashed rgba(59, 130, 245, 0.3); padding: 10px; border-radius: 6px; text-align: center; cursor: pointer; margin-bottom: 12px; font-size: 12px;" onclick="document.getElementById('file-input').click()">
-                📤 Carica
-                <input type="file" id="file-input" hidden multiple onchange="uploadFile(this)">
-            </div>
-            <div id="files-list"></div>
-        </div>
-        
-        <div class="main">
-            <div class="header">
-                <h1>🔮 Oracolo Covolo</h1>
-                <p>Consulente Intelligente Arredo Bagno</p>
-            </div>
-            
-            <div class="actions-bar">
-                <button class="action-btn" id="btn-offerta" onclick="generateOfferta()" disabled>📄 OFFERTA</button>
-                <button class="action-btn" id="btn-analisi" onclick="generateAnalisi()" disabled>📊 ANALISI</button>
-                <button class="action-btn" id="btn-proposta" onclick="generateProposta()" disabled>🎯 PROPOSTA</button>
-            </div>
-            
-            <div class="chat-area">
-                <div class="messages" id="messages"></div>
-                <div class="input-area">
-                    <input type="text" id="question" placeholder="Fai una domanda..." onkeypress="if(event.key==='Enter') sendQuestion()">
-                    <button onclick="sendQuestion()">Invia</button>
-                </div>
-            </div>
-        </div>
-    </div>
+    return render_template_string("""<!DOCTYPE html>
+<html lang="it"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Oracolo Covolo</title><style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system; background: linear-gradient(135deg, #0f172e 0%, #1a1f3a 100%); color: #e0e0e0; min-height: 100vh; }
+.container { display: flex; height: 100vh; }
+.sidebar { width: 340px; background: rgba(15,23,46,0.8); border-right: 1px solid rgba(59,130,245,0.2); padding: 20px; overflow-y: auto; }
+.main { flex: 1; display: flex; flex-direction: column; }
+.header { background: rgba(59,130,245,0.1); border-bottom: 1px solid rgba(59,130,245,0.2); padding: 20px; text-align: center; }
+.header h1 { color: #3b82f6; font-size: 28px; }
+.actions-bar { background: rgba(59,130,245,0.05); border-bottom: 1px solid rgba(59,130,245,0.2); padding: 10px 20px; display: flex; gap: 10px; justify-content: center; }
+.action-btn { background: #10b981; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.action-btn:hover { background: #059669; }
+.action-btn.disabled { background: #6b7280; cursor: not-allowed; }
+.chat-area { flex: 1; display: flex; flex-direction: column; padding: 20px; overflow-y: auto; }
+.messages { flex: 1; overflow-y: auto; margin-bottom: 20px; }
+.message { margin-bottom: 15px; padding: 12px 15px; border-radius: 8px; max-width: 88%; word-wrap: break-word; }
+.bot-message { background: rgba(59,130,245,0.2); border-left: 3px solid #3b82f6; }
+.user-message { background: rgba(168,85,247,0.2); border-left: 3px solid #a855f7; margin-left: auto; }
+.input-area { display: flex; gap: 10px; }
+input { flex: 1; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: #e0e0e0; padding: 10px 15px; border-radius: 6px; }
+button { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; }
+.sidebar h3 { color: #3b82f6; margin-top: 20px; margin-bottom: 12px; font-size: 13px; text-transform: uppercase; }
+.sidebar h3:first-child { margin-top: 0; }
+.brand-btn { width: 100%; background: #3b82f6; color: white; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer; font-weight: 600; margin-bottom: 10px; }
+.brand-btn:hover { background: #2563eb; }
+.brand-list { background: rgba(30,41,59,0.95); border: 1px solid rgba(59,130,245,0.5); border-radius: 6px; padding: 10px; max-height: 250px; overflow-y: auto; margin-bottom: 10px; }
+.brand-list input { width: 100%; margin-bottom: 10px; padding: 8px; font-size: 12px; }
+.brand-item { padding: 8px; cursor: pointer; border-radius: 4px; font-size: 12px; margin-bottom: 4px; background: rgba(59,130,245,0.1); }
+.brand-item:hover { background: rgba(59,130,245,0.3); }
+.brand-item.selected { background: #10b981; color: white; }
+.selected-brands { background: rgba(59,130,245,0.1); padding: 8px; border-radius: 4px; margin-bottom: 10px; min-height: 30px; display: flex; flex-wrap: wrap; gap: 6px; }
+.brand-badge { background: #10b981; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; display: flex; gap: 4px; }
+.brand-badge button { background: transparent; color: white; border: none; cursor: pointer; padding: 0; font-size: 12px; }
+</style></head><body>
+<div class="container">
+<div class="sidebar">
+<h3>🏢 Seleziona Brand</h3>
+<button class="brand-btn" id="toggle-btn" onclick="toggleDropdown()">🔽 Aggiungi Brand</button>
+<div id="brand-dropdown" style="display: none;">
+<input type="text" id="search-input" placeholder="Ricerca brand..." onkeyup="filterBrands()">
+<div id="brands-container"></div>
+</div>
+<div class="selected-brands" id="selected-container"><span style="font-size: 11px; color: #9ca3af;">Nessun brand</span></div>
+
+<h3>🌐 Web Search</h3>
+<button style="width: 100%; background: #10b981; padding: 10px; border-radius: 6px; border: none; color: white; cursor: pointer; font-weight: 600;" id="web-btn" onclick="toggleWeb()">🟢 ON</button>
+
+<h3>📁 Documenti</h3>
+<div style="border: 2px dashed rgba(59,130,245,0.3); padding: 10px; border-radius: 6px; text-align: center; cursor: pointer; font-size: 12px;" onclick="document.getElementById('file-input').click()">📤 Carica
+<input type="file" id="file-input" hidden multiple></div>
+</div>
+
+<div class="main">
+<div class="header"><h1>🔮 Oracolo Covolo</h1><p>Consulente Arredo Bagno</p></div>
+<div class="actions-bar">
+<button class="action-btn" id="btn-offerta" onclick="alert('OFFERTA in prep')" disabled>📄 OFFERTA</button>
+<button class="action-btn" id="btn-analisi" onclick="alert('ANALISI in prep')" disabled>📊 ANALISI</button>
+<button class="action-btn" id="btn-proposta" onclick="alert('PROPOSTA in prep')" disabled>🎯 PROPOSTA</button>
+</div>
+<div class="chat-area">
+<div class="messages" id="messages"></div>
+<div class="input-area">
+<input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key==='Enter') sendQuestion()">
+<button onclick="sendQuestion()">Invia</button>
+</div>
+</div>
+</div>
+</div>
+
+<script>
+let selectedBrands = [];
+let allBrands = """ + json.dumps(BRANDS) + """;
+let webEnabled = true;
+
+function toggleDropdown() {
+    const dropdown = document.getElementById('brand-dropdown');
+    dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
+    if (dropdown.style.display === 'block') {
+        renderBrands();
+        document.getElementById('search-input').focus();
+    }
+}
+
+function filterBrands() {
+    renderBrands();
+}
+
+function renderBrands() {
+    const search = document.getElementById('search-input').value.toLowerCase();
+    const filtered = allBrands.filter(b => b.toLowerCase().includes(search));
+    const html = filtered.map(b => 
+        '<div class="brand-item ' + (selectedBrands.includes(b) ? 'selected' : '') + '" onclick="toggleBrand(\'' + b + '\')">' + b + '</div>'
+    ).join('');
+    document.getElementById('brands-container').innerHTML = html;
+}
+
+function toggleBrand(brand) {
+    if (selectedBrands.includes(brand)) {
+        selectedBrands = selectedBrands.filter(b => b !== brand);
+    } else {
+        selectedBrands.push(brand);
+    }
+    updateDisplay();
+}
+
+function removeBrand(brand) {
+    selectedBrands = selectedBrands.filter(b => b !== brand);
+    updateDisplay();
+}
+
+function updateDisplay() {
+    const container = document.getElementById('selected-container');
+    if (selectedBrands.length === 0) {
+        container.innerHTML = '<span style="font-size: 11px; color: #9ca3af;">Nessun brand</span>';
+    } else {
+        container.innerHTML = selectedBrands.map(b =>
+            '<div class="brand-badge">' + b + '<button onclick="removeBrand(\'' + b + '\')">✕</button></div>'
+        ).join('');
+    }
+    renderBrands();
+}
+
+function toggleWeb() {
+    webEnabled = !webEnabled;
+    document.getElementById('web-btn').textContent = webEnabled ? '🟢 ON' : '🔴 OFF';
+}
+
+async function sendQuestion() {
+    const q = document.getElementById('question').value.trim();
+    if (!q) return;
+    const msg = document.getElementById('messages');
+    msg.innerHTML += '<div class="message user-message">' + q + '</div>';
+    document.getElementById('question').value = '';
+    msg.scrollTop = msg.scrollHeight;
     
-    <div class="modal" id="image-modal">
-        <div class="modal-content">
-            <img id="modal-img" src="">
-            <button class="modal-close" onclick="closeModal()">✕</button>
-        </div>
-    </div>
-    
-    <script>
-        let selectedBrands = [];
-        let allBrands = [];
-        let webEnabled = true;
-        
-        // Carica lista brand
-        async function loadBrandList() {
-            try {
-                const res = await fetch('/api/aziende');
-                const data = await res.json();
-                console.log('Dati ricevuti:', data);
-                
-                if (data.aziende && data.aziende.length > 0) {
-                    allBrands = data.aziende.map(item => item.nome).sort();
-                    console.log('Brand caricati:', allBrands.length);
-                    renderBrandList();
-                } else {
-                    console.error('Nessun brand trovato');
-                }
-            } catch (e) {
-                console.error('Errore caricamento brand:', e);
-            }
-        }
-        
-        function renderBrandList() {
-            const search = document.getElementById('brand-search').value.toLowerCase();
-            const filtered = allBrands.filter(b => b.toLowerCase().includes(search));
-            
-            const html = filtered.map(brand => `
-                <div class="brand-item ${selectedBrands.includes(brand) ? 'selected' : ''}" 
-                     data-brand="${brand}">
-                    ${brand}
-                </div>
-            `).join('');
-            
-            const container = document.getElementById('brand-list');
-            container.innerHTML = html;
-            
-            // Event delegation - click su items
-            container.querySelectorAll('.brand-item').forEach(item => {
-                item.addEventListener('click', function() {
-                    const brand = this.getAttribute('data-brand');
-                    toggleBrand(brand);
-                });
-            });
-        }
-        
-        function filterBrandList() {
-            renderBrandList();
-        }
-        
-        function toggleBrandDropdown() {
-            const dropdown = document.getElementById('brand-dropdown');
-            dropdown.classList.toggle('show');
-            if (dropdown.classList.contains('show')) {
-                document.getElementById('brand-search').focus();
-            }
-        }
-        
-        function toggleBrand(brand) {
-            if (selectedBrands.includes(brand)) {
-                selectedBrands = selectedBrands.filter(b => b !== brand);
-            } else {
-                selectedBrands.push(brand);
-            }
-            updateSelectedBrandsDisplay();
-            renderBrandList();
-        }
-        
-        function removeBrand(brand) {
-            selectedBrands = selectedBrands.filter(b => b !== brand);
-            updateSelectedBrandsDisplay();
-            renderBrandList();
-        }
-        
-        function updateSelectedBrandsDisplay() {
-            const container = document.getElementById('selected-brands');
-            if (selectedBrands.length === 0) {
-                container.innerHTML = '<span style="font-size: 11px; color: #9ca3af;">Nessun brand selezionato</span>';
-            } else {
-                container.innerHTML = selectedBrands.map(brand => `
-                    <div class="brand-badge" data-brand="${brand}">
-                        ${brand}
-                        <button class="remove-brand-btn">✕</button>
-                    </div>
-                `).join('');
-                
-                // Event delegation per remove button
-                container.querySelectorAll('.remove-brand-btn').forEach(btn => {
-                    btn.addEventListener('click', function() {
-                        const brand = this.parentElement.getAttribute('data-brand');
-                        removeBrand(brand);
-                    });
-                });
-            }
-        }
-        
-        async function sendQuestion() {
-            const input = document.getElementById('question');
-            const q = input.value.trim();
-            if (!q) return;
-            
-            const msg = document.getElementById('messages');
-            msg.innerHTML += '<div class="message user-message">' + q + '</div>';
-            
-            const load = document.createElement('div');
-            load.className = 'message bot-message';
-            load.innerHTML = '⏳ Ricerca in corso...';
-            msg.appendChild(load);
-            input.value = '';
-            msg.scrollTop = msg.scrollHeight;
-            
-            try {
-                const res = await fetch('/api/ask', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        question: q, 
-                        azienda_ids: selectedBrands,
-                        use_web: webEnabled
-                    })
-                });
-                const data = await res.json();
-                
-                msg.removeChild(load);
-                
-                let escapedAnswer = data.answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-                let msgHtml = `<div class="message bot-message">${escapedAnswer}`;
-                
-                if (data.images && data.images.length > 0) {
-                    msgHtml += '<div class="image-gallery">';
-                    data.images.forEach(img => {
-                        msgHtml += '<div class="image-item" onclick="openModal(' + "'" + 'data:image/jpeg;base64,' + img + "'" + ')"><img src="data:image/jpeg;base64,' + img + '"></div>';
-                    });
-                    msgHtml += '</div>';
-                }
-                
-                if (data.source) {
-                    msgHtml += `<div style="margin-top: 8px; padding: 4px 8px; background: rgba(16, 185, 129, 0.3); border-radius: 4px; font-size: 11px;">${data.source}</div>`;
-                }
-                
-                msgHtml += '</div>';
-                msg.innerHTML += msgHtml;
-                msg.scrollTop = msg.scrollHeight;
-            } catch (e) {
-                msg.removeChild(load);
-                msg.innerHTML += '<div class="message bot-message">❌ Errore: ' + e + '</div>';
-            }
-        }
-        
-        function toggleWeb() {
-        
-        async function deleteAzienda(aziendaId) {
-            if (confirm('Elimina azienda?')) {
-                try {
-                    await fetch(`/api/aziende/${aziendaId}`, { method: 'DELETE' });
-                    loadAziende();
-                    updateSelectedAziende();
-                } catch (e) {
-                    alert('Errore: ' + e);
-                }
-            }
-        }
-        
-        function filterAziende() {
-            const search = document.getElementById('search-aziende').value.toLowerCase();
-            const items = document.querySelectorAll('#aziende-list > div');
-            items.forEach(item => {
-                const text = item.textContent.toLowerCase();
-                item.style.display = text.includes(search) ? 'flex' : 'none';
-            });
-        }
-        
-        function updateActionButtons() {
-            const hasCart = document.querySelectorAll('.cart-item').length > 0;
-            document.getElementById('btn-offerta').disabled = !hasCart;
-            document.getElementById('btn-analisi').disabled = !hasCart;
-            document.getElementById('btn-proposta').disabled = !hasCart;
-        }
-        
-        async function generateOfferta() {
-            const cartItems = [];
-            document.querySelectorAll('.cart-item').forEach(item => {
-                cartItems.push(item.dataset.product);
-            });
-            alert('📄 OFFERTA:\n' + cartItems.join('\n'));
-        }
-        
-        async function generateAnalisi() {
-            alert('📊 ANALISI in preparazione...');
-        }
-        
-        async function generateProposta() {
-            alert('🎯 PROPOSTA in preparazione...');
-        }
-        
-        function toggleWeb() {
-            webEnabled = !webEnabled;
-            const btn = document.getElementById('web-toggle');
-            btn.textContent = webEnabled ? '🟢 ON' : '🔴 OFF';
-            btn.classList.remove(webEnabled ? 'off' : 'on');
-            btn.classList.add(webEnabled ? 'on' : 'off');
-        }
-        
-        function updateSelectedAziende() {
-            selectedAziende = Array.from(document.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.value);
-            loadFiles();
-            loadProductImages();
-            document.getElementById('messages').innerHTML = '';
-        }
-        
-        async function loadPresets() {
-            const response = await fetch('/api/presets');
-            const data = await response.json();
-            const container = document.getElementById('presets-list');
-            
-            container.innerHTML = data.presets.map(preset => `
-                <div class="preset-item">
-                    <span>${preset.nome}</span>
-                    <div style="display: flex; gap: 4px;">
-                        <button onclick="loadPreset(this.parentElement.parentElement.firstElementChild.textContent)" style="background: #10b981;">Carica</button>
-                        <button class="delete" onclick="deletePreset(this.parentElement.parentElement.firstElementChild.textContent)">🗑</button>
-                    </div>
-                </div>
-            `).join('');
-        }
-        
-        async function savePreset() {
-            const name = document.getElementById('preset-name').value.trim();
-            if (!name || selectedAziende.length === 0) {
-                alert('Nome e aziende richieste');
-                return;
-            }
-            
-            await fetch('/api/presets', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ nome: name, azienda_ids: selectedAziende })
-            });
-            
-            document.getElementById('preset-name').value = '';
-            loadPresets();
-        }
-        
-        async function loadPreset(presetName) {
-            const response = await fetch(`/api/presets/${presetName}`);
-            const data = await response.json();
-            
-            document.querySelectorAll('input[type="checkbox"]').forEach(el => {
-                el.checked = data.azienda_ids.includes(el.value);
-            });
-            
-            updateSelectedAziende();
-        }
-        
-        async function deletePreset(presetName) {
-            if (confirm('Elimina?')) {
-                await fetch(`/api/presets/${presetName}`, { method: 'DELETE' });
-                loadPresets();
-            }
-        }
-        
-        async function uploadProductImage(input) {
-            const file = input.files[0];
-            const productName = document.getElementById('product-name').value.trim();
-            
-            if (!file || !productName || selectedAziende.length === 0) {
-                alert('Nome prodotto + immagine + azienda richiesti!');
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append('image', file);
-            formData.append('product_name', productName);
-            formData.append('azienda_ids', selectedAziende.join(','));
-            
-            try {
-                await fetch('/api/upload-product-image', { 
-                    method: 'POST', 
-                    body: formData 
-                });
-                
-                document.getElementById('product-name').value = '';
-                loadProductImages();
-                alert('Immagine caricata!');
-            } catch (e) {
-                alert('Errore: ' + e);
-            }
-        }
-        
-        async function loadProductImages() {
-            if (selectedAziende.length === 0) {
-                document.getElementById('product-images-list').innerHTML = '';
-                return;
-            }
-            
-            const response = await fetch(`/api/product-images?azienda_ids=${selectedAziende.join(',')}`);
-            const data = await response.json();
-            const imagesList = document.getElementById('product-images-list');
-            
-            imagesList.innerHTML = data.images.map(img => `
-                <div class="file-item">
-                    <span>🖼️ ${img.product_name}</span>
-                    <button onclick="deleteProductImage(event.currentTarget.parentElement.parentElement.id)">✕</button>
-                </div>
-            `).join('');
-        }
-        
-        async function deleteProductImage(imageId) {
-            if (confirm('Elimina immagine?')) {
-                await fetch(`/api/product-images/${imageId}`, { method: 'DELETE' });
-                loadProductImages();
-            }
-        }
-        
-        async function sendQuestion() {
-            const input = document.getElementById('question');
-            const question = input.value.trim();
-            if (!question) return;
-            
-            if (selectedAziende.length === 0) {
-                alert('Seleziona almeno un azienda!');
-                return;
-            }
-            
-            const messagesDiv = document.getElementById('messages');
-            messagesDiv.innerHTML += `<div class="message user-message">${question}</div>`;
-            
-            const loadingMsg = document.createElement('div');
-            loadingMsg.className = 'message bot-message';
-            loadingMsg.innerHTML = `<div class="loading-spinner"></div> Ricerca in corso...`;
-            messagesDiv.appendChild(loadingMsg);
-            
-            input.value = '';
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            
-            try {
-                const response = await fetch('/api/ask', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        question: question,
-                        azienda_ids: selectedAziende,
-                        use_web: webEnabled
-                    })
-                });
-                const data = await response.json();
-                
-                messagesDiv.removeChild(loadingMsg);
-                
-                let escapedAnswer = data.answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-                let msgHtml = `<div class="message bot-message">${escapedAnswer}`;
-                if (data.images && data.images.length > 0) {
-                    msgHtml += '<div class="image-gallery">';
-                    data.images.forEach(img => {
-                        msgHtml += `<div class="image-item" onclick="openModal('data:image/jpeg;base64,${img}')"><img src="data:image/jpeg;base64,${img}"></div>`;
-                    });
-                    msgHtml += '</div>';
-                }
-                msgHtml += '</div>';
-                
-                messagesDiv.innerHTML += msgHtml;
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            } catch (e) {
-                messagesDiv.removeChild(loadingMsg);
-                messagesDiv.innerHTML += `<div class="message bot-message">Errore: ${e}</div>`;
-            }
-        }
-        
-        async function uploadFile(input) {
-            const files = Array.from(input.files);
-            const formData = new FormData();
-            files.forEach(f => formData.append('files', f));
-            
-            if (selectedAziende.length > 0) {
-                formData.append('azienda_ids', selectedAziende.join(','));
-            }
-            
-            try {
-                await fetch('/api/upload', { method: 'POST', body: formData });
-                loadFiles();
-                alert('File caricati!');
-            } catch (e) {
-                console.error('Errore:', e);
-            }
-        }
-        
-        async function loadFiles() {
-            if (selectedAziende.length === 0) {
-                document.getElementById('files-list').innerHTML = '';
-                return;
-            }
-            
-            const response = await fetch(`/api/documents?azienda_ids=${selectedAziende.join(',')}`);
-            const data = await response.json();
-            const filesList = document.getElementById('files-list');
-            filesList.innerHTML = data.documents.map(doc => `
-                <div class="file-item">
-                    <span>📄 ${doc.filename}</span>
-                    <button onclick="deleteFile(this.parentElement.previousElementSibling.textContent.trim())">✕</button>
-                </div>
-            `).join('');
-        }
-        
-        async function deleteFile(filename) {
-            await fetch(`/api/documents/${filename}`, { method: 'DELETE' });
-            loadFiles();
-        }
-        
-        function openModal(src) {
-            document.getElementById('modal-img').src = src;
-            document.getElementById('image-modal').classList.add('active');
-        }
-        
-        function closeModal() {
-            document.getElementById('image-modal').classList.remove('active');
-        }
-        
-        // Carica brand dopo che DOM è pronto
-        window.addEventListener('load', function() {
-            setTimeout(loadBrandList, 100);
+    try {
+        const res = await fetch('/api/ask', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({question: q, brands: selectedBrands, web: webEnabled})
         });
-        loadPresets();
-    </script>
-</body>
-</html>
-    """
-    return render_template_string(html)
+        const data = await res.json();
+        const escaped = data.answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        msg.innerHTML += '<div class="message bot-message">' + escaped + '</div>';
+        msg.scrollTop = msg.scrollHeight;
+    } catch (e) {
+        msg.innerHTML += '<div class="message bot-message">❌ Errore: ' + e + '</div>';
+    }
+}
+
+// Init
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('✅ Brand caricati:', allBrands.length);
+});
+</script>
+</body></html>""")
 
 @app.route('/api/aziende', methods=['GET'])
 def get_aziende():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT id, nome FROM aziende ORDER BY nome')
-    aziende = [{"id": str(row[0]), "nome": row[1]} for row in c.fetchall()]
+    aziende = [{"id": str(r[0]), "nome": r[1]} for r in c.fetchall()]
     conn.close()
     return jsonify({"aziende": aziende})
-
-@app.route('/api/aziende', methods=['POST'])
-def add_azienda():
-    data = request.get_json()
-    nome = data.get('nome', '').strip()
-    
-    if not nome:
-        return jsonify({"status": "error"}), 400
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        c.execute('INSERT INTO aziende (nome) VALUES (?)', (nome,))
-        conn.commit()
-        conn.close()
-        return jsonify({"status": "success"})
-    except:
-        conn.close()
-        return jsonify({"status": "error"}), 400
-
-@app.route('/api/aziende/<azienda_id>', methods=['DELETE'])
-def delete_azienda(azienda_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM aziende WHERE id = ?', (azienda_id,))
-    c.execute('DELETE FROM documents WHERE azienda_id = ?', (azienda_id,))
-    c.execute('DELETE FROM product_images WHERE azienda_id = ?', (azienda_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "success"})
-
-@app.route('/api/presets', methods=['GET'])
-def get_presets():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT nome, azienda_ids FROM presets ORDER BY nome')
-    presets = [{"nome": row[0], "azienda_ids": row[1].split(',')} for row in c.fetchall()]
-    conn.close()
-    return jsonify({"presets": presets})
-
-@app.route('/api/presets', methods=['POST'])
-def save_preset():
-    data = request.get_json()
-    nome = data.get('nome')
-    azienda_ids = ','.join(data.get('azienda_ids', []))
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        c.execute('INSERT INTO presets (nome, azienda_ids) VALUES (?, ?)', (nome, azienda_ids))
-        conn.commit()
-    except:
-        pass
-    conn.close()
-    return jsonify({"status": "success"})
-
-@app.route('/api/presets/<nome>', methods=['GET'])
-def get_preset(nome):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT azienda_ids FROM presets WHERE nome = ?', (nome,))
-    result = c.fetchone()
-    conn.close()
-    
-    if result:
-        return jsonify({"azienda_ids": result[0].split(',')})
-    return jsonify({"azienda_ids": []})
-
-@app.route('/api/presets/<nome>', methods=['DELETE'])
-def delete_preset(nome):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM presets WHERE nome = ?', (nome,))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "success"})
-
-@app.route('/api/documents', methods=['GET'])
-def get_documents():
-    azienda_ids = request.args.get('azienda_ids', '').split(',')
-    if not azienda_ids or azienda_ids == ['']:
-        return jsonify({"documents": []})
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    placeholders = ','.join('?' * len(azienda_ids))
-    c.execute(f'SELECT DISTINCT filename FROM documents WHERE azienda_id IN ({placeholders})', azienda_ids)
-    docs = [{"filename": row[0]} for row in c.fetchall()]
-    conn.close()
-    return jsonify({"documents": docs})
-
-@app.route('/api/product-images', methods=['GET'])
-def get_product_images():
-    azienda_ids = request.args.get('azienda_ids', '').split(',')
-    if not azienda_ids or azienda_ids == ['']:
-        return jsonify({"images": []})
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    placeholders = ','.join('?' * len(azienda_ids))
-    c.execute(f'SELECT id, product_name FROM product_images WHERE azienda_id IN ({placeholders})', azienda_ids)
-    images = [{"id": str(row[0]), "product_name": row[1]} for row in c.fetchall()]
-    conn.close()
-    return jsonify({"images": images})
-
-@app.route('/api/upload-product-image', methods=['POST'])
-def upload_product_image():
-    if 'image' not in request.files:
-        return jsonify({"status": "error"}), 400
-    
-    file = request.files['image']
-    product_name = request.form.get('product_name', 'Unknown')
-    azienda_ids = request.form.get('azienda_ids', '1').split(',')
-    
-    try:
-        img_data = base64.b64encode(file.read()).decode('utf-8')
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        for aid in azienda_ids:
-            c.execute('''INSERT INTO product_images 
-                         (product_name, azienda_id, image_base64, filename)
-                         VALUES (?, ?, ?, ?)''',
-                      (product_name, aid, img_data, file.filename))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({"status": "success"})
-    
-    except Exception as e:
-        return jsonify({"status": "error"})
-
-@app.route('/api/product-images/<image_id>', methods=['DELETE'])
-def delete_product_image(image_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM product_images WHERE id = ?', (image_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "success"})
-
-@app.route('/api/upload', methods=['POST'])
-def upload():
-    if 'files' not in request.files:
-        return jsonify({"status": "error"}), 400
-    
-    files = request.files.getlist('files')
-    azienda_ids = request.form.get('azienda_ids', '').split(',')
-    if not azienda_ids or azienda_ids == ['']:
-        azienda_ids = ['1']
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    for file in files:
-        if file.filename == '':
-            continue
-        
-        try:
-            doc_path = os.path.join(UPLOADS_DIR, file.filename)
-            file.save(doc_path)
-            
-            with open(doc_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            
-            for aid in azienda_ids:
-                try:
-                    c.execute('INSERT OR REPLACE INTO documents (filename, content, azienda_id) VALUES (?, ?, ?)',
-                              (file.filename, content, aid))
-                except:
-                    pass
-        except Exception as e:
-            print(f"Errore: {e}")
-    
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "success"})
-
-@app.route('/api/documents/<filename>', methods=['DELETE'])
-def delete_document(filename):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM documents WHERE filename = ?', (filename,))
-    conn.commit()
-    conn.close()
-    
-    file_path = os.path.join(UPLOADS_DIR, filename)
-    if os.path.exists(file_path):
-        os.remove(file_path)
-    
-    return jsonify({"status": "success"})
 
 @app.route('/api/ask', methods=['POST'])
 def ask():
     data = request.get_json()
-    question = (data.get('question') or "").strip()
-    azienda_ids = data.get('azienda_ids', [])
-    use_web = data.get('use_web', False)
+    q = data.get('question', '').strip()
+    brands = data.get('brands', [])
+    use_web = data.get('web', True)
     
-    if not question:
-        return jsonify({"answer": "Domanda vuota", "images": []})
+    brands_str = ", ".join(brands) if brands else "Covolo"
+    web_content = search_web(q) if use_web else None
     
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    docs = []
-    if azienda_ids:
-        placeholders = ','.join('?' * len(azienda_ids))
-        c.execute(f'SELECT filename, content FROM documents WHERE azienda_id IN ({placeholders})', azienda_ids)
-        docs = c.fetchall()
-    
-    c.execute('SELECT nome FROM aziende WHERE id IN ({})'.format(','.join('?' * len(azienda_ids)) if azienda_ids else '""'))
-    aziende_names = [row[0] for row in c.fetchall()] if azienda_ids else []
-    conn.close()
-    
-    doc_context = None
-    web_content = None
-    source_badge = "🤖 DEEPSEEK ESPERTO"
-    azienda_names_str = ", ".join(aziende_names) if aziende_names else "Covolo"
-    
-    # LOGICA INTELLIGENTE
-    if docs:
-        doc_context = "\n".join([f"📄 {doc[0]}:\n{doc[1][:300]}" for doc in docs[:2]])
-        source_badge = "📚 DOCUMENTO"
-        
-        # Se WEB è ON, cerca anche online per sintetizzare
-        if use_web:
-            web_content = search_web_bing(question)
-            if web_content:
-                source_badge = "📚 DOC + 🌐 WEB (SINTETIZZATO)"
-    
-    elif use_web:
-        # No DOC interno, ma WEB è ON
-        web_content = search_web_bing(question)
-        if web_content:
-            source_badge = "🌐 WEB"
-    
-    # Costruisci il prompt (sempre, anche senza doc interno)
-    if doc_context and web_content:
-        # ENTRAMBI - sintetizza
-        prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
-
-DOCUMENTI INTERNI:
-{doc_context}
-
-RICERCA WEB:
-{web_content}
-
-DOMANDA: {question}
-
-Sintetizza le due fonti. Dai PRIORITÀ al documento interno, integra il web se aggiunge valore. Se suggerisci prodotti, includi NOME ESATTO e MODELLO."""
-    elif doc_context:
-        # SOLO DOC
-        prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
-
-DOCUMENTI AZIENDA:
-{doc_context}
-
-DOMANDA: {question}
-
-Rispondi basandoti sui documenti. Se suggerisci prodotti, includi NOME ESATTO e MODELLO."""
+    if web_content or brands:
+        prompt = f"""Sei consulente arredo bagno per {brands_str}.
+DOMANDA: {q}
+{'WEB: ' + web_content if web_content else ''}
+Rispondi professionalmente."""
+        answer = deepseek_ask(prompt) or f"Consiglio su {q}"
     else:
-        # SOLO WEB
-        prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
-
-RICERCA WEB:
-{web_content}
-
-DOMANDA: {question}
-
-Rispondi da esperto. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO ESATTO."""
+        answer = "Abilita Web Search o seleziona un brand"
     
-    # Se niente trovato, comunque rispondi come esperto
-    if not doc_context and not web_content:
-        prompt = f"""Tu sei consulente ESPERTO arredo bagno per {azienda_names_str}.
-Aziende specializzate: Gessi, Duravit, Remer, Kaldewei, Cerasa, Antoniolupi, Colombo, etc.
-
-DOMANDA CLIENTE: {question}
-
-Rispondi come consulente senior di Covolo. Fornisci consigli professionali su arredo bagno, prodotti, materiali. Se menzioni brand/modelli, sii accurato. Priorità: soluzioni di qualità, design, funzionalità."""
-    
-    try:
-        response = httpx.post(
-            DEEPSEEK_API_URL,
-            headers={
-                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": DEEPSEEK_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.4,
-                "max_tokens": 1500,
-            },
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            answer = response.json()["choices"][0]["message"]["content"]
-            
-            products = extract_product_names(answer)
-            images = []
-            
-            for product in products:
-                for aid in azienda_ids:
-                    cat_images = search_catalog_images(product, aid)
-                    images.extend(cat_images)
-            
-            return jsonify({"answer": answer, "images": images[:5], "source": source_badge})
-        else:
-            return jsonify({"answer": "Errore risposta API", "images": [], "source": "❌"})
-    
-    except Exception as e:
-        return jsonify({"answer": f"Errore: {str(e)}", "images": []})
+    return jsonify({"answer": answer})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)), debug=False)
