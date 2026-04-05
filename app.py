@@ -137,6 +137,7 @@ def _search_docs_internal(brands, question, access_code):
     return docs
 
 def search_web(question, brands):
+    return None  # disabilitato - causa timeout su Render
     try:
         brands_str = " OR ".join(brands)
         query = f"{question} {brands_str}"
@@ -162,7 +163,7 @@ def deepseek_ask(prompt):
                 "max_tokens": 500
             },
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
-            timeout=10
+            timeout=30
         )
         if resp.status_code == 200:
             data = resp.json()
