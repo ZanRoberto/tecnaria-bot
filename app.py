@@ -42,6 +42,25 @@ def get_brands():
     conn.close()
     return jsonify({"brands": brands})
 
+@app.route('/api/add-azienda', methods=['POST'])
+def add_azienda():
+    data = request.get_json()
+    nome = data.get('nome', '').strip()
+    
+    if not nome:
+        return jsonify({"error": "Nome richiesto"}), 400
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('INSERT INTO aziende (nome) VALUES (?)', (nome,))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "nome": nome})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
 @app.route('/api/upload-document', methods=['POST'])
 def upload_document():
     data = request.get_json()
@@ -112,6 +131,12 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
     
     <div class="selected-badges" id="selected"></div>
     
+    <h2 style="margin-top: 20px;">➕ AGGIUNGI CASSETTO</h2>
+    <div style="display: flex; gap: 6px;">
+      <input type="text" id="new-cassetto" placeholder="Nuovo cassetto..." style="flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 12px;">
+      <button onclick="addCassetto()" style="padding: 10px; background: #10b981;">➕</button>
+    </div>
+    
     <h2 style="margin-top: 20px;">📤 UPLOAD</h2>
     <button onclick="showUpload()">📤 Upload Documento</button>
   </div>
@@ -172,6 +197,34 @@ function updateSelected() {
   document.getElementById('selected').innerHTML = html;
 }
 
+function addCassetto() {
+  const nome = document.getElementById('new-cassetto').value.trim();
+  if (!nome) { alert('Scrivi il nome del cassetto'); return; }
+  
+  fetch('/api/add-azienda', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({nome: nome})
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      alert('✅ Cassetto aggiunto!');
+      document.getElementById('new-cassetto').value = '';
+      // Ricarica brand
+      fetch('/api/get-brands')
+        .then(r => r.json())
+        .then(data => {
+          BRANDS = data.brands || [];
+          console.log("✅ Aggiornati " + BRANDS.length + " brand");
+        });
+    } else {
+      alert('❌ Errore: ' + d.error);
+    }
+  })
+  .catch(e => alert('❌ Errore: ' + e));
+}
+
 function showUpload() {
   const brand = prompt('Brand:');
   if (!brand) return;
@@ -222,8 +275,5 @@ function ask() {
 </body>
 </html>''')
 
-cp /mnt/user-data/outputs/app.py /mnt/user-data/outputs/app_BACKUP_DEFINITIVO.py && \
-python -m py_compile /mnt/user-data/outputs/app.py && \
-echo "✅ FILE CORRETTO SALVATO!" && \
-echo "" && \
-echo "PRONTO PER DEPLOY:"
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
