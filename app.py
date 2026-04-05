@@ -96,26 +96,28 @@ def search_documents():
     brands = data.get('brands', [])
     question = data.get('question', '')
     access_code = data.get('access_code')
-    
+    docs = _search_docs_internal(brands, question, access_code)
+    if docs:
+        return jsonify({"found": True, "docs": docs})
+    return jsonify({"found": False})
+
+# FIX BUG #2: funzione interna separata per evitare chiamata Flask su Flask
+def _search_docs_internal(brands, question, access_code):
+    if not brands:
+        return []
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
     placeholders = ','.join('?' * len(brands))
     query = f'SELECT filename, content FROM documents WHERE azienda_id IN (SELECT id FROM aziende WHERE nome IN ({placeholders}))'
-    
     if access_code:
-        query += ' OR visibility="private" AND access_code=?'
+        query += ' OR (visibility="private" AND access_code=?)'
         c.execute(query, brands + [access_code])
     else:
         query += ' AND visibility="public"'
         c.execute(query, brands)
-    
     docs = c.fetchall()
     conn.close()
-    
-    if docs:
-        return jsonify({"found": True, "docs": docs})
-    return jsonify({"found": False})
+    return docs
 
 def search_web(question, brands):
     try:
@@ -171,15 +173,10 @@ def ask():
     if not question or not brands:
         return jsonify({"error": "Domanda e brand richiesti"}), 400
     
+    # FIX BUG #2: usa _search_docs_internal invece di chiamare la route Flask
     doc_context = ""
-    doc_result = search_documents({
-        'brands': brands,
-        'question': question,
-        'access_code': access_code
-    })
-    
-    if doc_result.get_json()['found']:
-        docs = doc_result.get_json()['docs']
+    docs = _search_docs_internal(brands, question, access_code)
+    if docs:
         doc_context = "\n".join([f"[DOC: {d[0]}] {d[1][:200]}" for d in docs])
     
     web_context = ""
@@ -290,7 +287,7 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
     <div class="chat-area" id="chat"></div>
     
     <div class="input-area">
-      <input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key==='Enter') ask()">
+      <input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key===\'Enter\') ask()">
       <button onclick="ask()" style="width: 120px;">Invia</button>
     </div>
   </div>
@@ -314,36 +311,23 @@ fetch('/api/get-brands')
   })
   .catch(e => {
     console.error("❌ Errore caricamento brand:", e);
-    // Fallback se API fallisce
-    BRANDS = ["Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa", "Ariostea", "Artesia", "Austroflamm", "BGP", "Brera", "Bisazza", "Blue Design", "Baufloor", "Bauwerk", "Caros", "Caesar", "Casalgrande Padana", "Cerasarda", "Cerasa", "Cielo", "Colombo", "Cottodeste", "CP Parquet", "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit", "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi", "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin", "Ier Hürne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti", "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue", "Murexin", "Noorth", "Omegius", "Piastrelle d'Arredo", "Profiletec", "Remer", "Sichenia", "Simas", "Schlüter Systems", "SDR", "Sterneldesign", "Stüv", "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires", "Tubes", "Valdama", "Vismara Vetro", "Wedi"];
+    BRANDS = ["Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa", "Ariostea", "Artesia", "Austroflamm", "BGP", "Brera", "Bisazza", "Blue Design", "Baufloor", "Bauwerk", "Caros", "Caesar", "Casalgrande Padana", "Cerasarda", "Cerasa", "Cielo", "Colombo", "Cottodeste", "CP Parquet", "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit", "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi", "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin", "Ier H\\u00fcrne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti", "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue", "Murexin", "Noorth", "Omegius", "Piastrelle d\'Arredo", "Profiletec", "Remer", "Sichenia", "Simas", "Schl\\u00fcter Systems", "SDR", "Sterneldesign", "St\\u00fcv", "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires", "Tubes", "Valdama", "Vismara Vetro", "Wedi"];
   });
 
+// FIX BUG #1: usa classList invece di style.display per coerenza con CSS .dropdown.show
 function toggleDropdown() {
-  console.log("toggleDropdown chiamato");
   const dd = document.getElementById('dropdown');
-  console.log("dropdown element:", dd);
+  if (!dd) { console.error("❌ dropdown non trovato"); return; }
   
-  if (!dd) {
-    console.error("❌ ERRORE: elemento dropdown non trovato!");
-    return;
-  }
-  
-  const isShowing = dd.style.display === 'block';
-  
-  if (isShowing) {
-    dd.style.display = 'none';
-    console.log("✅ Dropdown chiuso");
+  if (dd.classList.contains('show')) {
+    dd.classList.remove('show');
   } else {
-    dd.style.display = 'block';
-    console.log("✅ Dropdown aperto");
-    // Carica brand
+    dd.classList.add('show');
     filterBrands();
   }
 }
 
 function filterBrands() {
-  console.log("filterBrands - BRANDS disponibili: " + BRANDS.length);
-  
   const search = document.getElementById('search');
   const brandsList = document.getElementById('brands-list');
   
@@ -354,8 +338,6 @@ function filterBrands() {
   
   const searchValue = search.value.toLowerCase();
   const filtered = BRANDS.filter(b => b.toLowerCase().includes(searchValue));
-  
-  console.log("Mostrando " + filtered.length + " brand");
   
   const html = filtered.map(b => 
     '<div class="brand-item"><input type="checkbox" value="' + b + '" onchange="updateSelected()">' + b + '</div>'
