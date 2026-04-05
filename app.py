@@ -206,6 +206,35 @@ def index():
         }
         .header h1 { color: #3b82f6; font-size: 28px; }
         .header p { color: #9ca3af; font-size: 13px; }
+        .actions-bar {
+            background: rgba(59, 130, 245, 0.05);
+            border-bottom: 1px solid rgba(59, 130, 245, 0.2);
+            padding: 10px 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        .action-btn {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .action-btn:hover { background: #059669; }
+        .action-btn.disabled { background: #6b7280; cursor: not-allowed; }
+        .search-filter {
+            margin-bottom: 10px;
+            padding: 8px;
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(59, 130, 245, 0.3);
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-size: 12px;
+        }
         .chat-area {
             flex: 1;
             display: flex;
@@ -461,6 +490,7 @@ def index():
     <div class="container">
         <div class="sidebar">
             <h3>🏢 Aziende (Gestisci)</h3>
+            <input type="text" id="search-aziende" class="search-filter" placeholder="Filtra brand..." onkeyup="filterAziende()">
             <div class="input-group">
                 <input type="text" id="new-azienda-nome" placeholder="Nome..." style="flex: 1;">
                 <button onclick="addAzienda()" style="flex: 0 0 auto; padding: 6px 10px; font-size: 12px;">➕</button>
@@ -499,6 +529,12 @@ def index():
             <div class="header">
                 <h1>🔮 Oracolo Covolo</h1>
                 <p>Consulente Intelligente Arredo Bagno</p>
+            </div>
+            
+            <div class="actions-bar">
+                <button class="action-btn" id="btn-offerta" onclick="generateOfferta()" disabled>📄 OFFERTA</button>
+                <button class="action-btn" id="btn-analisi" onclick="generateAnalisi()" disabled>📊 ANALISI</button>
+                <button class="action-btn" id="btn-proposta" onclick="generateProposta()" disabled>🎯 PROPOSTA</button>
             </div>
             
             <div class="chat-area">
@@ -569,6 +605,38 @@ def index():
                     alert('Errore: ' + e);
                 }
             }
+        }
+        
+        function filterAziende() {
+            const search = document.getElementById('search-aziende').value.toLowerCase();
+            const items = document.querySelectorAll('#aziende-list > div');
+            items.forEach(item => {
+                const text = item.textContent.toLowerCase();
+                item.style.display = text.includes(search) ? 'flex' : 'none';
+            });
+        }
+        
+        function updateActionButtons() {
+            const hasCart = document.querySelectorAll('.cart-item').length > 0;
+            document.getElementById('btn-offerta').disabled = !hasCart;
+            document.getElementById('btn-analisi').disabled = !hasCart;
+            document.getElementById('btn-proposta').disabled = !hasCart;
+        }
+        
+        async function generateOfferta() {
+            const cartItems = [];
+            document.querySelectorAll('.cart-item').forEach(item => {
+                cartItems.push(item.dataset.product);
+            });
+            alert('📄 OFFERTA:\n' + cartItems.join('\n'));
+        }
+        
+        async function generateAnalisi() {
+            alert('📊 ANALISI in preparazione...');
+        }
+        
+        async function generateProposta() {
+            alert('🎯 PROPOSTA in preparazione...');
         }
         
         function toggleWeb() {
@@ -1030,7 +1098,8 @@ def ask():
     
     doc_context = None
     web_content = None
-    source_badge = ""
+    source_badge = "🤖 DEEPSEEK ESPERTO"
+    azienda_names_str = ", ".join(aziende_names) if aziende_names else "Covolo"
     
     # LOGICA INTELLIGENTE
     if docs:
@@ -1049,15 +1118,7 @@ def ask():
         if web_content:
             source_badge = "🌐 WEB"
     
-    else:
-        # Nessun DOC e WEB disattivato
-        return jsonify({"answer": "⚠️ Nessun documento trovato e Web Search disattivato. Abilita Web Search o carica documenti.", "images": [], "source": "❌"})
-    
-    # Se non ho trovato nulla
-    if not doc_context and not web_content:
-        return jsonify({"answer": "❌ Nessuna informazione trovata.", "images": [], "source": "❌"})
-    
-    # Costruisci il prompt
+    # Costruisci il prompt (sempre, anche senza doc interno)
     if doc_context and web_content:
         # ENTRAMBI - sintetizza
         prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
@@ -1091,6 +1152,15 @@ RICERCA WEB:
 DOMANDA: {question}
 
 Rispondi da esperto. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO ESATTO."""
+    
+    # Se niente trovato, comunque rispondi come esperto
+    if not doc_context and not web_content:
+        prompt = f"""Tu sei consulente ESPERTO arredo bagno per {azienda_names_str}.
+Aziende specializzate: Gessi, Duravit, Remer, Kaldewei, Cerasa, Antoniolupi, Colombo, etc.
+
+DOMANDA CLIENTE: {question}
+
+Rispondi come consulente senior di Covolo. Fornisci consigli professionali su arredo bagno, prodotti, materiali. Se menzioni brand/modelli, sii accurato. Priorità: soluzioni di qualità, design, funzionalità."""
     
     try:
         response = httpx.post(
