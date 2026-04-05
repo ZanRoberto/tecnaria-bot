@@ -160,7 +160,7 @@ def deepseek_ask(prompt):
             json={
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 500
+                "max_tokens": 2000
             },
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
             timeout=30
