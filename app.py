@@ -23,18 +23,38 @@ BRANDS_LIST = [
     "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit",
     "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi",
     "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin",
-    "Ier Hürne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti",
+    "Ier Hurne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti",
     "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue",
-    "Murexin", "Noorth", "Omegius", "Piastrelle d'Arredo", "Profiletec", "Remer",
-    "Sichenia", "Simas", "Schlüter Systems", "SDR", "Sterneldesign", "Stüv",
+    "Murexin", "Noorth", "Omegius", "Piastrelle Arredo", "Profiletec", "Remer",
+    "Sichenia", "Simas", "Schluter Systems", "SDR", "Sterneldesign", "Stuv",
     "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires",
     "Tubes", "Valdama", "Vismara Vetro", "Wedi"
 ]
 
 def init_db():
-    pass
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS aziende (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT UNIQUE NOT NULL
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT,
+        content TEXT,
+        azienda_id INTEGER,
+        visibility TEXT DEFAULT 'public',
+        access_code TEXT,
+        upload_date TEXT,
+        FOREIGN KEY (azienda_id) REFERENCES aziende(id)
+    )''')
+    for brand in BRANDS_LIST:
+        c.execute('INSERT OR IGNORE INTO aziende (nome) VALUES (?)', (brand,))
+    conn.commit()
+    conn.close()
 
 app = Flask(__name__)
+init_db()
 
 @app.route('/api/get-brands', methods=['GET'])
 def get_brands():
@@ -70,7 +90,6 @@ def upload_document():
     brand = data.get('brand', '')
     visibility = data.get('visibility', 'public')
     access_code = data.get('access_code', '')
-    
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
@@ -79,7 +98,6 @@ def upload_document():
         if not result:
             conn.close()
             return jsonify({"error": "Brand non trovato"}), 400
-        
         azienda_id = result[0]
         c.execute('INSERT INTO documents (filename, content, azienda_id, visibility, access_code, upload_date) VALUES (?, ?, ?, ?, ?, ?)',
                   (filename, content, azienda_id, visibility, access_code, datetime.now().isoformat()))
@@ -101,7 +119,6 @@ def search_documents():
         return jsonify({"found": True, "docs": docs})
     return jsonify({"found": False})
 
-# FIX BUG #2: funzione interna separata per evitare chiamata Flask su Flask
 def _search_docs_internal(brands, question, access_code):
     if not brands:
         return []
@@ -123,24 +140,19 @@ def search_web(question, brands):
     try:
         brands_str = " OR ".join(brands)
         query = f"{question} {brands_str}"
-        
         url = "https://www.google.com/search"
         headers = {'User-Agent': 'Mozilla/5.0'}
         params = {'q': query}
-        
         resp = httpx.get(url, params=params, headers=headers, timeout=5, follow_redirects=True)
-        
         if "No results found" in resp.text or len(resp.text) < 100:
             return None
-        
         return resp.text[:500]
     except:
         return None
 
 def deepseek_ask(prompt):
     if not DEEPSEEK_API_KEY:
-        return "❌ API Key non configurata"
-    
+        return "API Key non configurata"
     try:
         resp = httpx.post(
             DEEPSEEK_API_URL,
@@ -152,15 +164,13 @@ def deepseek_ask(prompt):
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
             timeout=10
         )
-        
         if resp.status_code == 200:
             data = resp.json()
             if "choices" in data and len(data["choices"]) > 0:
                 return data["choices"][0]["message"]["content"]
-        
-        return f"❌ Errore API: {resp.status_code}"
+        return f"Errore API: {resp.status_code}"
     except Exception as e:
-        return f"❌ Errore: {str(e)}"
+        return f"Errore: {str(e)}"
 
 @app.route('/api/ask', methods=['POST'])
 def ask():
@@ -169,22 +179,17 @@ def ask():
     brands = data.get('brands', [])
     use_web = data.get('web', True)
     access_code = data.get('access_code')
-    
     if not question or not brands:
         return jsonify({"error": "Domanda e brand richiesti"}), 400
-    
-    # FIX BUG #2: usa _search_docs_internal invece di chiamare la route Flask
     doc_context = ""
     docs = _search_docs_internal(brands, question, access_code)
     if docs:
         doc_context = "\n".join([f"[DOC: {d[0]}] {d[1][:200]}" for d in docs])
-    
     web_context = ""
     if use_web:
         web_result = search_web(question, brands)
         if web_result:
             web_context = f"[WEB] {web_result}"
-    
     prompt = f"""Sei un esperto di arredo bagno per i brand: {', '.join(brands)}
 
 Domanda: {question}
@@ -193,13 +198,12 @@ Domanda: {question}
 {f'{web_context}' if web_context else ''}
 
 Rispondi come esperto del settore, considerando i brand specifici."""
-    
     answer = deepseek_ask(prompt)
     return jsonify({"answer": answer})
 
 @app.route('/')
 def index():
-    return render_template_string('''<!DOCTYPE html>
+    return render_template_string(r'''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -225,7 +229,6 @@ button:hover { background: #2563eb; }
 .badge { display: inline-block; background: #10b981; color: white; padding: 3px 6px; border-radius: 3px; margin: 2px; font-size: 11px; }
 .chat-area { flex: 1; background: rgba(15,23,46,0.5); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 15px; overflow-y: auto; margin-bottom: 10px; font-size: 13px; }
 .message { background: rgba(59,130,245,0.1); padding: 10px; margin: 5px 0; border-radius: 4px; border-left: 3px solid #3b82f6; }
-.message img { max-width: 100%; max-height: 200px; margin-top: 8px; border-radius: 4px; }
 .input-area { display: flex; gap: 10px; }
 input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 12px; }
 .title { color: #3b82f6; font-size: 24px; font-weight: 700; margin-bottom: 20px; }
@@ -239,60 +242,48 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
 <body>
 <div class="container">
   <div class="sidebar">
-    <h2>🔽 SELEZIONA BRAND (GUARDRAIL)</h2>
-    <button onclick="toggleDropdown()" style="width: 100%;">🔽 Seleziona Brand</button>
-    
+    <h2>SELEZIONA BRAND</h2>
+    <button onclick="toggleDropdown()" style="width: 100%;">Seleziona Brand</button>
     <div id="dropdown" class="dropdown">
       <input type="text" id="search" placeholder="Ricerca brand..." onkeyup="filterBrands()" style="width: 100%; margin-bottom: 8px;">
       <div id="brands-list"></div>
     </div>
-    
     <div style="margin: 10px 0;" id="selected"></div>
-    
-    <h2>💾 GRUPPI SALVATI</h2>
+    <h2>GRUPPI SALVATI</h2>
     <div style="display: flex; gap: 6px; margin-bottom: 10px;">
       <input type="text" id="group-name" placeholder="Nome gruppo..." style="flex: 1;">
-      <button onclick="saveGroup()" class="btn-green">💾</button>
+      <button onclick="saveGroup()" class="btn-green">Salva</button>
     </div>
     <div id="saved-groups" style="max-height: 150px; overflow-y: auto; font-size: 12px;"></div>
-    
-    <h2>➕ NUOVO CASSETTO</h2>
+    <h2>NUOVO CASSETTO</h2>
     <div style="display: flex; gap: 6px; margin-bottom: 10px;">
       <input type="text" id="new-cassetto" placeholder="Nome cassetto..." style="flex: 1;">
-      <button onclick="addCassetto()" class="btn-green">➕</button>
+      <button onclick="addCassetto()" class="btn-green">+</button>
     </div>
-    
-    <h2>🔐 ACCESSO PRIVATO</h2>
+    <h2>ACCESSO PRIVATO</h2>
     <input type="password" id="access-code" placeholder="Codice accesso..." style="width: 100%; margin-bottom: 8px;">
-    <button onclick="toggleAccess()" style="width: 100%;">🔓 Attiva</button>
+    <button onclick="toggleAccess()" style="width: 100%;">Attiva</button>
     <div style="font-size: 11px; color: #9ca3af; margin-top: 5px;" id="access-status">Accesso: PUBBLICO</div>
-    
-    <h2>🌐 WEB SEARCH</h2>
-    <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()" style="width: 100%;">🟢 ON</button>
-    
-    <h2>📤 UPLOAD DOCUMENTI</h2>
-    <button onclick="uploadFile()" style="width: 100%; background: #8b5cf6;">📄 Upload Doc</button>
-    <button onclick="uploadExcel()" style="width: 100%; background: #8b5cf6;">📊 Upload Excel</button>
+    <h2>WEB SEARCH</h2>
+    <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()">ON</button>
+    <h2>UPLOAD DOCUMENTI</h2>
+    <button onclick="uploadFile()" style="width: 100%; background: #8b5cf6;">Upload Doc</button>
+    <button onclick="uploadExcel()" style="width: 100%; background: #8b5cf6;">Upload Excel</button>
   </div>
-  
   <div class="main">
-    <div class="title">🔮 Oracolo Covolo</div>
-    
+    <div class="title">Oracolo Covolo</div>
     <div class="btn-3pulsanti">
-      <button class="btn-green" onclick="generateOfferta()">📄 OFFERTA</button>
-      <button class="btn-green" onclick="generateAnalisi()">📊 ANALISI</button>
-      <button class="btn-green" onclick="generateProposta()">🎯 PROPOSTA</button>
+      <button class="btn-green" onclick="generateOfferta()">OFFERTA</button>
+      <button class="btn-green" onclick="generateAnalisi()">ANALISI</button>
+      <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
     </div>
-    
     <div class="chat-area" id="chat"></div>
-    
     <div class="input-area">
-      <input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key===\'Enter\') ask()">
+      <input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key==='Enter') ask()">
       <button onclick="ask()" style="width: 120px;">Invia</button>
     </div>
   </div>
 </div>
-
 <script>
 let BRANDS = [];
 let selected = [];
@@ -301,24 +292,18 @@ let accessCode = null;
 let accessLevel = "public";
 let groups = JSON.parse(localStorage.getItem('oracolo_groups')) || {};
 
-// Carica brand SUBITO
 fetch('/api/get-brands')
   .then(r => r.json())
   .then(d => {
     BRANDS = d.brands || [];
-    console.log("✅ Brand caricati: " + BRANDS.length);
+    console.log("Brand caricati: " + BRANDS.length);
     loadGroups();
   })
-  .catch(e => {
-    console.error("❌ Errore caricamento brand:", e);
-    BRANDS = ["Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa", "Ariostea", "Artesia", "Austroflamm", "BGP", "Brera", "Bisazza", "Blue Design", "Baufloor", "Bauwerk", "Caros", "Caesar", "Casalgrande Padana", "Cerasarda", "Cerasa", "Cielo", "Colombo", "Cottodeste", "CP Parquet", "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit", "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi", "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin", "Ier H\\u00fcrne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti", "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue", "Murexin", "Noorth", "Omegius", "Piastrelle d\'Arredo", "Profiletec", "Remer", "Sichenia", "Simas", "Schl\\u00fcter Systems", "SDR", "Sterneldesign", "St\\u00fcv", "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires", "Tubes", "Valdama", "Vismara Vetro", "Wedi"];
-  });
+  .catch(e => { console.error("Errore caricamento brand:", e); });
 
-// FIX BUG #1: usa classList invece di style.display per coerenza con CSS .dropdown.show
 function toggleDropdown() {
   const dd = document.getElementById('dropdown');
-  if (!dd) { console.error("❌ dropdown non trovato"); return; }
-  
+  if (!dd) return;
   if (dd.classList.contains('show')) {
     dd.classList.remove('show');
   } else {
@@ -330,71 +315,51 @@ function toggleDropdown() {
 function filterBrands() {
   const search = document.getElementById('search');
   const brandsList = document.getElementById('brands-list');
-  
-  if (!search || !brandsList) {
-    console.error("❌ Elementi non trovati!");
-    return;
-  }
-  
+  if (!search || !brandsList) return;
   const searchValue = search.value.toLowerCase();
   const filtered = BRANDS.filter(b => b.toLowerCase().includes(searchValue));
-  
-  const html = filtered.map(b => 
+  brandsList.innerHTML = filtered.map(b =>
     '<div class="brand-item"><input type="checkbox" value="' + b + '" onchange="updateSelected()">' + b + '</div>'
   ).join('');
-  
-  brandsList.innerHTML = html;
 }
 
 function updateSelected() {
   selected = [];
-  document.querySelectorAll('.brand-item input:checked').forEach(cb => {
-    selected.push(cb.value);
-  });
-  document.getElementById('selected').innerHTML = selected.map(b => '<span class="badge">' + b + ' ✕</span>').join('');
+  document.querySelectorAll('.brand-item input:checked').forEach(cb => { selected.push(cb.value); });
+  document.getElementById('selected').innerHTML = selected.map(b => '<span class="badge">' + b + ' x</span>').join('');
 }
 
 function toggleWeb() {
   webEnabled = !webEnabled;
   const btn = document.getElementById('web-toggle');
-  if (webEnabled) {
-    btn.textContent = '🟢 ON';
-    btn.className = 'toggle-btn toggle-on';
-  } else {
-    btn.textContent = '🔴 OFF';
-    btn.className = 'toggle-btn toggle-off';
-  }
+  btn.textContent = webEnabled ? 'ON' : 'OFF';
+  btn.className = webEnabled ? 'toggle-btn toggle-on' : 'toggle-btn toggle-off';
 }
 
 function toggleAccess() {
   const code = document.getElementById('access-code').value;
   if (code) {
-    accessCode = code;
-    accessLevel = "private";
-    document.getElementById('access-status').textContent = '🔒 Accesso: PRIVATO (' + code + ')';
+    accessCode = code; accessLevel = "private";
+    document.getElementById('access-status').textContent = 'Accesso: PRIVATO (' + code + ')';
   } else {
-    accessCode = null;
-    accessLevel = "public";
-    document.getElementById('access-status').textContent = '🔓 Accesso: PUBBLICO';
+    accessCode = null; accessLevel = "public";
+    document.getElementById('access-status').textContent = 'Accesso: PUBBLICO';
   }
 }
 
 function saveGroup() {
   const name = document.getElementById('group-name').value;
   if (!name || selected.length === 0) { alert('Nome gruppo e brand richiesti'); return; }
-  
   groups[name] = selected;
   localStorage.setItem('oracolo_groups', JSON.stringify(groups));
   document.getElementById('group-name').value = '';
   loadGroups();
-  alert('✅ Gruppo salvato!');
 }
 
 function loadGroups() {
-  const html = Object.keys(groups).map(name => 
-    '<div style="padding: 6px; background: rgba(59,130,245,0.2); border-radius: 4px; margin: 4px 0;"><strong>' + name + '</strong> <button onclick="loadGroup(\'' + name + '\')" style="padding: 2px 6px; font-size: 10px;">📌</button> <button onclick="deleteGroup(\'' + name + '\')" style="padding: 2px 6px; font-size: 10px; background: #ef4444;">✕</button></div>'
+  document.getElementById('saved-groups').innerHTML = Object.keys(groups).map(name =>
+    '<div style="padding:6px;background:rgba(59,130,245,0.2);border-radius:4px;margin:4px 0"><strong>' + name + '</strong> <button onclick="loadGroup(\'' + name + '\')" style="padding:2px 6px;font-size:10px">carica</button> <button onclick="deleteGroup(\'' + name + '\')" style="padding:2px 6px;font-size:10px;background:#ef4444">x</button></div>'
   ).join('');
-  document.getElementById('saved-groups').innerHTML = html;
 }
 
 function loadGroup(name) {
@@ -411,53 +376,30 @@ function deleteGroup(name) {
 
 function addCassetto() {
   const nome = document.getElementById('new-cassetto').value.trim();
-  if (!nome) { alert('Nome cassetto richiesto'); return; }
-  
-  fetch('/api/add-azienda', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({nome: nome})
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      alert('✅ Cassetto aggiunto!');
-      document.getElementById('new-cassetto').value = '';
-      fetch('/api/get-brands').then(r => r.json()).then(data => {
-        BRANDS = data.brands || [];
-      });
-    } else {
-      alert('❌ Errore: ' + d.error);
-    }
-  });
+  if (!nome) { alert('Nome richiesto'); return; }
+  fetch('/api/add-azienda', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({nome}) })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        alert('Cassetto aggiunto!');
+        document.getElementById('new-cassetto').value = '';
+        fetch('/api/get-brands').then(r => r.json()).then(data => { BRANDS = data.brands || []; });
+      } else { alert('Errore: ' + d.error); }
+    });
 }
 
 function uploadFile() {
   const brand = prompt('Brand:');
   if (!brand) return;
-  
   const input = document.createElement('input');
   input.type = 'file';
   input.onchange = function() {
     const file = input.files[0];
     const reader = new FileReader();
     reader.onload = function(e) {
-      fetch('/api/upload-document', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          filename: file.name,
-          content: e.target.result,
-          brand: brand,
-          visibility: accessLevel,
-          access_code: accessCode
-        })
-      })
-      .then(r => r.json())
-      .then(d => {
-        if (d.ok) alert('✅ Documento caricato!');
-        else alert('❌ Errore: ' + d.error);
-      });
+      fetch('/api/upload-document', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ filename: file.name, content: e.target.result, brand, visibility: accessLevel, access_code: accessCode }) })
+        .then(r => r.json()).then(d => { if (d.ok) alert('Documento caricato!'); else alert('Errore: ' + d.error); });
     };
     reader.readAsDataURL(file);
   };
@@ -467,30 +409,15 @@ function uploadFile() {
 function uploadExcel() {
   const brand = prompt('Brand per EXCEL:');
   if (!brand) return;
-  
   const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.xlsx,.xls,.csv';
+  input.type = 'file'; input.accept = '.xlsx,.xls,.csv';
   input.onchange = function() {
     const file = input.files[0];
     const reader = new FileReader();
     reader.onload = function(e) {
-      fetch('/api/upload-document', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          filename: file.name + ' [EXCEL]',
-          content: e.target.result,
-          brand: brand,
-          visibility: accessLevel,
-          access_code: accessCode
-        })
-      })
-      .then(r => r.json())
-      .then(d => {
-        if (d.ok) alert('✅ Excel caricato!');
-        else alert('❌ Errore: ' + d.error);
-      });
+      fetch('/api/upload-document', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ filename: file.name + ' [EXCEL]', content: e.target.result, brand, visibility: accessLevel, access_code: accessCode }) })
+        .then(r => r.json()).then(d => { if (d.ok) alert('Excel caricato!'); else alert('Errore: ' + d.error); });
     };
     reader.readAsDataURL(file);
   };
@@ -498,54 +425,36 @@ function uploadExcel() {
 }
 
 function generateOfferta() {
-  if (selected.length === 0) { alert('Seleziona brand'); return; }
-  const q = 'Genera una proposta commerciale per: ' + selected.join(', ');
-  document.getElementById('question').value = q;
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  document.getElementById('question').value = 'Genera una proposta commerciale per: ' + selected.join(', ');
   ask();
 }
-
 function generateAnalisi() {
-  if (selected.length === 0) { alert('Seleziona brand'); return; }
-  const q = 'Analizza il posizionamento di mercato di: ' + selected.join(', ');
-  document.getElementById('question').value = q;
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  document.getElementById('question').value = 'Analizza il posizionamento di mercato di: ' + selected.join(', ');
   ask();
 }
-
 function generateProposta() {
-  if (selected.length === 0) { alert('Seleziona brand'); return; }
-  const q = 'Proposta strategica per: ' + selected.join(', ');
-  document.getElementById('question').value = q;
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  document.getElementById('question').value = 'Proposta strategica per: ' + selected.join(', ');
   ask();
 }
 
 function ask() {
-  if (selected.length === 0) { alert('Seleziona brand'); return; }
+  if (!selected.length) { alert('Seleziona brand'); return; }
   const q = document.getElementById('question').value;
   if (!q) return;
-  
   document.getElementById('question').value = '';
   const chat = document.getElementById('chat');
   chat.innerHTML += '<div class="message"><strong>Tu:</strong> ' + q + '</div>';
-  
-  fetch('/api/ask', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      question: q,
-      brands: selected,
-      web: webEnabled,
-      access_code: accessCode
+  fetch('/api/ask', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ question: q, brands: selected, web: webEnabled, access_code: accessCode }) })
+    .then(r => r.json())
+    .then(d => {
+      chat.innerHTML += '<div class="message"><strong>Oracolo:</strong> ' + (d.answer || 'Nessuna risposta') + '</div>';
+      chat.scrollTop = chat.scrollHeight;
     })
-  })
-  .then(r => r.json())
-  .then(d => {
-    let answer = d.answer || 'Nessuna risposta';
-    chat.innerHTML += '<div class="message"><strong>Oracolo:</strong> ' + answer + '</div>';
-    chat.scrollTop = chat.scrollHeight;
-  })
-  .catch(e => {
-    chat.innerHTML += '<div class="message" style="color: #ef4444;"><strong>Errore:</strong> ' + e + '</div>';
-  });
+    .catch(e => { chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>'; });
 }
 </script>
 </body>
