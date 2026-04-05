@@ -656,7 +656,8 @@ def index():
                 
                 messagesDiv.removeChild(loadingMsg);
                 
-                let msgHtml = `<div class="message bot-message">${data.answer}`;
+                let escapedAnswer = data.answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                let msgHtml = `<div class="message bot-message">${escapedAnswer}`;
                 if (data.images && data.images.length > 0) {
                     msgHtml += '<div class="image-gallery">';
                     data.images.forEach(img => {
@@ -958,9 +959,51 @@ def ask():
     aziende_names = [row[0] for row in c.fetchall()] if azienda_ids else []
     conn.close()
     
+    doc_context = None
+    web_content = None
+    source_badge = ""
+    
+    # LOGICA INTELLIGENTE
     if docs:
         doc_context = "\n".join([f"📄 {doc[0]}:\n{doc[1][:300]}" for doc in docs[:2]])
+        source_badge = "📚 DOCUMENTO"
         
+        # Se WEB è ON, cerca anche online per sintetizzare
+        if use_web:
+            web_content = search_web_bing(question)
+            if web_content:
+                source_badge = "📚 DOC + 🌐 WEB (SINTETIZZATO)"
+    
+    elif use_web:
+        # No DOC interno, ma WEB è ON
+        web_content = search_web_bing(question)
+        if web_content:
+            source_badge = "🌐 WEB"
+    
+    else:
+        # Nessun DOC e WEB disattivato
+        return jsonify({"answer": "⚠️ Nessun documento trovato e Web Search disattivato. Abilita Web Search o carica documenti.", "images": [], "source": "❌"})
+    
+    # Se non ho trovato nulla
+    if not doc_context and not web_content:
+        return jsonify({"answer": "❌ Nessuna informazione trovata.", "images": [], "source": "❌"})
+    
+    # Costruisci il prompt
+    if doc_context and web_content:
+        # ENTRAMBI - sintetizza
+        prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
+
+DOCUMENTI INTERNI:
+{doc_context}
+
+RICERCA WEB:
+{web_content}
+
+DOMANDA: {question}
+
+Sintetizza le due fonti. Dai PRIORITÀ al documento interno, integra il web se aggiunge valore. Se suggerisci prodotti, includi NOME ESATTO e MODELLO."""
+    elif doc_context:
+        # SOLO DOC
         prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
 
 DOCUMENTI AZIENDA:
@@ -969,21 +1012,16 @@ DOCUMENTI AZIENDA:
 DOMANDA: {question}
 
 Rispondi basandoti sui documenti. Se suggerisci prodotti, includi NOME ESATTO e MODELLO."""
-    
-    elif use_web:
-        web_content = search_web_bing(question)
-        
+    else:
+        # SOLO WEB
         prompt = f"""Tu sei consulente ESPERTO arredo bagno per Covolo.
 
 RICERCA WEB:
-{web_content if web_content else 'Info da esperienza'}
+{web_content}
 
 DOMANDA: {question}
 
 Rispondi da esperto. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO ESATTO."""
-    
-    else:
-        return jsonify({"answer": "⚠️ Nessun documento trovato e Web Search disattivato. Abilita Web Search o carica documenti.", "images": []})
     
     try:
         response = httpx.post(
@@ -1012,9 +1050,9 @@ Rispondi da esperto. Se suggerisci prodotti, includi NOME AZIENDA e MODELLO ESAT
                     cat_images = search_catalog_images(product, aid)
                     images.extend(cat_images)
             
-            return jsonify({"answer": answer, "images": images[:5]})
+            return jsonify({"answer": answer, "images": images[:5], "source": source_badge})
         else:
-            return jsonify({"answer": "Errore risposta API", "images": []})
+            return jsonify({"answer": "Errore risposta API", "images": [], "source": "❌"})
     
     except Exception as e:
         return jsonify({"answer": f"Errore: {str(e)}", "images": []})
