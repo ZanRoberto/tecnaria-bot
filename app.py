@@ -75,6 +75,33 @@ def init_covolo_db():
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     conn.commit()
+    
+    # SEED BRANDS da Covolo
+    covolo_brands = [
+        "Artesia", "Ariostea", "Madegan", "Tonalite", "Gruppo Bardelli",
+        "Schlüter Systems", "Murexin", "BGP", "Gridiron", "Cerasarda",
+        "Gigacer", "FAP Ceramiche", "Caesar", "Cottodeste", "Piastrelle d'Arredo",
+        "Mirage", "Bauwerk", "Gerflor", "Casalgrande Padana", "Aparici",
+        "Iniziativa Legno", "FMG", "Profiletec", "Baufloor", "Marca Corona",
+        "Italgraniti", "Sichenia", "Apavisa", "Bisazza", "Iris", "CP Parquet",
+        "Ier Hürne", "Floorim", "Edimax Astor", "Inklostro Bianco",
+        "GOman", "Tubes", "Sunshower", "Noorth", "Kaldewei", "Valdama",
+        "Blue Design", "DoorAmeda", "Antoniolupi", "Tresse", "Colombo",
+        "Gruppo Geromin", "Altamarea", "Vismara Vetro", "Demm", "Linki",
+        "SDR", "Omegius", "Remer", "Cerasa", "CSA", "Simas", "Cielo",
+        "Acquabella", "Duscholux", "Milldue", "Caros", "Anem",
+        "Gessi", "Brera", "Wedi", "Decor Walther", "Duravit",
+        "Austroflamm", "Stüv", "Glamm Fire", "Trimline Fires",
+        "Sterneldesign", "Sunshower Wellness"
+    ]
+    
+    for brand in covolo_brands:
+        try:
+            c.execute('INSERT INTO aziende (nome) VALUES (?)', (brand,))
+        except:
+            pass
+    
+    conn.commit()
     conn.close()
 
 init_covolo_db()
@@ -385,6 +412,48 @@ def index():
             padding: 5px 10px;
             border-radius: 4px;
             cursor: pointer;
+        }
+        
+        /* RESPONSIVE MOBILE */
+        @media (max-width: 768px) {
+            .container { flex-direction: column; }
+            .sidebar { 
+                width: 100%; 
+                height: auto;
+                max-height: 200px;
+                overflow-x: auto;
+                overflow-y: hidden;
+                display: flex;
+                gap: 15px;
+                padding: 10px;
+                border-right: none;
+                border-bottom: 1px solid rgba(59, 130, 245, 0.2);
+            }
+            .sidebar > * { flex-shrink: 0; }
+            .main { flex: 1; }
+            .header h1 { font-size: 20px; }
+            .header p { font-size: 11px; }
+            .message { max-width: 95%; padding: 8px 10px; font-size: 13px; }
+            .input-group { flex-direction: column; gap: 4px; }
+            .input-group input, .input-group button { width: 100%; }
+            .input-area { flex-direction: column; gap: 6px; }
+            .input-area input, .input-area button { width: 100%; }
+            .chat-area { padding: 10px; }
+            .image-gallery { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+        }
+        
+        @media (max-width: 480px) {
+            .sidebar { 
+                max-height: 150px;
+                padding: 8px;
+            }
+            .header { padding: 15px 10px; }
+            .header h1 { font-size: 18px; }
+            .chat-area { padding: 8px; }
+            .message { font-size: 12px; padding: 6px 8px; margin-bottom: 10px; }
+            .input-area { padding: 0; gap: 4px; }
+            .input-area input { padding: 8px 10px; font-size: 14px; }
+            .input-area button { padding: 8px 12px; font-size: 12px; }
         }
     </style>
 </head>
