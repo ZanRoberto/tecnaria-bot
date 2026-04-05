@@ -14,11 +14,15 @@ from flask import Flask, render_template_string, request, jsonify
 import httpx
 from urllib.parse import quote
 
+from macrorule_engine import MacroruleEngine
+from narrator_system import NarratorSystem
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 IMAGES_DIR = os.path.join(DATA_DIR, "product_images")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
+MACRORULE_FILE = os.path.join(BASE_DIR, "macroregole_covolo_universe.json")
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
@@ -27,6 +31,9 @@ DEEPSEEK_MODEL = "deepseek-chat"
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(IMAGES_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
+
+macrorule_engine = MacroruleEngine(MACRORULE_FILE)
+narrator = NarratorSystem()
 
 def init_covolo_db():
     conn = sqlite3.connect(DB_PATH)
@@ -457,7 +464,7 @@ def index():
                         <input type="checkbox" id="az-${az.id}" value="${az.id}" onchange="updateSelectedAziende()" style="margin-right: 6px;">
                         <label for="az-${az.id}">${az.nome}</label>
                     </div>
-                    <button style="padding: 2px 6px; background: #ef4444; font-size: 11px;" onclick="deleteAzienda('${az.id}')">✕</button>
+                    <button style="padding: 2px 6px; background: #ef4444; font-size: 11px;" onclick="deleteAzienda(this.parentElement.previousElementSibling.value)">✕</button>
                 </div>
             `).join('');
         }
@@ -519,8 +526,8 @@ def index():
                 <div class="preset-item">
                     <span>${preset.nome}</span>
                     <div style="display: flex; gap: 4px;">
-                        <button onclick="loadPreset('${preset.nome}')" style="background: #10b981;">Carica</button>
-                        <button class="delete" onclick="deletePreset('${preset.nome}')">🗑</button>
+                        <button onclick="loadPreset(this.parentElement.parentElement.firstElementChild.textContent)" style="background: #10b981;">Carica</button>
+                        <button class="delete" onclick="deletePreset(this.parentElement.parentElement.firstElementChild.textContent)">🗑</button>
                     </div>
                 </div>
             `).join('');
@@ -602,7 +609,7 @@ def index():
             imagesList.innerHTML = data.images.map(img => `
                 <div class="file-item">
                     <span>🖼️ ${img.product_name}</span>
-                    <button onclick="deleteProductImage('${img.id}')">✕</button>
+                    <button onclick="deleteProductImage(event.currentTarget.parentElement.parentElement.id)">✕</button>
                 </div>
             `).join('');
         }
@@ -653,7 +660,7 @@ def index():
                 if (data.images && data.images.length > 0) {
                     msgHtml += '<div class="image-gallery">';
                     data.images.forEach(img => {
-                        msgHtml += '<div class="image-item" onclick="openModal(' + "'" + 'data:image/jpeg;base64,' + img + "'" + ')"><img src="data:image/jpeg;base64,' + img + '"></div>';
+                        msgHtml += `<div class="image-item" onclick="openModal('data:image/jpeg;base64,${img}')"><img src="data:image/jpeg;base64,${img}"></div>`;
                     });
                     msgHtml += '</div>';
                 }
@@ -697,7 +704,7 @@ def index():
             filesList.innerHTML = data.documents.map(doc => `
                 <div class="file-item">
                     <span>📄 ${doc.filename}</span>
-                    <button onclick="deleteFile('${doc.filename}')">✕</button>
+                    <button onclick="deleteFile(this.parentElement.previousElementSibling.textContent.trim())">✕</button>
                 </div>
             `).join('');
         }
