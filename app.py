@@ -319,21 +319,49 @@ fetch('/api/get-brands')
   });
 
 function toggleDropdown() {
+  console.log("toggleDropdown chiamato");
   const dd = document.getElementById('dropdown');
-  dd.classList.toggle('show');
-  if (dd.classList.contains('show')) {
+  console.log("dropdown element:", dd);
+  
+  if (!dd) {
+    console.error("❌ ERRORE: elemento dropdown non trovato!");
+    return;
+  }
+  
+  const isShowing = dd.style.display === 'block';
+  
+  if (isShowing) {
+    dd.style.display = 'none';
+    console.log("✅ Dropdown chiuso");
+  } else {
+    dd.style.display = 'block';
+    console.log("✅ Dropdown aperto");
+    // Carica brand
     filterBrands();
-    console.log("✅ Dropdown aperto, brand disponibili: " + BRANDS.length);
   }
 }
 
 function filterBrands() {
-  const search = document.getElementById('search').value.toLowerCase();
-  const filtered = BRANDS.filter(b => b.toLowerCase().includes(search));
+  console.log("filterBrands - BRANDS disponibili: " + BRANDS.length);
+  
+  const search = document.getElementById('search');
+  const brandsList = document.getElementById('brands-list');
+  
+  if (!search || !brandsList) {
+    console.error("❌ Elementi non trovati!");
+    return;
+  }
+  
+  const searchValue = search.value.toLowerCase();
+  const filtered = BRANDS.filter(b => b.toLowerCase().includes(searchValue));
+  
+  console.log("Mostrando " + filtered.length + " brand");
+  
   const html = filtered.map(b => 
     '<div class="brand-item"><input type="checkbox" value="' + b + '" onchange="updateSelected()">' + b + '</div>'
   ).join('');
-  document.getElementById('brands-list').innerHTML = html;
+  
+  brandsList.innerHTML = html;
 }
 
 function updateSelected() {
