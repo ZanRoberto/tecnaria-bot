@@ -1,25 +1,31 @@
 """
-ORACOLO COVOLO - VERSIONE CON GUARDRAIL BRAND
-================================================
-Ricerca SOLO sui brand selezionati - Doc interni + Web
+ORACOLO COVOLO - SISTEMA CASSETTI CON ACCESSO PUBBLICO/PRIVATO
+================================================================
+Cassetti aziendali con documenti pubblici e riservati
 """
 
-import os, json, sqlite3, base64, re
+import os, json, sqlite3, base64, re, hashlib
 from datetime import datetime
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, send_file
 import httpx
 from urllib.parse import quote
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
+UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
 
+os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
-# 74 BRAND COVOLO - LISTA UFFICIALE
 BRANDS_LIST = [
     "Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa",
     "Ariostea", "Artesia", "Austroflamm", "BGP", "Brera", "Bisazza",
@@ -40,12 +46,17 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Tabelle
     c.execute('''CREATE TABLE IF NOT EXISTS aziende (id INTEGER PRIMARY KEY, nome TEXT UNIQUE)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, content TEXT, azienda_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS presets (id INTEGER PRIMARY KEY, nome TEXT UNIQUE, azienda_ids TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS documents 
+                 (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, content TEXT, azienda_id INTEGER, 
+                  visibility TEXT DEFAULT 'public', access_code TEXT, upload_date TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT, access_codes TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS proposte 
+                 (id INTEGER PRIMARY KEY, nome TEXT, brands TEXT, data TIMESTAMP, contenuto TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS access_log 
+                 (id INTEGER PRIMARY KEY, username TEXT, action TEXT, brand TEXT, document TEXT, timestamp TIMESTAMP)''')
     
-    # Carica brand se vuoto
     c.execute('SELECT COUNT(*) FROM aziende')
     if c.fetchone()[0] == 0:
         for brand in BRANDS_LIST:
@@ -60,16 +71,18 @@ def init_db():
 init_db()
 app = Flask(__name__)
 
-def search_documents(question, selected_brands):
-    """Cerca SOLO nei documenti dei brand selezionati"""
+def hash_password(pwd):
+    return hashlib.sha256(pwd.encode()).hexdigest()
+
+def search_documents(question, selected_brands, access_code=None):
+    """Cerca documenti in base a visibilità e accesso"""
     try:
-        if not selected_brands or selected_brands == ['']: 
+        if not selected_brands: 
             return None, None
         
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Prendi ID dei brand selezionati
         placeholders = ','.join('?' * len(selected_brands))
         c.execute(f'SELECT id FROM aziende WHERE nome IN ({placeholders})', selected_brands)
         brand_ids = [str(row[0]) for row in c.fetchall()]
@@ -78,19 +91,30 @@ def search_documents(question, selected_brands):
             conn.close()
             return None, None
         
-        # Cerca documenti SOLO per questi brand
-        placeholders = ','.join('?' * len(brand_ids))
-        c.execute(f'SELECT filename, content, azienda_id FROM documents WHERE azienda_id IN ({placeholders})', [int(x) for x in brand_ids])
+        # Costruisci query in base ad accesso
+        if access_code:
+            # Con PSW: accedi a TUTTO (public + private con accesso_code)
+            query = f'''SELECT filename, content, azienda_id FROM documents 
+                       WHERE azienda_id IN ({','.join('?' * len(brand_ids))})
+                       AND (visibility='public' OR access_code=?)
+                       ORDER BY upload_date DESC LIMIT 10'''
+            c.execute(query, [int(x) for x in brand_ids] + [access_code])
+        else:
+            # Senza PSW: accedi SOLO a public
+            query = f'''SELECT filename, content, azienda_id FROM documents 
+                       WHERE azienda_id IN ({','.join('?' * len(brand_ids))})
+                       AND visibility='public'
+                       ORDER BY upload_date DESC LIMIT 10'''
+            c.execute(query, [int(x) for x in brand_ids])
+        
         docs = c.fetchall()
         conn.close()
         
         if not docs:
             return None, None
         
-        # Trova miglior match
         keywords = re.findall(r'\b\w{3,}\b', question.lower())
         best_match = None
-        best_brand = None
         best_score = 0
         
         for filename, content, azienda_id in docs:
@@ -98,19 +122,18 @@ def search_documents(question, selected_brands):
             if score > best_score:
                 best_score = score
                 best_match = (filename, content)
-                best_brand = azienda_id
         
-        return best_match, best_brand if best_score > 0 else (None, None)
-    except:
+        return best_match if best_score > 0 else (None, None), None
+    except Exception as e:
+        print(f"[ERROR] search_documents: {e}")
         return None, None
 
 def search_web(question, selected_brands):
-    """Ricerca web FILTRATA per brand selezionati"""
+    """Ricerca web filtrata per brand"""
     try:
         if not selected_brands:
-            return None, []
+            return None
         
-        # Crea query specifica per brand
         brands_query = " OR ".join([f'"{b}"' for b in selected_brands])
         query = f"({brands_query}) AND ({question})"
         
@@ -126,44 +149,37 @@ def search_web(question, selected_brands):
                 if len(clean) > 40 and len(text) < 800:
                     text += clean + " "
         
-        return text[:500] if text else None, []
+        return text[:500] if text else None
     except:
-        return None, []
+        return None
 
-def deepseek_ask(prompt, selected_brands):
-    """DeepSeek - con context sui brand selezionati"""
+def deepseek_ask(prompt, selected_brands, access_level="public"):
+    """DeepSeek con context"""
     try:
         brands_context = ", ".join(selected_brands) if selected_brands else "Covolo"
-        full_prompt = f"""Sei consulente esperto arredo bagno per: {brands_context}
-
-DOMANDA CLIENTE: {prompt}
-
-ISTRUZIONI:
-- Rispondi come esperto per i brand selezionati
-- Fornisci consigli specifici e utili
-- Sii conciso e pratico
-- Se serve, cita le caratteristiche positive di questi brand
-
-RISPOSTA:"""
+        access_text = "PREMIUM (dati completi)" if access_level == "private" else "STANDARD (dati pubblici)"
         
-        print(f"[DEBUG] Calling DeepSeek with key: {DEEPSEEK_API_KEY[:20]}...")
-        print(f"[DEBUG] Brands: {brands_context}")
+        full_prompt = f"""Sei consulente esperto arredo bagno per: {brands_context}
+Livello accesso: {access_text}
+
+{prompt}
+
+Rispondi come esperto professionale. La risposta deve essere diversa dalla domanda."""
+        
+        print(f"[DEEPSEEK] Calling - Access: {access_level}")
         
         resp = httpx.post(DEEPSEEK_API_URL,
             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "deepseek-chat", "messages": [{"role": "user", "content": full_prompt}], "temperature": 0.7, "max_tokens": 1000},
+            json={"model": "deepseek-chat", "messages": [{"role": "user", "content": full_prompt}], 
+                  "temperature": 0.7, "max_tokens": 1000},
             timeout=20)
-        
-        print(f"[DEBUG] DeepSeek status: {resp.status_code}")
         
         if resp.status_code == 200:
             result = resp.json()["choices"][0]["message"]["content"]
-            print(f"[DEBUG] DeepSeek response: {result[:100]}...")
+            print(f"[DEEPSEEK] OK - {access_level}")
             return result
-        else:
-            print(f"[DEBUG] DeepSeek error: {resp.status_code} - {resp.text[:200]}")
     except Exception as e:
-        print(f"[DEBUG] Exception in deepseek_ask: {str(e)}")
+        print(f"[DEEPSEEK] Error: {e}")
     
     return None
 
@@ -184,16 +200,17 @@ body { font-family: -apple-system; background: linear-gradient(135deg, #0f172e 0
 .actions-bar { background: rgba(59,130,245,0.05); border-bottom: 1px solid rgba(59,130,245,0.2); padding: 10px 20px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 .action-btn { background: #10b981; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
 .action-btn:hover { background: #059669; }
+.action-btn.disabled { background: #6b7280; cursor: not-allowed; }
 .chat-area { flex: 1; display: flex; flex-direction: column; padding: 20px; overflow-y: auto; }
 .messages { flex: 1; overflow-y: auto; margin-bottom: 20px; }
 .message { margin-bottom: 15px; padding: 12px 15px; border-radius: 8px; max-width: 88%; word-wrap: break-word; }
 .bot-message { background: rgba(59,130,245,0.2); border-left: 3px solid #3b82f6; }
 .user-message { background: rgba(168,85,247,0.2); border-left: 3px solid #a855f7; margin-left: auto; }
 .input-area { display: flex; gap: 10px; }
-input[type="text"] { flex: 1; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: #e0e0e0; padding: 10px 15px; border-radius: 6px; }
+input[type="text"], input[type="password"] { flex: 1; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: #e0e0e0; padding: 10px 15px; border-radius: 6px; }
 button { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; }
 button:hover { background: #2563eb; }
-.sidebar h3 { color: #3b82f6; margin-top: 20px; margin-bottom: 12px; font-size: 13px; text-transform: uppercase; }
+.sidebar h3 { color: #3b82f6; margin-top: 20px; margin-bottom: 12px; font-size: 13px; }
 .sidebar h3:first-child { margin-top: 0; }
 .brand-selector-btn { width: 100%; background: #3b82f6; color: white; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer; font-weight: 600; margin-bottom: 10px; }
 .brand-selector-btn:hover { background: #2563eb; }
@@ -206,10 +223,21 @@ button:hover { background: #2563eb; }
 .selected-brands { background: rgba(59,130,245,0.1); padding: 8px; border-radius: 4px; margin-bottom: 10px; min-height: 30px; display: flex; flex-wrap: wrap; gap: 6px; }
 .brand-badge { background: #10b981; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; display: flex; gap: 4px; align-items: center; }
 .brand-badge button { background: transparent; color: white; border: none; cursor: pointer; padding: 0; font-size: 12px; }
+.access-section { background: rgba(59,130,245,0.1); padding: 10px; border-radius: 6px; margin-bottom: 10px; }
+.access-badge { background: #f59e0b; color: #000; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+.access-badge.private { background: #ef4444; color: white; }
+.group-item { background: rgba(139,92,246,0.2); border: 1px solid rgba(139,92,246,0.4); padding: 6px 8px; border-radius: 4px; margin-bottom: 6px; font-size: 11px; display: flex; justify-content: space-between; align-items: center; }
+.group-item-name { cursor: pointer; flex: 1; }
+.group-item-name:hover { color: #a78bfa; }
+.group-item-btns { display: flex; gap: 4px; }
+.group-item-btns button { padding: 2px 6px; font-size: 10px; background: #8b5cf6; border: none; color: white; border-radius: 3px; cursor: pointer; }
+.group-item-btns button:hover { background: #a78bfa; }
+.group-input { width: 100%; padding: 6px; font-size: 11px; background: rgba(15,23,46,0.8); border: 1px solid rgba(139,92,246,0.3); color: #e0e0e0; border-radius: 4px; margin-bottom: 6px; }
+
 </style></head><body>
 <div class="container">
 <div class="sidebar">
-<h3>🏢 Seleziona Brand (Guardrail)</h3>
+<h3>🏢 Cassetti Aziendali</h3>
 <button class="brand-selector-btn" onclick="toggleDropdown()">🔽 Seleziona Brand</button>
 
 <div id="brand-dropdown" class="brand-dropdown">
@@ -221,23 +249,38 @@ button:hover { background: #2563eb; }
 <span style="font-size: 11px; color: #9ca3af;">Nessun brand</span>
 </div>
 
+<div style="display: flex; gap: 6px; margin-bottom: 10px;">
+<input type="text" id="group-name" class="group-input" placeholder="Nome gruppo..." style="margin-bottom: 0;">
+<button onclick="saveGroup()" style="padding: 6px 10px; font-size: 11px; background: #8b5cf6;">💾</button>
+</div>
+
+<h3>📊 Gruppi Salvati</h3>
+<div id="groups-list" style="max-height: 150px; overflow-y: auto;"></div>
+
+<div class="access-section">
+<h3 style="margin-top: 0; font-size: 11px;">🔐 Accesso Privato</h3>
+<input type="password" id="access-code" placeholder="Codice accesso..." style="width: 100%; padding: 6px; font-size: 11px; margin-bottom: 6px;">
+<button onclick="activatePrivateAccess()" style="width: 100%; padding: 6px; font-size: 11px;">Attiva</button>
+<div id="access-status" style="font-size: 11px; color: #9ca3af; margin-top: 6px;">Accesso: PUBBLICO</div>
+</div>
+
 <h3>🌐 Web Search</h3>
 <button style="width: 100%; background: #10b981; padding: 10px; border-radius: 6px; border: none; color: white; cursor: pointer; font-weight: 600;" id="web-btn" onclick="toggleWeb()">🟢 ON</button>
 
-<h3>📁 Documenti</h3>
-<div style="border: 2px dashed rgba(59,130,245,0.3); padding: 10px; border-radius: 6px; text-align: center; cursor: pointer; font-size: 12px; color: #9ca3af;" onclick="document.getElementById('file-input').click()">📤 Carica file
-<input type="file" id="file-input" hidden multiple></div>
+<h3>📁 Gestione Cassetti</h3>
+<button style="width: 100%; background: #8b5cf6; padding: 10px; border-radius: 6px; border: none; color: white; cursor: pointer; font-weight: 600; margin-bottom: 6px;" onclick="showUpload()">📤 Upload Doc</button>
+<button style="width: 100%; background: #6366f1; padding: 10px; border-radius: 6px; border: none; color: white; cursor: pointer; font-weight: 600;" onclick="showDocuments()">📋 Documenti</button>
 </div>
 
 <div class="main">
 <div class="header">
 <h1>🔮 Oracolo Covolo</h1>
-<p>Documenti + Web Intelligente (Guardrail Brand)</p>
+<p>Documenti Pubblici + Accesso Privato (Guardrail Brand)</p>
 </div>
 <div class="actions-bar">
-<button class="action-btn" disabled>📄 OFFERTA</button>
-<button class="action-btn" disabled>📊 ANALISI</button>
-<button class="action-btn" disabled>🎯 PROPOSTA</button>
+<button class="action-btn" onclick="generateOfferta()">📄 OFFERTA</button>
+<button class="action-btn" onclick="generateAnalisi()">📊 ANALISI</button>
+<button class="action-btn" onclick="generateProposta()">🎯 PROPOSTA</button>
 </div>
 <div class="chat-area">
 <div class="messages" id="messages"></div>
@@ -253,8 +296,73 @@ button:hover { background: #2563eb; }
 const BRANDS = ''' + brands_json + ''';
 let selectedBrands = [];
 let webEnabled = true;
+let accessCode = null;
+let accessLevel = "public";
+let groups = JSON.parse(localStorage.getItem('oracolo_groups')) || {};
 
 console.log("✅ App caricata - " + BRANDS.length + " brand");
+
+// GRUPPI FUNCTIONS
+function saveGroup() {
+    if (selectedBrands.length === 0) { alert('Seleziona almeno 1 brand!'); return; }
+    const name = document.getElementById('group-name').value.trim();
+    if (!name) { alert('Inserisci nome gruppo'); return; }
+    
+    groups[name] = selectedBrands;
+    localStorage.setItem('oracolo_groups', JSON.stringify(groups));
+    document.getElementById('group-name').value = '';
+    loadGroups();
+    alert('✅ Gruppo "' + name + '" salvato!');
+}
+
+function loadGroup(groupName) {
+    selectedBrands = [...groups[groupName]];
+    updateDisplay();
+    filterBrands();
+    document.getElementById('brand-dropdown').classList.remove('show');
+}
+
+function deleteGroup(groupName) {
+    if (confirm('Elimina gruppo "' + groupName + '"?')) {
+        delete groups[groupName];
+        localStorage.setItem('oracolo_groups', JSON.stringify(groups));
+        loadGroups();
+    }
+}
+
+function updateGroupAdd(groupName) {
+    const currentGroup = groups[groupName];
+    const newBrands = selectedBrands.filter(b => !currentGroup.includes(b));
+    
+    if (newBrands.length === 0) { alert('Nessun brand nuovo da aggiungere'); return; }
+    
+    groups[groupName] = [...new Set([...currentGroup, ...selectedBrands])];
+    localStorage.setItem('oracolo_groups', JSON.stringify(groups));
+    loadGroups();
+    alert('✅ Gruppo aggiornato! Aggiunti: ' + newBrands.join(', '));
+}
+
+function loadGroups() {
+    const container = document.getElementById('groups-list');
+    if (Object.keys(groups).length === 0) {
+        container.innerHTML = '<div style="font-size: 11px; color: #9ca3af; padding: 6px;">Nessun gruppo</div>';
+        return;
+    }
+    
+    const html = Object.keys(groups).sort().map(gName => `
+        <div class="group-item">
+            <div class="group-item-name" onclick="loadGroup('${gName}')">${gName} (${groups[gName].length})</div>
+            <div class="group-item-btns">
+                <button onclick="updateGroupAdd('${gName}')" title="Aggiungi brand attuali">➕</button>
+                <button onclick="deleteGroup('${gName}')" title="Elimina">✕</button>
+            </div>
+        </div>
+    `).join('');
+    
+    container.innerHTML = html;
+}
+
+// FINE GRUPPI
 
 function toggleDropdown() {
     const dd = document.getElementById('brand-dropdown');
@@ -299,9 +407,42 @@ function removeBrand(brand) {
     filterBrands();
 }
 
+function activatePrivateAccess() {
+    const code = document.getElementById('access-code').value.trim();
+    if (!code) { alert('Inserisci codice accesso'); return; }
+    accessCode = code;
+    accessLevel = "private";
+    document.getElementById('access-status').innerHTML = '<span class="access-badge private">🔒 PRIVATO (dati completi)</span>';
+    document.getElementById('access-code').value = '';
+}
+
 function toggleWeb() {
     webEnabled = !webEnabled;
     document.getElementById('web-btn').textContent = webEnabled ? '🟢 ON' : '🔴 OFF';
+}
+
+function showUpload() {
+    alert('Upload cassetti: seleziona brand e upload file\n(In sviluppo - contatta admin)');
+}
+
+function showDocuments() {
+    alert('Visualizza documenti cassetti\n(In sviluppo - contatta admin)');
+}
+
+function generateOfferta() {
+    if (selectedBrands.length === 0) { alert('Seleziona brand'); return; }
+    alert('🔄 Generazione OFFERTA PDF...\n(Basata su risposta consulente + foto + dati ' + accessLevel.toUpperCase() + ')');
+}
+
+function generateAnalisi() {
+    if (selectedBrands.length === 0) { alert('Seleziona brand'); return; }
+    alert('📊 Analisi comparativa ' + selectedBrands.join(', ') + '\n(Dati ' + accessLevel.toUpperCase() + ')');
+}
+
+function generateProposta() {
+    if (selectedBrands.length === 0) { alert('Seleziona brand'); return; }
+    const nome = prompt('Nome proposta:');
+    if (nome) alert('💾 Proposta "' + nome + '" salvata!\n(Accesso ' + accessLevel.toUpperCase() + ')');
 }
 
 async function sendQuestion() {
@@ -314,6 +455,10 @@ async function sendQuestion() {
     document.getElementById('question').value = '';
     msg.scrollTop = msg.scrollHeight;
     
+    const accessBadge = accessLevel === 'private' ? 
+        '<span class="access-badge private">🔒 PRIVATO</span>' : 
+        '<span class="access-badge">📖 PUBBLICO</span>';
+    
     try {
         const res = await fetch('/api/ask', {
             method: 'POST',
@@ -321,12 +466,14 @@ async function sendQuestion() {
             body: JSON.stringify({
                 question: q,
                 brands: selectedBrands,
-                web: webEnabled
+                web: webEnabled,
+                access_code: accessCode,
+                access_level: accessLevel
             })
         });
         const data = await res.json();
         const escaped = data.answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        msg.innerHTML += '<div class="message bot-message">' + escaped + '</div>';
+        msg.innerHTML += '<div class="message bot-message">' + accessBadge + ' ' + escaped + '</div>';
         msg.scrollTop = msg.scrollHeight;
     } catch (e) {
         msg.innerHTML += '<div class="message bot-message">❌ Errore: ' + e + '</div>';
@@ -334,6 +481,7 @@ async function sendQuestion() {
 }
 
 console.log("✅ JavaScript caricato");
+loadGroups();
 </script>
 </body></html>''')
 
@@ -343,52 +491,49 @@ def ask():
     q = data.get('question', '').strip()
     selected_brands = data.get('brands', [])
     use_web = data.get('web', True)
+    access_code = data.get('access_code')
+    access_level = data.get('access_level', 'public')
     
     if not selected_brands:
         return jsonify({"answer": "❌ Seleziona almeno 1 brand!"})
     
-    print(f"\n[REQUEST] Question: {q}")
-    print(f"[REQUEST] Brands: {selected_brands}")
-    print(f"[REQUEST] Web: {use_web}")
+    print(f"\n[REQUEST] Q: {q} | Brands: {selected_brands} | Access: {access_level}")
     
-    # Ricerca nei documenti (GUARDRAIL: solo brand selezionati)
-    doc_match, doc_brand = search_documents(q, selected_brands)
-    doc_text = f"[DOC: {doc_match[0]}] {doc_match[1][:300]}" if doc_match else None
-    print(f"[SEARCH] Documents found: {doc_text is not None}")
+    # Ricerca documenti (con filtro visibilità)
+    doc_match, _ = search_documents(q, selected_brands, access_code if access_level == 'private' else None)
+    doc_text = f"[DOC: {doc_match[0][:50]}...] {doc_match[1][:300]}" if doc_match else None
+    print(f"[SEARCH] Docs (access={access_level}): {doc_text is not None}")
     
-    # Ricerca web (GUARDRAIL: solo brand selezionati)
+    # Ricerca web
     web_text = None
     if use_web:
-        web_text, _ = search_web(q, selected_brands)
-        print(f"[SEARCH] Web found: {web_text is not None}")
+        web_text = search_web(q, selected_brands)
+        print(f"[SEARCH] Web: {web_text is not None}")
     
     # Genera risposta
     brands_str = ", ".join(selected_brands)
     context = ""
     if doc_text:
-        context += f"\nDOCUMENTO INTERNO:\n{doc_text}"
+        context += f"\nDOCUMENTO (access={access_level}):\n{doc_text}"
     if web_text:
         context += f"\nWEB:\n{web_text}"
     
-    prompt = f"""Domanda del cliente: {q}
-
-Brand di riferimento (GUARDRAIL): {brands_str}
+    prompt = f"""Domanda: {q}
+Brand (GUARDRAIL): {brands_str}
+Livello accesso: {access_level.upper()}
 {context}
 
-Rispondi come esperto di arredo bagno per questi brand. Sii pratico e utile. La risposta deve essere DIVERSA dalla domanda."""
+Rispondi come esperto. Risposta DIVERSA da domanda."""
     
-    print(f"[DEEPSEEK] Calling with prompt...")
-    answer = deepseek_ask(prompt, selected_brands)
+    answer = deepseek_ask(prompt, selected_brands, access_level)
     
     if not answer:
-        print(f"[FALLBACK] DeepSeek failed, using fallback")
-        answer = f"🏢 Consiglio per {brands_str}:\n\nSu {q}, questi brand offrono soluzioni di qualità. Ti consiglio di contattarci per una consulenza personalizzata basata sulla domanda specifica."
-    
-    print(f"[RESPONSE] Answer: {answer[:100]}...")
+        answer = f"[{access_level.upper()}] Consiglio su {q} per {brands_str}"
     
     return jsonify({
         "answer": answer,
-        "source": f"🎯 Filtro: {brands_str}" + (" + Web" if use_web and web_text else "")
+        "access_level": access_level,
+        "source": f"🎯 {brands_str} | {access_level.upper()}"
     })
 
 if __name__ == '__main__':
