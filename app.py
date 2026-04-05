@@ -268,8 +268,18 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
     <h2>WEB SEARCH</h2>
     <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()">ON</button>
     <h2>UPLOAD DOCUMENTI</h2>
-    <button onclick="uploadFile()" style="width: 100%; background: #8b5cf6;">Upload Doc</button>
-    <button onclick="uploadExcel()" style="width: 100%; background: #8b5cf6;">Upload Excel</button>
+    <select id="upload-brand" style="width:100%; margin-bottom:8px; padding:8px; background:rgba(30,41,59,0.8); border:1px solid rgba(139,92,246,0.5); color:white; border-radius:6px; font-size:12px;">
+      <option value="">-- Seleziona Brand --</option>
+    </select>
+    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:10px; border-radius:6px; cursor:pointer; font-weight:600; font-size:12px; text-align:center; margin-bottom:8px;">
+      Upload Doc
+      <input type="file" id="file-doc" style="display:none" onchange="doUpload(this, 'doc')">
+    </label>
+    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:10px; border-radius:6px; cursor:pointer; font-weight:600; font-size:12px; text-align:center; margin-bottom:8px;">
+      Upload Excel
+      <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
+    </label>
+    <div id="upload-status" style="font-size:11px; color:#9ca3af; margin-top:4px;"></div>
   </div>
   <div class="main">
     <div class="title">Oracolo Covolo</div>
@@ -298,6 +308,15 @@ fetch('/api/get-brands')
   .then(d => {
     BRANDS = d.brands || [];
     console.log("Brand caricati: " + BRANDS.length);
+    // Popola select upload
+    const sel = document.getElementById('upload-brand');
+    if (sel) {
+      BRANDS.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b; opt.textContent = b;
+        sel.appendChild(opt);
+      });
+    }
     loadGroups();
   })
   .catch(e => { console.error("Errore caricamento brand:", e); });
@@ -389,40 +408,36 @@ function addCassetto() {
     });
 }
 
-function uploadFile() {
-  const brand = prompt('Brand:');
-  if (!brand) return;
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.onchange = function() {
-    const file = input.files[0];
-    const reader = new FileReader();
-    reader.onload = function(e) {
-      fetch('/api/upload-document', { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ filename: file.name, content: e.target.result, brand, visibility: accessLevel, access_code: accessCode }) })
-        .then(r => r.json()).then(d => { if (d.ok) alert('Documento caricato!'); else alert('Errore: ' + d.error); });
-    };
-    reader.readAsDataURL(file);
+function doUpload(input, tipo) {
+  const brand = document.getElementById('upload-brand').value;
+  if (!brand) {
+    document.getElementById('upload-status').textContent = 'Seleziona prima un brand!';
+    document.getElementById('upload-status').style.color = '#ef4444';
+    input.value = '';
+    return;
+  }
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('upload-status').textContent = 'Caricamento in corso...';
+  document.getElementById('upload-status').style.color = '#9ca3af';
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const filename = tipo === 'excel' ? file.name + ' [EXCEL]' : file.name;
+    fetch('/api/upload-document', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ filename: filename, content: e.target.result, brand: brand, visibility: accessLevel, access_code: accessCode }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok) {
+          document.getElementById('upload-status').textContent = 'Caricato: ' + file.name;
+          document.getElementById('upload-status').style.color = '#10b981';
+        } else {
+          document.getElementById('upload-status').textContent = 'Errore: ' + d.error;
+          document.getElementById('upload-status').style.color = '#ef4444';
+        }
+        input.value = '';
+      });
   };
-  input.click();
-}
-
-function uploadExcel() {
-  const brand = prompt('Brand per EXCEL:');
-  if (!brand) return;
-  const input = document.createElement('input');
-  input.type = 'file'; input.accept = '.xlsx,.xls,.csv';
-  input.onchange = function() {
-    const file = input.files[0];
-    const reader = new FileReader();
-    reader.onload = function(e) {
-      fetch('/api/upload-document', { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ filename: file.name + ' [EXCEL]', content: e.target.result, brand, visibility: accessLevel, access_code: accessCode }) })
-        .then(r => r.json()).then(d => { if (d.ok) alert('Excel caricato!'); else alert('Errore: ' + d.error); });
-    };
-    reader.readAsDataURL(file);
-  };
-  input.click();
+  reader.readAsDataURL(file);
 }
 
 function generateOfferta() {
