@@ -441,6 +441,19 @@ function generateProposta() {
   ask();
 }
 
+function parseMarkdown(text) {
+  return text
+    .replace(/### (.+)/g, '<h3 style="color:#60a5fa;margin:10px 0 4px 0;font-size:13px">$1</h3>')
+    .replace(/## (.+)/g, '<h2 style="color:#3b82f6;margin:12px 0 6px 0;font-size:14px">$1</h2>')
+    .replace(/# (.+)/g, '<h1 style="color:#3b82f6;margin:12px 0 6px 0;font-size:15px">$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-–—] (.+)/gm, '<li style="margin-left:16px;margin-bottom:3px">$1</li>')
+    .replace(/(<li.*<\/li>)/gs, '<ul style="margin:6px 0">$1</ul>')
+    .replace(/\n{2,}/g, '</p><p style="margin:6px 0">')
+    .replace(/\n/g, '<br>');
+}
+
 function ask() {
   if (!selected.length) { alert('Seleziona brand'); return; }
   const q = document.getElementById('question').value;
@@ -448,14 +461,25 @@ function ask() {
   document.getElementById('question').value = '';
   const chat = document.getElementById('chat');
   chat.innerHTML += '<div class="message"><strong>Tu:</strong> ' + q + '</div>';
+  // Loading indicator
+  const loadingId = 'loading_' + Date.now();
+  chat.innerHTML += '<div class="message" id="' + loadingId + '" style="opacity:0.6;font-style:italic">Oracolo sta elaborando...</div>';
+  chat.scrollTop = chat.scrollHeight;
   fetch('/api/ask', { method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ question: q, brands: selected, web: webEnabled, access_code: accessCode }) })
     .then(r => r.json())
     .then(d => {
-      chat.innerHTML += '<div class="message"><strong>Oracolo:</strong> ' + (d.answer || 'Nessuna risposta') + '</div>';
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      const formatted = parseMarkdown(d.answer || 'Nessuna risposta');
+      chat.innerHTML += '<div class="message oracolo-msg"><strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div></div>';
       chat.scrollTop = chat.scrollHeight;
     })
-    .catch(e => { chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>'; });
+    .catch(e => {
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>';
+    });
 }
 </script>
 </body>
