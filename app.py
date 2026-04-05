@@ -648,8 +648,15 @@ def index():
             try {
                 const res = await fetch('/api/aziende');
                 const data = await res.json();
-                allBrands = data.aziende.map(item => item.nome);
-                renderBrandList();
+                console.log('Dati ricevuti:', data);
+                
+                if (data.aziende && data.aziende.length > 0) {
+                    allBrands = data.aziende.map(item => item.nome).sort();
+                    console.log('Brand caricati:', allBrands.length);
+                    renderBrandList();
+                } else {
+                    console.error('Nessun brand trovato');
+                }
             } catch (e) {
                 console.error('Errore caricamento brand:', e);
             }
@@ -1049,7 +1056,10 @@ def index():
             document.getElementById('image-modal').classList.remove('active');
         }
         
-        loadBrandList();
+        // Carica brand dopo che DOM è pronto
+        window.addEventListener('load', function() {
+            setTimeout(loadBrandList, 100);
+        });
         loadPresets();
     </script>
 </body>
