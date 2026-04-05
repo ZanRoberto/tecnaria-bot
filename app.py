@@ -295,14 +295,38 @@ button:hover { background: #2563eb; }
 </div>
 
 <script>
-const BRANDS = JSON.parse(''' + brands_json + ''');
+let BRANDS = [];
 let selectedBrands = [];
 let webEnabled = true;
 let accessCode = null;
 let accessLevel = "public";
 let groups = JSON.parse(localStorage.getItem('oracolo_groups')) || {};
 
-console.log("✅ App caricata - " + BRANDS.length + " brand");
+// Carica brand dal backend
+fetch('/api/get-brands')
+    .then(r => r.json())
+    .then(data => {
+        BRANDS = data.brands || [];
+        console.log("✅ App caricata - " + BRANDS.length + " brand dal backend");
+    })
+    .catch(e => {
+        console.error("❌ Errore caricamento brand:", e);
+        // Fallback
+        BRANDS = ["Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa",
+            "Ariostea", "Artesia", "Austroflamm", "BGP", "Brera", "Bisazza",
+            "Blue Design", "Baufloor", "Bauwerk", "Caros", "Caesar", "Casalgrande Padana",
+            "Cerasarda", "Cerasa", "Cielo", "Colombo", "Cottodeste", "CP Parquet",
+            "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit",
+            "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi",
+            "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin",
+            "Ier Hürne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti",
+            "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue",
+            "Murexin", "Noorth", "Omegius", "Piastrelle d'Arredo", "Profiletec", "Remer",
+            "Sichenia", "Simas", "Schlüter Systems", "SDR", "Sterneldesign", "Stüv",
+            "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires",
+            "Tubes", "Valdama", "Vismara Vetro", "Wedi"];
+        console.log("✅ App caricata - " + BRANDS.length + " brand (FALLBACK)");
+    });
 
 // GRUPPI FUNCTIONS
 function saveGroup() {
@@ -618,6 +642,22 @@ loadGroups();
 loadAziende();
 </script>
 </body></html>''')
+
+@app.route('/api/get-brands', methods=['GET'])
+def get_brands():
+    """Ritorna lista brand dal database (PERMANENTI)"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('SELECT nome FROM aziende ORDER BY nome')
+        brands = [row[0] for row in c.fetchall()]
+        print(f"[API] Caricati {len(brands)} brand dal DB")
+        return jsonify({"brands": brands})
+    except Exception as e:
+        print(f"[ERROR] get_brands: {e}")
+        return jsonify({"brands": [], "error": str(e)})
+    finally:
+        conn.close()
 
 @app.route('/api/aziende', methods=['GET'])
 def get_aziende():
