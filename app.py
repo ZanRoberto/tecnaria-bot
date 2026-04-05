@@ -35,6 +35,24 @@ os.makedirs(DATA_DIR, exist_ok=True)
 macrorule_engine = MacroruleEngine(MACRORULE_FILE)
 narrator = NarratorSystem()
 
+COVOLO_BRANDS = [
+    "Artesia", "Ariostea", "Madegan", "Tonalite", "Gruppo Bardelli",
+    "Schlüter Systems", "Murexin", "BGP", "Gridiron", "Cerasarda",
+    "Gigacer", "FAP Ceramiche", "Caesar", "Cottodeste", "Piastrelle d'Arredo",
+    "Mirage", "Bauwerk", "Gerflor", "Casalgrande Padana", "Aparici",
+    "Iniziativa Legno", "FMG", "Profiletec", "Baufloor", "Marca Corona",
+    "Italgraniti", "Sichenia", "Apavisa", "Bisazza", "Iris", "CP Parquet",
+    "Ier Hürne", "Floorim", "Edimax Astor", "Inklostro Bianco",
+    "GOman", "Tubes", "Sunshower", "Noorth", "Kaldewei", "Valdama",
+    "Blue Design", "DoorAmeda", "Antoniolupi", "Tresse", "Colombo",
+    "Gruppo Geromin", "Altamarea", "Vismara Vetro", "Demm", "Linki",
+    "SDR", "Omegius", "Remer", "Cerasa", "CSA", "Simas", "Cielo",
+    "Acquabella", "Duscholux", "Milldue", "Caros", "Anem",
+    "Gessi", "Brera", "Wedi", "Decor Walther", "Duravit",
+    "Austroflamm", "Stüv", "Glamm Fire", "Trimline Fires",
+    "Sterneldesign", "Sunshower Wellness"
+]
+
 def init_covolo_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -76,32 +94,19 @@ def init_covolo_db():
     
     conn.commit()
     
-    # SEED BRANDS da Covolo
-    covolo_brands = [
-        "Artesia", "Ariostea", "Madegan", "Tonalite", "Gruppo Bardelli",
-        "Schlüter Systems", "Murexin", "BGP", "Gridiron", "Cerasarda",
-        "Gigacer", "FAP Ceramiche", "Caesar", "Cottodeste", "Piastrelle d'Arredo",
-        "Mirage", "Bauwerk", "Gerflor", "Casalgrande Padana", "Aparici",
-        "Iniziativa Legno", "FMG", "Profiletec", "Baufloor", "Marca Corona",
-        "Italgraniti", "Sichenia", "Apavisa", "Bisazza", "Iris", "CP Parquet",
-        "Ier Hürne", "Floorim", "Edimax Astor", "Inklostro Bianco",
-        "GOman", "Tubes", "Sunshower", "Noorth", "Kaldewei", "Valdama",
-        "Blue Design", "DoorAmeda", "Antoniolupi", "Tresse", "Colombo",
-        "Gruppo Geromin", "Altamarea", "Vismara Vetro", "Demm", "Linki",
-        "SDR", "Omegius", "Remer", "Cerasa", "CSA", "Simas", "Cielo",
-        "Acquabella", "Duscholux", "Milldue", "Caros", "Anem",
-        "Gessi", "Brera", "Wedi", "Decor Walther", "Duravit",
-        "Austroflamm", "Stüv", "Glamm Fire", "Trimline Fires",
-        "Sterneldesign", "Sunshower Wellness"
-    ]
+    # SEED BRANDS - carica solo se vuota
+    c.execute('SELECT COUNT(*) FROM aziende')
+    count = c.fetchone()[0]
     
-    for brand in covolo_brands:
-        try:
-            c.execute('INSERT INTO aziende (nome) VALUES (?)', (brand,))
-        except:
-            pass
+    if count == 0:
+        # Prima volta - carica tutti i brand
+        for brand in COVOLO_BRANDS:
+            try:
+                c.execute('INSERT INTO aziende (nome) VALUES (?)', (brand,))
+            except:
+                pass
+        conn.commit()
     
-    conn.commit()
     conn.close()
 
 init_covolo_db()
@@ -233,6 +238,81 @@ def index():
             border: 1px solid rgba(59, 130, 245, 0.3);
             border-radius: 4px;
             color: #e0e0e0;
+            font-size: 12px;
+        }
+        .brand-selector-btn {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+        .brand-selector-btn:hover { background: #2563eb; }
+        .brand-dropdown {
+            background: rgba(30, 41, 59, 0.95);
+            border: 1px solid rgba(59, 130, 245, 0.5);
+            border-radius: 6px;
+            padding: 10px;
+            margin-bottom: 10px;
+            max-height: 250px;
+            overflow-y: auto;
+            display: none;
+        }
+        .brand-dropdown.show { display: block; }
+        .brand-search {
+            width: 100%;
+            padding: 8px;
+            background: rgba(15, 23, 46, 0.8);
+            border: 1px solid rgba(59, 130, 245, 0.3);
+            border-radius: 4px;
+            color: #e0e0e0;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
+        .brand-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .brand-item {
+            padding: 8px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+        .brand-item:hover { background: rgba(59, 130, 245, 0.3); }
+        .brand-item.selected { background: #10b981; color: white; }
+        .selected-brands {
+            background: rgba(59, 130, 245, 0.1);
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            min-height: 30px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+        .brand-badge {
+            background: #10b981;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .brand-badge button {
+            background: transparent;
+            color: white;
+            border: none;
+            cursor: pointer;
+            padding: 0;
             font-size: 12px;
         }
         .chat-area {
@@ -489,17 +569,21 @@ def index():
 <body>
     <div class="container">
         <div class="sidebar">
-            <h3>🏢 Aziende (Gestisci)</h3>
-            <input type="text" id="search-aziende" class="search-filter" placeholder="Filtra brand..." onkeyup="filterAziende()">
-            <div class="input-group">
-                <input type="text" id="new-azienda-nome" placeholder="Nome..." style="flex: 1;">
-                <button onclick="addAzienda()" style="flex: 0 0 auto; padding: 6px 10px; font-size: 12px;">➕</button>
+            <h3>🏢 SELEZIONA BRAND</h3>
+            <button class="brand-selector-btn" onclick="toggleBrandDropdown()">🔽 AGGIUNGI BRAND</button>
+            
+            <div class="brand-dropdown" id="brand-dropdown">
+                <input type="text" class="brand-search" id="brand-search" placeholder="Ricerca brand..." onkeyup="filterBrandList()">
+                <div class="brand-list" id="brand-list"></div>
             </div>
-            <div id="aziende-list"></div>
+            
+            <div class="selected-brands" id="selected-brands">
+                <span style="font-size: 11px; color: #9ca3af;">Nessun brand selezionato</span>
+            </div>
             
             <h3>🌐 Web Search</h3>
-            <div class="web-toggle off" id="web-toggle" onclick="toggleWeb()">
-                🔴 OFF
+            <div class="web-toggle on" id="web-toggle" onclick="toggleWeb()">
+                🟢 ON
             </div>
             
             <h3>💾 Preset</h3>
@@ -555,45 +639,132 @@ def index():
     </div>
     
     <script>
-        let selectedAziende = [];
-        let webEnabled = false;
+        let selectedBrands = [];
+        let allBrands = [];
+        let webEnabled = true;
         
-        async function loadAziende() {
-            const response = await fetch('/api/aziende');
-            const data = await response.json();
-            const container = document.getElementById('aziende-list');
+        // Carica lista brand
+        async function loadBrandList() {
+            try {
+                const res = await fetch('/api/aziende');
+                const data = await res.json();
+                allBrands = data.items.map(item => item.nome);
+                renderBrandList();
+            } catch (e) {
+                console.error('Errore caricamento brand:', e);
+            }
+        }
+        
+        function renderBrandList() {
+            const search = document.getElementById('brand-search').value.toLowerCase();
+            const filtered = allBrands.filter(b => b.toLowerCase().includes(search));
             
-            container.innerHTML = data.aziende.map(az => `
-                <div style="background: rgba(59, 130, 245, 0.1); padding: 8px; margin-bottom: 6px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
-                    <div style="flex: 1;">
-                        <input type="checkbox" id="az-${az.id}" value="${az.id}" onchange="updateSelectedAziende()" style="margin-right: 6px;">
-                        <label for="az-${az.id}">${az.nome}</label>
-                    </div>
-                    <button style="padding: 2px 6px; background: #ef4444; font-size: 11px;" onclick="deleteAzienda(this.parentElement.previousElementSibling.value)">✕</button>
+            const html = filtered.map(brand => `
+                <div class="brand-item ${selectedBrands.includes(brand) ? 'selected' : ''}" 
+                     onclick="toggleBrand('${brand}')">
+                    ${brand}
                 </div>
             `).join('');
+            
+            document.getElementById('brand-list').innerHTML = html;
         }
         
-        async function addAzienda() {
-            const nome = document.getElementById('new-azienda-nome').value.trim();
-            if (!nome) {
-                alert('Nome azienda richiesto');
-                return;
-            }
-            
-            try {
-                await fetch('/api/aziende', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ nome: nome })
-                });
-                
-                document.getElementById('new-azienda-nome').value = '';
-                loadAziende();
-            } catch (e) {
-                alert('Errore: ' + e);
+        function filterBrandList() {
+            renderBrandList();
+        }
+        
+        function toggleBrandDropdown() {
+            const dropdown = document.getElementById('brand-dropdown');
+            dropdown.classList.toggle('show');
+            if (dropdown.classList.contains('show')) {
+                document.getElementById('brand-search').focus();
             }
         }
+        
+        function toggleBrand(brand) {
+            if (selectedBrands.includes(brand)) {
+                selectedBrands = selectedBrands.filter(b => b !== brand);
+            } else {
+                selectedBrands.push(brand);
+            }
+            updateSelectedBrandsDisplay();
+            renderBrandList();
+        }
+        
+        function removeBrand(brand) {
+            selectedBrands = selectedBrands.filter(b => b !== brand);
+            updateSelectedBrandsDisplay();
+            renderBrandList();
+        }
+        
+        function updateSelectedBrandsDisplay() {
+            const container = document.getElementById('selected-brands');
+            if (selectedBrands.length === 0) {
+                container.innerHTML = '<span style="font-size: 11px; color: #9ca3af;">Nessun brand selezionato</span>';
+            } else {
+                container.innerHTML = selectedBrands.map(brand => `
+                    <div class="brand-badge">
+                        ${brand}
+                        <button onclick="removeBrand('${brand}')">✕</button>
+                    </div>
+                `).join('');
+            }
+        }
+        
+        async function sendQuestion() {
+            const input = document.getElementById('question');
+            const q = input.value.trim();
+            if (!q) return;
+            
+            const msg = document.getElementById('messages');
+            msg.innerHTML += '<div class="message user-message">' + q + '</div>';
+            
+            const load = document.createElement('div');
+            load.className = 'message bot-message';
+            load.innerHTML = '⏳ Ricerca in corso...';
+            msg.appendChild(load);
+            input.value = '';
+            msg.scrollTop = msg.scrollHeight;
+            
+            try {
+                const res = await fetch('/api/ask', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        question: q, 
+                        azienda_ids: selectedBrands,
+                        use_web: webEnabled
+                    })
+                });
+                const data = await res.json();
+                
+                msg.removeChild(load);
+                
+                let escapedAnswer = data.answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                let msgHtml = `<div class="message bot-message">${escapedAnswer}`;
+                
+                if (data.images && data.images.length > 0) {
+                    msgHtml += '<div class="image-gallery">';
+                    data.images.forEach(img => {
+                        msgHtml += '<div class="image-item" onclick="openModal(' + "'" + 'data:image/jpeg;base64,' + img + "'" + ')"><img src="data:image/jpeg;base64,' + img + '"></div>';
+                    });
+                    msgHtml += '</div>';
+                }
+                
+                if (data.source) {
+                    msgHtml += `<div style="margin-top: 8px; padding: 4px 8px; background: rgba(16, 185, 129, 0.3); border-radius: 4px; font-size: 11px;">${data.source}</div>`;
+                }
+                
+                msgHtml += '</div>';
+                msg.innerHTML += msgHtml;
+                msg.scrollTop = msg.scrollHeight;
+            } catch (e) {
+                msg.removeChild(load);
+                msg.innerHTML += '<div class="message bot-message">❌ Errore: ' + e + '</div>';
+            }
+        }
+        
+        function toggleWeb() {
         
         async function deleteAzienda(aziendaId) {
             if (confirm('Elimina azienda?')) {
@@ -861,7 +1032,7 @@ def index():
             document.getElementById('image-modal').classList.remove('active');
         }
         
-        loadAziende();
+        loadBrandList();
         loadPresets();
     </script>
 </body>
