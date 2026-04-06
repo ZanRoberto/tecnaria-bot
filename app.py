@@ -515,26 +515,16 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
 </div>
 
 <script>
-let BRANDS = [];
+// Carica brand HARDCODED (affidabile!)
+let BRANDS = ["Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa", "Ariostea", "Artesia", "Austroflamm", "BGP", "Brera", "Bisazza", "Blue Design", "Baufloor", "Bauwerk", "Caros", "Caesar", "Casalgrande Padana", "Cerasarda", "Cerasa", "Cielo", "Colombo", "Cottodeste", "CP Parquet", "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit", "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi", "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin", "Ier Hürne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti", "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue", "Murexin", "Noorth", "Omegius", "Piastrelle d'Arredo", "Profiletec", "Remer", "Sichenia", "Simas", "Schlüter Systems", "SDR", "Sterneldesign", "Stüv", "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires", "Tubes", "Valdama", "Vismara Vetro", "Wedi"];
 let selected = [];
 let webEnabled = true;
 let accessCode = null;
 let accessLevel = "public";
 let groups = JSON.parse(localStorage.getItem('oracolo_groups')) || {};
 
-// Carica brand SUBITO
-fetch('/api/get-brands')
-  .then(r => r.json())
-  .then(d => {
-    BRANDS = d.brands || [];
-    console.log("✅ Brand caricati: " + BRANDS.length);
-    loadGroups();
-  })
-  .catch(e => {
-    console.error("❌ Errore caricamento brand:", e);
-    // Fallback se API fallisce
-    BRANDS = ["Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa", "Ariostea", "Artesia", "Austroflamm", "BGP", "Brera", "Bisazza", "Blue Design", "Baufloor", "Bauwerk", "Caros", "Caesar", "Casalgrande Padana", "Cerasarda", "Cerasa", "Cielo", "Colombo", "Cottodeste", "CP Parquet", "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit", "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi", "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin", "Ier Hürne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti", "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue", "Murexin", "Noorth", "Omegius", "Piastrelle d'Arredo", "Profiletec", "Remer", "Sichenia", "Simas", "Schlüter Systems", "SDR", "Sterneldesign", "Stüv", "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires", "Tubes", "Valdama", "Vismara Vetro", "Wedi"];
-  });
+console.log("✅ Brand caricati HARDCODED: " + BRANDS.length);
+loadGroups();
 
 function toggleDropdown() {
   console.log("toggleDropdown chiamato");
