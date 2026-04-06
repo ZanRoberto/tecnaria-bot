@@ -792,6 +792,23 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .login-title { color: #3b82f6; font-size: 20px; font-weight: 700; margin-bottom: 20px; text-align: center; }
 .sa-panel { background: rgba(139,92,246,0.15); border: 1px solid rgba(139,92,246,0.4); border-radius: 6px; padding: 8px; margin-bottom: 6px; font-size: 11px; }
 .bi-stat { background: rgba(30,41,59,0.8); border-radius: 4px; padding: 6px 8px; margin: 3px 0; font-size: 11px; display: flex; justify-content: space-between; }
+/* DRAWER CANTIERE */
+.cantiere-drawer { display: none; position: fixed; top: 0; right: 0; width: 520px; height: 100vh; background: #0f172e; border-left: 2px solid rgba(59,130,245,0.4); z-index: 1000; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.5); }
+.cantiere-drawer.open { display: flex; }
+.drawer-header { background: rgba(59,130,245,0.15); border-bottom: 1px solid rgba(59,130,245,0.3); padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.drawer-title { font-size: 15px; font-weight: 700; color: #60a5fa; }
+.drawer-body { flex: 1; overflow-y: auto; padding: 0; }
+.drawer-section { border-bottom: 1px solid rgba(59,130,245,0.15); padding: 14px 18px; }
+.drawer-section-title { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+.riga-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 8px 12px; margin: 5px 0; display: flex; align-items: center; justify-content: space-between; }
+.riga-card-info { flex: 1; }
+.riga-card-brand { font-size: 12px; font-weight: 600; color: #60a5fa; }
+.riga-card-cat { font-size: 11px; color: #9ca3af; }
+.riga-card-importo { font-size: 13px; font-weight: 700; color: #10b981; margin: 0 12px; white-space: nowrap; }
+.totale-bar { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); border-radius: 6px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+.form-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.form-row > * { flex: 1; }
+.drawer-footer { border-top: 1px solid rgba(59,130,245,0.3); padding: 12px 18px; display: flex; gap: 8px; flex-shrink: 0; background: rgba(15,23,46,0.95); }
 </style>
 </head>
 <body>
@@ -919,39 +936,10 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       </div>
       <div class="module-body" id="cantieri-body">
         <div style="display: flex; gap: 4px; margin-bottom: 8px;">
-          <input type="text" id="new-cantiere" placeholder="Nome cantiere..." style="flex:1;">
+          <input type="text" id="new-cantiere" placeholder="Nome cantiere / cliente..." style="flex:1;">
           <button onclick="addCantiere()" class="btn-green btn-sm" style="margin-bottom:0;">+</button>
         </div>
         <div id="cantieri-list"></div>
-        <!-- Dettaglio cantiere -->
-        <div id="cantiere-detail" style="display:none; margin-top:8px; border-top:1px solid rgba(59,130,245,0.2); padding-top:8px;">
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-            <span id="cantiere-nome-label" style="font-size:12px; font-weight:600; color:#60a5fa;"></span>
-            <button onclick="closeCantiere()" class="btn-sm btn-gray" style="margin-bottom:0;">X</button>
-          </div>
-          <select id="cantiere-stato" style="width:100%; margin-bottom:6px;" onchange="updateCantiere()">
-            <option value="bozza">Bozza</option>
-            <option value="inviata">Inviata</option>
-            <option value="vinta">Vinta</option>
-            <option value="persa">Persa</option>
-          </select>
-          <div style="font-size:11px; font-weight:600; color:#9ca3af; margin-bottom:4px;">Righe offerta</div>
-          <div id="righe-list" style="max-height:160px; overflow-y:auto; margin-bottom:6px;"></div>
-          <div style="font-size:11px; font-weight:600; color:#9ca3af; margin-bottom:4px;">Aggiungi riga</div>
-          <select id="riga-brand" style="width:100%; margin-bottom:4px;">
-            <option value="">-- Brand --</option>
-          </select>
-          <input type="text" id="riga-categoria" placeholder="Categoria (es. sanitari)..." style="width:100%; margin-bottom:4px;">
-          <input type="text" id="riga-descrizione" placeholder="Descrizione..." style="width:100%; margin-bottom:4px;">
-          <input type="number" id="riga-importo" placeholder="Importo €" style="width:100%; margin-bottom:6px;">
-          <div style="display:flex; gap:4px;">
-            <button onclick="addRiga()" class="btn-green" style="flex:1; margin-bottom:0;">Aggiungi al carrello</button>
-          </div>
-          <div style="margin-top:8px; border-top:1px solid rgba(59,130,245,0.2); padding-top:6px; display:flex; gap:4px;">
-            <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:1; font-size:10px; margin-bottom:0;">Genera Offerta AI</button>
-            <button onclick="deleteCantiere()" class="btn-red btn-sm" style="margin-bottom:0;">Elimina</button>
-          </div>
-        </div>
       </div>
     </div>
 
@@ -976,7 +964,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       </div>
     </div>
 
-    <!-- COMMERCIALI (solo admin/sa) -->
+    <!-- COMMERCIALI -->
     <div class="module-box" id="mod-commerciali" style="display:none;">
       <div class="module-header" onclick="toggleModule('comm-body')">
         <span class="module-title">Commerciali</span>
@@ -987,6 +975,58 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       </div>
     </div>
 
+  </div>
+</div>
+
+<!-- DRAWER DETTAGLIO CANTIERE -->
+<div class="cantiere-drawer" id="cantiere-drawer">
+  <div class="drawer-header">
+    <div>
+      <div class="drawer-title" id="drawer-nome"></div>
+      <div style="font-size:11px; color:#9ca3af; margin-top:2px;">Gestione offerta</div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <select id="cantiere-stato" style="font-size:11px; padding:5px 8px;" onchange="updateCantiere()">
+        <option value="bozza">Bozza</option>
+        <option value="inviata">Inviata</option>
+        <option value="vinta">Vinta</option>
+        <option value="persa">Persa</option>
+      </select>
+      <button onclick="closeCantiere()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+    </div>
+  </div>
+
+  <div class="drawer-body">
+    <!-- RIGHE ESISTENTI -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Elementi nel carrello</div>
+      <div id="righe-list"></div>
+      <div class="totale-bar" id="totale-bar" style="display:none;">
+        <span style="font-size:12px; color:#9ca3af;">Totale offerta</span>
+        <span style="font-size:15px; font-weight:700; color:#10b981;" id="totale-valore">€0</span>
+      </div>
+    </div>
+
+    <!-- AGGIUNGI RIGA -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Aggiungi elemento</div>
+      <div class="form-row">
+        <select id="riga-brand" style="flex:1;">
+          <option value="">-- Brand --</option>
+        </select>
+        <input type="text" id="riga-categoria" placeholder="Categoria (es. sanitari)" style="flex:1;">
+      </div>
+      <input type="text" id="riga-descrizione" placeholder="Descrizione prodotto..." style="width:100%; margin-bottom:8px;">
+      <div class="form-row">
+        <input type="number" id="riga-importo" placeholder="Importo €" style="flex:1;">
+        <button onclick="addRiga()" class="btn-green" style="flex:1; margin-bottom:0;">+ Aggiungi</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer-footer">
+    <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta AI</button>
+    <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">Elimina cantiere</button>
   </div>
 </div>
 
@@ -1151,16 +1191,15 @@ function addCantiere() {
 
 function openCantiere(id, nome, stato) {
   cantiereAttivo = id;
-  document.getElementById('cantiere-detail').style.display = 'block';
-  document.getElementById('cantiere-nome-label').textContent = nome;
+  document.getElementById('drawer-nome').textContent = nome;
   document.getElementById('cantiere-stato').value = stato;
+  document.getElementById('cantiere-drawer').classList.add('open');
   loadRighe();
-  document.getElementById('cantieri-body').classList.add('open');
 }
 
 function closeCantiere() {
   cantiereAttivo = null;
-  document.getElementById('cantiere-detail').style.display = 'none';
+  document.getElementById('cantiere-drawer').classList.remove('open');
 }
 
 function updateCantiere() {
@@ -1183,12 +1222,25 @@ function loadRighe() {
     const righe = d.righe || [];
     let totale = 0;
     righe.forEach(r => { totale += (r.importo || 0); });
-    document.getElementById('righe-list').innerHTML = righe.map(r =>
-      '<div class="riga-item">' +
-      '<span>' + (r.brand||'') + ' — ' + (r.categoria||'') + (r.importo ? ' — €' + r.importo : '') + '</span>' +
-      '<button onclick="deleteRiga(' + r.id + ')" class="btn-sm btn-red" style="margin-bottom:0;">x</button>' +
-      '</div>'
-    ).join('') + (righe.length > 0 ? '<div style="font-size:11px;font-weight:600;color:#10b981;margin-top:4px;">Totale: €' + totale.toFixed(2) + '</div>' : '');
+    document.getElementById('righe-list').innerHTML = righe.length === 0
+      ? '<div style="color:#6b7280; font-size:11px; text-align:center; padding:12px 0;">Nessun elemento aggiunto</div>'
+      : righe.map(r =>
+          '<div class="riga-card">' +
+          '<div class="riga-card-info">' +
+          '<div class="riga-card-brand">' + (r.brand||'—') + '</div>' +
+          '<div class="riga-card-cat">' + (r.categoria||'') + (r.descrizione ? ' — ' + r.descrizione : '') + '</div>' +
+          '</div>' +
+          '<div class="riga-card-importo">' + (r.importo ? '€' + r.importo.toFixed(0) : '—') + '</div>' +
+          '<button onclick="deleteRiga(' + r.id + ')" class="btn-red btn-sm" style="margin-bottom:0; padding:3px 7px;">✕</button>' +
+          '</div>'
+        ).join('');
+    const totBar = document.getElementById('totale-bar');
+    if (righe.length > 0) {
+      totBar.style.display = 'flex';
+      document.getElementById('totale-valore').textContent = '€' + totale.toFixed(0);
+    } else {
+      totBar.style.display = 'none';
+    }
   });
 }
 
