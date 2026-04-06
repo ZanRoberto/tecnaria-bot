@@ -1,8 +1,9 @@
 """
 ORACOLO COVOLO - SISTEMA COMPLETO
 Cassetti aziendali + Gruppi + Web Search + Upload + 3 Pulsanti + Immagini
++ Protezione cassetto con password admin + Delete documenti protetto
 """
-import os, json, sqlite3, base64, re
+import os, json, sqlite3, base64, re, hashlib
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify
 import httpx
@@ -25,7 +26,7 @@ BRANDS_LIST = [
     "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin",
     "Ier Hurne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti",
     "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue",
-    "Murexin", "Noorth", "Omegius", "Piastrelle Arredo", "Profiletec", "Remer",
+    "Murexin", "Noorth", "Omegius", "Piastrelle d Arredo", "Profiletec", "Remer",
     "Sichenia", "Simas", "Schluter Systems", "SDR", "Sterneldesign", "Stuv",
     "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires",
     "Tubes", "Valdama", "Vismara Vetro", "Wedi"
@@ -36,7 +37,9 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS aziende (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nome TEXT UNIQUE NOT NULL
+        nome TEXT UNIQUE NOT NULL,
+        admin_password TEXT,
+        admin_required BOOLEAN DEFAULT 0
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS documents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,6 +85,50 @@ def add_azienda():
         conn.close()
         return jsonify({"error": str(e)}), 400
 
+@app.route('/api/set-admin-password', methods=['POST'])
+def set_admin_password():
+    data = request.get_json()
+    brand = data.get('brand', '')
+    admin_password = data.get('admin_password', '').strip()
+    if not brand or not admin_password:
+        return jsonify({"error": "Brand e password richiesti"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        pwd_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+        c.execute('UPDATE aziende SET admin_password=?, admin_required=1 WHERE nome=?', (pwd_hash, brand))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "message": "Password admin impostata per " + brand})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/verify-admin', methods=['POST'])
+def verify_admin():
+    data = request.get_json()
+    brand = data.get('brand', '')
+    admin_password = data.get('admin_password', '')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('SELECT admin_password, admin_required FROM aziende WHERE nome=?', (brand,))
+        result = c.fetchone()
+        conn.close()
+        if not result:
+            return jsonify({"ok": False, "error": "Brand non trovato"})
+        pwd_hash, admin_required = result
+        if not admin_required:
+            return jsonify({"ok": True, "message": "Cassetto non protetto"})
+        provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+        if provided_hash == pwd_hash:
+            return jsonify({"ok": True, "message": "Password corretta"})
+        else:
+            return jsonify({"ok": False, "error": "Password errata"})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
 @app.route('/api/upload-document', methods=['POST'])
 def upload_document():
     data = request.get_json()
@@ -90,20 +137,78 @@ def upload_document():
     brand = data.get('brand', '')
     visibility = data.get('visibility', 'public')
     access_code = data.get('access_code', '')
+    admin_password = data.get('admin_password', '')
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute('SELECT id FROM aziende WHERE nome = ?', (brand,))
+        c.execute('SELECT id, admin_required, admin_password FROM aziende WHERE nome = ?', (brand,))
         result = c.fetchone()
         if not result:
             conn.close()
             return jsonify({"error": "Brand non trovato"}), 400
-        azienda_id = result[0]
+        azienda_id, admin_required, pwd_hash = result
+        if admin_required:
+            if not admin_password:
+                conn.close()
+                return jsonify({"error": "Password admin richiesta"}), 403
+            provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+            if provided_hash != pwd_hash:
+                conn.close()
+                return jsonify({"error": "Password admin errata"}), 403
         c.execute('INSERT INTO documents (filename, content, azienda_id, visibility, access_code, upload_date) VALUES (?, ?, ?, ?, ?, ?)',
                   (filename, content, azienda_id, visibility, access_code, datetime.now().isoformat()))
         conn.commit()
         conn.close()
         return jsonify({"ok": True})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/list-documents', methods=['GET'])
+def list_documents():
+    brand = request.args.get('brand', '')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if brand:
+        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility
+                     FROM documents d
+                     JOIN aziende a ON d.azienda_id = a.id
+                     WHERE a.nome = ?
+                     ORDER BY d.upload_date DESC''', (brand,))
+    else:
+        c.execute('SELECT id, filename, upload_date, visibility FROM documents ORDER BY upload_date DESC LIMIT 20')
+    docs = c.fetchall()
+    conn.close()
+    result = [{"id": d[0], "filename": d[1], "date": d[2], "visibility": d[3]} for d in docs]
+    return jsonify({"documents": result})
+
+@app.route('/api/delete-document/<int:doc_id>', methods=['DELETE'])
+def delete_document(doc_id):
+    admin_password = request.args.get('admin_password', '')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('''SELECT a.nome, a.admin_required, a.admin_password
+                     FROM documents d
+                     JOIN aziende a ON d.azienda_id = a.id
+                     WHERE d.id = ?''', (doc_id,))
+        result = c.fetchone()
+        if not result:
+            conn.close()
+            return jsonify({"error": "Documento non trovato"}), 404
+        brand, admin_required, pwd_hash = result
+        if admin_required:
+            if not admin_password:
+                conn.close()
+                return jsonify({"error": "Password admin richiesta"}), 403
+            provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+            if provided_hash != pwd_hash:
+                conn.close()
+                return jsonify({"error": "Password admin errata"}), 403
+        c.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "message": "Documento eliminato"})
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)}), 400
@@ -125,12 +230,15 @@ def _search_docs_internal(brands, question, access_code):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     placeholders = ','.join('?' * len(brands))
-    query = f'SELECT filename, content FROM documents WHERE azienda_id IN (SELECT id FROM aziende WHERE nome IN ({placeholders}))'
     if access_code:
-        query += ' OR (visibility="private" AND access_code=?)'
+        query = ("SELECT filename, content FROM documents "
+                 "WHERE (azienda_id IN (SELECT id FROM aziende WHERE nome IN (" + placeholders + ")) AND visibility='public') "
+                 "OR (visibility='private' AND access_code=?) LIMIT 10")
         c.execute(query, brands + [access_code])
     else:
-        query += ' AND visibility="public"'
+        query = ("SELECT filename, content FROM documents "
+                 "WHERE azienda_id IN (SELECT id FROM aziende WHERE nome IN (" + placeholders + ")) "
+                 "AND visibility='public' LIMIT 10")
         c.execute(query, brands)
     docs = c.fetchall()
     conn.close()
@@ -138,40 +246,50 @@ def _search_docs_internal(brands, question, access_code):
 
 def search_web(question, brands):
     return None  # disabilitato - causa timeout su Render
+
+def search_images(query, brands):
     try:
-        brands_str = " OR ".join(brands)
-        query = f"{question} {brands_str}"
+        search_query = query + " " + " ".join(brands) + " product image"
         url = "https://www.google.com/search"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        params = {'q': query}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        params = {'q': search_query, 'tbm': 'isch'}
         resp = httpx.get(url, params=params, headers=headers, timeout=5, follow_redirects=True)
-        if "No results found" in resp.text or len(resp.text) < 100:
-            return None
-        return resp.text[:500]
-    except:
-        return None
+        if resp.status_code == 200:
+            pattern = r'"imgurl":"([^"]+)"'
+            matches = re.findall(pattern, resp.text)
+            images = matches[:5] if matches else []
+            print("[IMAGES] Trovate " + str(len(images)) + " immagini")
+            return images
+        return []
+    except Exception as e:
+        print("[IMAGES ERROR] " + str(e))
+        return []
 
 def deepseek_ask(prompt):
     if not DEEPSEEK_API_KEY:
-        return "API Key non configurata"
-    try:
-        resp = httpx.post(
-            DEEPSEEK_API_URL,
-            json={
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 2000
-            },
-            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
-            timeout=30
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                return data["choices"][0]["message"]["content"]
-        return f"Errore API: {resp.status_code}"
-    except Exception as e:
-        return f"Errore: {str(e)}"
+        return "Errore: API Key non configurata"
+    for attempt in range(2):  # max 2 tentativi
+        try:
+            resp = httpx.post(
+                DEEPSEEK_API_URL,
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 800
+                },
+                headers={"Authorization": "Bearer " + DEEPSEEK_API_KEY},
+                timeout=60
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if "choices" in data and len(data["choices"]) > 0:
+                    return data["choices"][0]["message"]["content"]
+            return "Errore API: " + str(resp.status_code)
+        except Exception as e:
+            print("[DEEPSEEK] Tentativo " + str(attempt + 1) + " fallito: " + str(e))
+            if attempt == 1:
+                return "Errore: DeepSeek non risponde. Riprova tra qualche secondo."
+    return "Errore sconosciuto"
 
 @app.route('/api/ask', methods=['POST'])
 def ask():
@@ -185,22 +303,22 @@ def ask():
     doc_context = ""
     docs = _search_docs_internal(brands, question, access_code)
     if docs:
-        doc_context = "\n".join([f"[DOC: {d[0]}] {d[1][:200]}" for d in docs])
+        doc_context = "\n".join(["[DOC: " + d[0] + "] " + d[1][:200] for d in docs])
     web_context = ""
+    images = []
     if use_web:
         web_result = search_web(question, brands)
         if web_result:
-            web_context = f"[WEB] {web_result}"
-    prompt = f"""Sei un esperto di arredo bagno per i brand: {', '.join(brands)}
-
-Domanda: {question}
-
-{f'Documenti disponibili: {doc_context}' if doc_context else ''}
-{f'{web_context}' if web_context else ''}
-
-Rispondi come esperto del settore, considerando i brand specifici."""
+            web_context = "[WEB] " + web_result
+        images = search_images(question, brands)
+    prompt = "Sei un esperto di arredo bagno per i brand: " + ", ".join(brands) + "\n\nDomanda: " + question
+    if doc_context:
+        prompt += "\n\nDocumenti disponibili: " + doc_context
+    if web_context:
+        prompt += "\n\n" + web_context
+    prompt += "\n\nRispondi come esperto del settore, considerando i brand specifici."
     answer = deepseek_ask(prompt)
-    return jsonify({"answer": answer})
+    return jsonify({"answer": answer, "images": images})
 
 @app.route('/')
 def index():
@@ -230,8 +348,9 @@ button:hover { background: #2563eb; }
 .badge { display: inline-block; background: #10b981; color: white; padding: 3px 6px; border-radius: 3px; margin: 2px; font-size: 11px; }
 .chat-area { flex: 1; background: rgba(15,23,46,0.5); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 15px; overflow-y: auto; margin-bottom: 10px; font-size: 13px; }
 .message { background: rgba(59,130,245,0.1); padding: 10px; margin: 5px 0; border-radius: 4px; border-left: 3px solid #3b82f6; }
+.message img { max-width: 100%; max-height: 200px; margin-top: 8px; border-radius: 4px; }
 .input-area { display: flex; gap: 10px; }
-input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 12px; }
+input[type=text], input[type=password] { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 12px; }
 .title { color: #3b82f6; font-size: 24px; font-weight: 700; margin-bottom: 20px; }
 .btn-3pulsanti { display: flex; gap: 6px; margin-bottom: 15px; }
 .btn-3pulsanti button { flex: 1; padding: 8px; font-size: 11px; }
@@ -256,6 +375,11 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
       <button onclick="saveGroup()" class="btn-green">Salva</button>
     </div>
     <div id="saved-groups" style="max-height: 150px; overflow-y: auto; font-size: 12px;"></div>
+    <h2>PROTEZIONE CASSETTO</h2>
+    <div style="display: flex; gap: 6px; margin-bottom: 10px;">
+      <input type="password" id="admin-pwd" placeholder="Password admin..." style="flex: 1;">
+      <button onclick="setAdminPassword()" class="btn-green">Proteggi</button>
+    </div>
     <h2>NUOVO CASSETTO</h2>
     <div style="display: flex; gap: 6px; margin-bottom: 10px;">
       <input type="text" id="new-cassetto" placeholder="Nome cassetto..." style="flex: 1;">
@@ -280,6 +404,7 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
       <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
     </label>
     <div id="upload-status" style="font-size:11px; color:#9ca3af; margin-top:4px;"></div>
+    <button onclick="showDocuments()" style="width:100%; background:#ef4444; margin-top:8px;">Gestisci Documenti</button>
   </div>
   <div class="main">
     <div class="title">Oracolo Covolo</div>
@@ -295,6 +420,7 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
     </div>
   </div>
 </div>
+
 <script>
 let BRANDS = [];
 let selected = [];
@@ -308,7 +434,6 @@ fetch('/api/get-brands')
   .then(d => {
     BRANDS = d.brands || [];
     console.log("Brand caricati: " + BRANDS.length);
-    // Popola select upload
     const sel = document.getElementById('upload-brand');
     if (sel) {
       BRANDS.forEach(b => {
@@ -394,6 +519,24 @@ function deleteGroup(name) {
   loadGroups();
 }
 
+function setAdminPassword() {
+  if (selected.length === 0) { alert('Seleziona prima un brand'); return; }
+  const brand = selected[0];
+  const pwd = document.getElementById('admin-pwd').value.trim();
+  if (!pwd) { alert('Inserisci una password'); return; }
+  fetch('/api/set-admin-password', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({brand: brand, admin_password: pwd})
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) alert('OK: ' + d.message);
+    else alert('Errore: ' + d.error);
+    document.getElementById('admin-pwd').value = '';
+  });
+}
+
 function addCassetto() {
   const nome = document.getElementById('new-cassetto').value.trim();
   if (!nome) { alert('Nome richiesto'); return; }
@@ -403,7 +546,18 @@ function addCassetto() {
       if (d.ok) {
         alert('Cassetto aggiunto!');
         document.getElementById('new-cassetto').value = '';
-        fetch('/api/get-brands').then(r => r.json()).then(data => { BRANDS = data.brands || []; });
+        fetch('/api/get-brands').then(r => r.json()).then(data => {
+          BRANDS = data.brands || [];
+          const sel = document.getElementById('upload-brand');
+          if (sel) {
+            sel.innerHTML = '<option value="">-- Seleziona Brand --</option>';
+            BRANDS.forEach(b => {
+              const opt = document.createElement('option');
+              opt.value = b; opt.textContent = b;
+              sel.appendChild(opt);
+            });
+          }
+        });
       } else { alert('Errore: ' + d.error); }
     });
 }
@@ -440,6 +594,35 @@ function doUpload(input, tipo) {
   reader.readAsDataURL(file);
 }
 
+function showDocuments() {
+  const brand = prompt('Per quale brand vuoi gestire i documenti?');
+  if (!brand) return;
+  fetch('/api/list-documents?brand=' + encodeURIComponent(brand))
+    .then(r => r.json())
+    .then(d => {
+      if (!d.documents || d.documents.length === 0) {
+        alert('Nessun documento caricato per ' + brand);
+        return;
+      }
+      const list = d.documents.map(doc => doc.id + ' | ' + doc.filename + ' | ' + (doc.date || '')).join('\n');
+      const idStr = prompt('Documenti:\n' + list + '\n\nInserisci ID da eliminare (o annulla):');
+      if (!idStr) return;
+      const docId = parseInt(idStr);
+      if (isNaN(docId)) { alert('ID non valido'); return; }
+      deleteDocument(docId);
+    });
+}
+
+function deleteDocument(docId) {
+  if (!confirm('Sei sicuro di voler cancellare il documento ID ' + docId + '?')) return;
+  fetch('/api/delete-document/' + docId, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) alert('Documento eliminato!');
+      else alert('Errore: ' + d.error);
+    });
+}
+
 function generateOfferta() {
   if (!selected.length) { alert('Seleziona brand'); return; }
   document.getElementById('question').value = 'Genera una proposta commerciale per: ' + selected.join(', ');
@@ -463,7 +646,7 @@ function parseMarkdown(text) {
     .replace(/# (.+)/g, '<h1 style="color:#3b82f6;margin:12px 0 6px 0;font-size:15px">$1</h1>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/^[-–—] (.+)/gm, '<li style="margin-left:16px;margin-bottom:3px">$1</li>')
+    .replace(/^[-\u2013\u2014] (.+)/gm, '<li style="margin-left:16px;margin-bottom:3px">$1</li>')
     .replace(/(<li.*<\/li>)/gs, '<ul style="margin:6px 0">$1</ul>')
     .replace(/\n{2,}/g, '</p><p style="margin:6px 0">')
     .replace(/\n/g, '<br>');
@@ -476,7 +659,6 @@ function ask() {
   document.getElementById('question').value = '';
   const chat = document.getElementById('chat');
   chat.innerHTML += '<div class="message"><strong>Tu:</strong> ' + q + '</div>';
-  // Loading indicator
   const loadingId = 'loading_' + Date.now();
   chat.innerHTML += '<div class="message" id="' + loadingId + '" style="opacity:0.6;font-style:italic">Oracolo sta elaborando...</div>';
   chat.scrollTop = chat.scrollHeight;
@@ -487,7 +669,16 @@ function ask() {
       const loading = document.getElementById(loadingId);
       if (loading) loading.remove();
       const formatted = parseMarkdown(d.answer || 'Nessuna risposta');
-      chat.innerHTML += '<div class="message oracolo-msg"><strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div></div>';
+      let html = '<div class="message oracolo-msg"><strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      if (d.images && d.images.length > 0) {
+        html += '<div style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">';
+        d.images.forEach(img => {
+          html += '<img src="' + img + '" style="max-width:100%;height:auto;border-radius:4px;cursor:pointer" onclick="window.open(\'' + img + '\',\'_blank\')" title="Clicca per ingrandire">';
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+      chat.innerHTML += html;
       chat.scrollTop = chat.scrollHeight;
     })
     .catch(e => {
