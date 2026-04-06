@@ -268,24 +268,28 @@ def search_images(query, brands):
 def deepseek_ask(prompt):
     if not DEEPSEEK_API_KEY:
         return "Errore: API Key non configurata"
-    try:
-        resp = httpx.post(
-            DEEPSEEK_API_URL,
-            json={
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 2000
-            },
-            headers={"Authorization": "Bearer " + DEEPSEEK_API_KEY},
-            timeout=30
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                return data["choices"][0]["message"]["content"]
-        return "Errore API: " + str(resp.status_code)
-    except Exception as e:
-        return "Errore: " + str(e)
+    for attempt in range(2):  # max 2 tentativi
+        try:
+            resp = httpx.post(
+                DEEPSEEK_API_URL,
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 800
+                },
+                headers={"Authorization": "Bearer " + DEEPSEEK_API_KEY},
+                timeout=60
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if "choices" in data and len(data["choices"]) > 0:
+                    return data["choices"][0]["message"]["content"]
+            return "Errore API: " + str(resp.status_code)
+        except Exception as e:
+            print("[DEEPSEEK] Tentativo " + str(attempt + 1) + " fallito: " + str(e))
+            if attempt == 1:
+                return "Errore: DeepSeek non risponde. Riprova tra qualche secondo."
+    return "Errore sconosciuto"
 
 @app.route('/api/ask', methods=['POST'])
 def ask():
