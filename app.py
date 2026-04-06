@@ -1,8 +1,9 @@
 """
 ORACOLO COVOLO - SISTEMA COMPLETO
 Cassetti aziendali + Gruppi + Web Search + Upload + 3 Pulsanti + Immagini
++ Protezione cassetto con password admin + Delete documenti protetto
 """
-import os, json, sqlite3, base64, re
+import os, json, sqlite3, base64, re, hashlib
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify
 import httpx
@@ -11,10 +12,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
 os.makedirs(DATA_DIR, exist_ok=True)
-
-# Cache documenti (semplice ma efficace)
-DOCS_CACHE = {}
-CACHE_TIME = {}
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
@@ -27,10 +24,10 @@ BRANDS_LIST = [
     "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit",
     "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi",
     "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin",
-    "Ier Hürne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti",
+    "Ier Hurne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti",
     "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue",
-    "Murexin", "Noorth", "Omegius", "Piastrelle d'Arredo", "Profiletec", "Remer",
-    "Sichenia", "Simas", "Schlüter Systems", "SDR", "Sterneldesign", "Stüv",
+    "Murexin", "Noorth", "Omegius", "Piastrelle d Arredo", "Profiletec", "Remer",
+    "Sichenia", "Simas", "Schluter Systems", "SDR", "Sterneldesign", "Stuv",
     "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires",
     "Tubes", "Valdama", "Vismara Vetro", "Wedi"
 ]
@@ -38,31 +35,29 @@ BRANDS_LIST = [
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
-    # Crea tabella aziende con admin password
     c.execute('''CREATE TABLE IF NOT EXISTS aziende (
-        id INTEGER PRIMARY KEY, 
-        nome TEXT UNIQUE,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT UNIQUE NOT NULL,
         admin_password TEXT,
         admin_required BOOLEAN DEFAULT 0
     )''')
-    
-    # Crea tabella documenti con protezione
     c.execute('''CREATE TABLE IF NOT EXISTS documents (
-        id INTEGER PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         filename TEXT,
         content TEXT,
         azienda_id INTEGER,
-        visibility TEXT DEFAULT "public",
+        visibility TEXT DEFAULT 'public',
         access_code TEXT,
-        upload_date TIMESTAMP,
-        FOREIGN KEY(azienda_id) REFERENCES aziende(id)
+        upload_date TEXT,
+        FOREIGN KEY (azienda_id) REFERENCES aziende(id)
     )''')
-    
+    for brand in BRANDS_LIST:
+        c.execute('INSERT OR IGNORE INTO aziende (nome) VALUES (?)', (brand,))
     conn.commit()
     conn.close()
 
 app = Flask(__name__)
+init_db()
 
 @app.route('/api/get-brands', methods=['GET'])
 def get_brands():
@@ -73,62 +68,7 @@ def get_brands():
     conn.close()
     return jsonify({"brands": brands})
 
-@app.route('/api/set-admin-password', methods=['POST'])
-def set_admin_password():
-    data = request.get_json()
-    brand = data.get('brand', '')
-    admin_password = data.get('admin_password', '').strip()
-    
-    if not brand or not admin_password:
-        return jsonify({"error": "Brand e password richiesti"}), 400
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        # Usa hash semplice (in produzione usare bcrypt!)
-        import hashlib
-        pwd_hash = hashlib.sha256(admin_password.encode()).hexdigest()
-        
-        c.execute('UPDATE aziende SET admin_password=?, admin_required=1 WHERE nome=?', 
-                  (pwd_hash, brand))
-        conn.commit()
-        conn.close()
-        return jsonify({"ok": True, "message": f"Password admin impostata per {brand}"})
-    except Exception as e:
-        conn.close()
-        return jsonify({"error": str(e)}), 400
-
-@app.route('/api/verify-admin', methods=['POST'])
-def verify_admin():
-    data = request.get_json()
-    brand = data.get('brand', '')
-    admin_password = data.get('admin_password', '')
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        c.execute('SELECT admin_password, admin_required FROM aziende WHERE nome=?', (brand,))
-        result = c.fetchone()
-        conn.close()
-        
-        if not result:
-            return jsonify({"ok": False, "error": "Brand non trovato"})
-        
-        pwd_hash, admin_required = result
-        
-        if not admin_required:
-            return jsonify({"ok": True, "message": "Cassetto non protetto"})
-        
-        import hashlib
-        provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
-        
-        if provided_hash == pwd_hash:
-            return jsonify({"ok": True, "message": "Password corretta"})
-        else:
-            return jsonify({"ok": False, "error": "Password errata"})
-    except Exception as e:
-        conn.close()
-        return jsonify({"error": str(e)}), 400
+@app.route('/api/add-azienda', methods=['POST'])
 def add_azienda():
     data = request.get_json()
     nome = data.get('nome', '').strip()
@@ -145,44 +85,81 @@ def add_azienda():
         conn.close()
         return jsonify({"error": str(e)}), 400
 
-@app.route('/api/delete-document/<int:doc_id>', methods=['DELETE'])
-def delete_document(doc_id):
-    admin_password = request.args.get('admin_password', '')
-    
+@app.route('/api/set-admin-password', methods=['POST'])
+def set_admin_password():
+    data = request.get_json()
+    brand = data.get('brand', '')
+    admin_password = data.get('admin_password', '').strip()
+    if not brand or not admin_password:
+        return jsonify({"error": "Brand e password richiesti"}), 400
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        # Trova il brand del documento
-        c.execute('''SELECT a.nome, a.admin_required, a.admin_password 
-                     FROM documents d
-                     JOIN aziende a ON d.azienda_id = a.id
-                     WHERE d.id = ?''', (doc_id,))
+        pwd_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+        c.execute('UPDATE aziende SET admin_password=?, admin_required=1 WHERE nome=?', (pwd_hash, brand))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "message": "Password admin impostata per " + brand})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/verify-admin', methods=['POST'])
+def verify_admin():
+    data = request.get_json()
+    brand = data.get('brand', '')
+    admin_password = data.get('admin_password', '')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('SELECT admin_password, admin_required FROM aziende WHERE nome=?', (brand,))
         result = c.fetchone()
-        
+        conn.close()
+        if not result:
+            return jsonify({"ok": False, "error": "Brand non trovato"})
+        pwd_hash, admin_required = result
+        if not admin_required:
+            return jsonify({"ok": True, "message": "Cassetto non protetto"})
+        provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+        if provided_hash == pwd_hash:
+            return jsonify({"ok": True, "message": "Password corretta"})
+        else:
+            return jsonify({"ok": False, "error": "Password errata"})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/upload-document', methods=['POST'])
+def upload_document():
+    data = request.get_json()
+    filename = data.get('filename', '')
+    content = data.get('content', '')
+    brand = data.get('brand', '')
+    visibility = data.get('visibility', 'public')
+    access_code = data.get('access_code', '')
+    admin_password = data.get('admin_password', '')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('SELECT id, admin_required, admin_password FROM aziende WHERE nome = ?', (brand,))
+        result = c.fetchone()
         if not result:
             conn.close()
-            return jsonify({"error": "Documento non trovato"}), 400
-        
-        brand, admin_required, pwd_hash = result
-        
-        # Se cassetto è protetto, verifica password
+            return jsonify({"error": "Brand non trovato"}), 400
+        azienda_id, admin_required, pwd_hash = result
         if admin_required:
             if not admin_password:
                 conn.close()
                 return jsonify({"error": "Password admin richiesta"}), 403
-            
-            import hashlib
             provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
-            
             if provided_hash != pwd_hash:
                 conn.close()
                 return jsonify({"error": "Password admin errata"}), 403
-        
-        # Elimina documento
-        c.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
+        c.execute('INSERT INTO documents (filename, content, azienda_id, visibility, access_code, upload_date) VALUES (?, ?, ?, ?, ?, ?)',
+                  (filename, content, azienda_id, visibility, access_code, datetime.now().isoformat()))
         conn.commit()
         conn.close()
-        return jsonify({"ok": True, "message": "Documento eliminato"})
+        return jsonify({"ok": True})
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)}), 400
@@ -192,59 +169,46 @@ def list_documents():
     brand = request.args.get('brand', '')
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
     if brand:
-        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility 
+        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility
                      FROM documents d
                      JOIN aziende a ON d.azienda_id = a.id
                      WHERE a.nome = ?
                      ORDER BY d.upload_date DESC''', (brand,))
     else:
         c.execute('SELECT id, filename, upload_date, visibility FROM documents ORDER BY upload_date DESC LIMIT 20')
-    
     docs = c.fetchall()
     conn.close()
-    
     result = [{"id": d[0], "filename": d[1], "date": d[2], "visibility": d[3]} for d in docs]
     return jsonify({"documents": result})
-def upload_document():
-    data = request.get_json()
-    filename = data.get('filename', '')
-    content = data.get('content', '')
-    brand = data.get('brand', '')
-    visibility = data.get('visibility', 'public')
-    access_code = data.get('access_code', '')
-    admin_password = data.get('admin_password', '')
-    
+
+@app.route('/api/delete-document/<int:doc_id>', methods=['DELETE'])
+def delete_document(doc_id):
+    admin_password = request.args.get('admin_password', '')
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute('SELECT id, admin_required, admin_password FROM aziende WHERE nome = ?', (brand,))
+        c.execute('''SELECT a.nome, a.admin_required, a.admin_password
+                     FROM documents d
+                     JOIN aziende a ON d.azienda_id = a.id
+                     WHERE d.id = ?''', (doc_id,))
         result = c.fetchone()
         if not result:
             conn.close()
-            return jsonify({"error": "Brand non trovato"}), 400
-        
-        azienda_id, admin_required, pwd_hash = result
-        
-        # Se cassetto è protetto, verifica password
+            return jsonify({"error": "Documento non trovato"}), 404
+        brand, admin_required, pwd_hash = result
         if admin_required:
             if not admin_password:
                 conn.close()
                 return jsonify({"error": "Password admin richiesta"}), 403
-            
-            import hashlib
             provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
-            
             if provided_hash != pwd_hash:
                 conn.close()
                 return jsonify({"error": "Password admin errata"}), 403
-        
-        c.execute('INSERT INTO documents (filename, content, azienda_id, visibility, access_code, upload_date) VALUES (?, ?, ?, ?, ?, ?)',
-                  (filename, content, azienda_id, visibility, access_code, datetime.now().isoformat()))
+        c.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
         conn.commit()
         conn.close()
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "message": "Documento eliminato"})
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)}), 400
@@ -255,112 +219,73 @@ def search_documents():
     brands = data.get('brands', [])
     question = data.get('question', '')
     access_code = data.get('access_code')
-    
-    if not brands:
-        return jsonify({"found": False})
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Query OTTIMIZZATA: LIMIT 10 per non scaricare tutto
-    placeholders = ','.join('?' * len(brands))
-    
-    if access_code:
-        query = f'''SELECT filename, content FROM documents 
-                   WHERE (azienda_id IN (SELECT id FROM aziende WHERE nome IN ({placeholders})) AND visibility="public")
-                   OR (visibility="private" AND access_code=?)
-                   LIMIT 10'''
-        c.execute(query, brands + [access_code])
-    else:
-        query = f'''SELECT filename, content FROM documents 
-                   WHERE azienda_id IN (SELECT id FROM aziende WHERE nome IN ({placeholders})) 
-                   AND visibility="public"
-                   LIMIT 10'''
-        c.execute(query, brands)
-    
-    docs = c.fetchall()
-    conn.close()
-    
+    docs = _search_docs_internal(brands, question, access_code)
     if docs:
         return jsonify({"found": True, "docs": docs})
     return jsonify({"found": False})
 
+def _search_docs_internal(brands, question, access_code):
+    if not brands:
+        return []
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    placeholders = ','.join('?' * len(brands))
+    if access_code:
+        query = ("SELECT filename, content FROM documents "
+                 "WHERE (azienda_id IN (SELECT id FROM aziende WHERE nome IN (" + placeholders + ")) AND visibility='public') "
+                 "OR (visibility='private' AND access_code=?) LIMIT 10")
+        c.execute(query, brands + [access_code])
+    else:
+        query = ("SELECT filename, content FROM documents "
+                 "WHERE azienda_id IN (SELECT id FROM aziende WHERE nome IN (" + placeholders + ")) "
+                 "AND visibility='public' LIMIT 10")
+        c.execute(query, brands)
+    docs = c.fetchall()
+    conn.close()
+    return docs
+
+def search_web(question, brands):
+    return None  # disabilitato - causa timeout su Render
+
 def search_images(query, brands):
-    """Cerca immagini dei prodotti su Google"""
     try:
-        # Costruisci query con brand
-        search_query = f"{query} {' '.join(brands)} product image"
-        
-        # URL Google Images (non ufficiale ma funziona)
+        search_query = query + " " + " ".join(brands) + " product image"
         url = "https://www.google.com/search"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        params = {
-            'q': search_query,
-            'tbm': 'isch'  # Image search
-        }
-        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        params = {'q': search_query, 'tbm': 'isch'}
         resp = httpx.get(url, params=params, headers=headers, timeout=5, follow_redirects=True)
-        
         if resp.status_code == 200:
-            # Estrai URL immagini dal HTML
-            import re
-            # Cerca pattern: "imgurl":"https://..."
             pattern = r'"imgurl":"([^"]+)"'
             matches = re.findall(pattern, resp.text)
-            
-            # Prendi i primi 5
             images = matches[:5] if matches else []
-            
-            print(f"[IMAGES] Trovate {len(images)} immagini per: {search_query}")
+            print("[IMAGES] Trovate " + str(len(images)) + " immagini")
             return images
-        
         return []
     except Exception as e:
-        print(f"[IMAGES ERROR] {str(e)}")
+        print("[IMAGES ERROR] " + str(e))
         return []
-    try:
-        brands_str = " OR ".join(brands)
-        query = f"{question} {brands_str}"
-        
-        url = "https://www.google.com/search"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        params = {'q': query}
-        
-        resp = httpx.get(url, params=params, headers=headers, timeout=5, follow_redirects=True)
-        
-        if "No results found" in resp.text or len(resp.text) < 100:
-            return None
-        
-        return resp.text[:500]
-    except:
-        return None
 
 def deepseek_ask(prompt):
     if not DEEPSEEK_API_KEY:
-        return "❌ API Key non configurata"
-    
+        return "Errore: API Key non configurata"
     try:
         resp = httpx.post(
             DEEPSEEK_API_URL,
             json={
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 1000
+                "max_tokens": 2000
             },
-            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
-            timeout=30  # AUMENTATO da 10 a 30 secondi
+            headers={"Authorization": "Bearer " + DEEPSEEK_API_KEY},
+            timeout=30
         )
-        
         if resp.status_code == 200:
             data = resp.json()
             if "choices" in data and len(data["choices"]) > 0:
                 return data["choices"][0]["message"]["content"]
-        
-        return f"❌ Errore API: {resp.status_code}"
+        return "Errore API: " + str(resp.status_code)
     except Exception as e:
-        return f"❌ Errore: {str(e)}"
+        return "Errore: " + str(e)
 
 @app.route('/api/ask', methods=['POST'])
 def ask():
@@ -369,51 +294,31 @@ def ask():
     brands = data.get('brands', [])
     use_web = data.get('web', True)
     access_code = data.get('access_code')
-    
     if not question or not brands:
         return jsonify({"error": "Domanda e brand richiesti"}), 400
-    
     doc_context = ""
-    doc_result = search_documents({
-        'brands': brands,
-        'question': question,
-        'access_code': access_code
-    })
-    
-    if doc_result.get_json()['found']:
-        docs = doc_result.get_json()['docs']
-        doc_context = "\n".join([f"[DOC: {d[0]}] {d[1][:200]}" for d in docs])
-    
+    docs = _search_docs_internal(brands, question, access_code)
+    if docs:
+        doc_context = "\n".join(["[DOC: " + d[0] + "] " + d[1][:200] for d in docs])
     web_context = ""
     images = []
     if use_web:
         web_result = search_web(question, brands)
         if web_result:
-            web_context = f"[WEB] {web_result}"
-        
-        # Cerca anche immagini
+            web_context = "[WEB] " + web_result
         images = search_images(question, brands)
-    
-    prompt = f"""Sei un esperto di arredo bagno per i brand: {', '.join(brands)}
-
-Domanda: {question}
-
-{f'Documenti disponibili: {doc_context}' if doc_context else ''}
-{f'{web_context}' if web_context else ''}
-
-Rispondi come esperto del settore, considerando i brand specifici."""
-    
+    prompt = "Sei un esperto di arredo bagno per i brand: " + ", ".join(brands) + "\n\nDomanda: " + question
+    if doc_context:
+        prompt += "\n\nDocumenti disponibili: " + doc_context
+    if web_context:
+        prompt += "\n\n" + web_context
+    prompt += "\n\nRispondi come esperto del settore, considerando i brand specifici."
     answer = deepseek_ask(prompt)
-    
-    # Ritorna risposta + immagini
-    return jsonify({
-        "answer": answer,
-        "images": images
-    })
+    return jsonify({"answer": answer, "images": images})
 
 @app.route('/')
 def index():
-    return render_template_string('''<!DOCTYPE html>
+    return render_template_string(r'''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -441,7 +346,7 @@ button:hover { background: #2563eb; }
 .message { background: rgba(59,130,245,0.1); padding: 10px; margin: 5px 0; border-radius: 4px; border-left: 3px solid #3b82f6; }
 .message img { max-width: 100%; max-height: 200px; margin-top: 8px; border-radius: 4px; }
 .input-area { display: flex; gap: 10px; }
-input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 12px; }
+input[type=text], input[type=password] { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 12px; }
 .title { color: #3b82f6; font-size: 24px; font-weight: 700; margin-bottom: 20px; }
 .btn-3pulsanti { display: flex; gap: 6px; margin-bottom: 15px; }
 .btn-3pulsanti button { flex: 1; padding: 8px; font-size: 11px; }
@@ -453,60 +358,58 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
 <body>
 <div class="container">
   <div class="sidebar">
-    <h2>🔽 SELEZIONA BRAND (GUARDRAIL)</h2>
-    <button onclick="toggleDropdown()" style="width: 100%;">🔽 Seleziona Brand</button>
-    
+    <h2>SELEZIONA BRAND</h2>
+    <button onclick="toggleDropdown()" style="width: 100%;">Seleziona Brand</button>
     <div id="dropdown" class="dropdown">
       <input type="text" id="search" placeholder="Ricerca brand..." onkeyup="filterBrands()" style="width: 100%; margin-bottom: 8px;">
       <div id="brands-list"></div>
     </div>
-    
     <div style="margin: 10px 0;" id="selected"></div>
-    
-    <h2>💾 GRUPPI SALVATI</h2>
+    <h2>GRUPPI SALVATI</h2>
     <div style="display: flex; gap: 6px; margin-bottom: 10px;">
       <input type="text" id="group-name" placeholder="Nome gruppo..." style="flex: 1;">
-      <button onclick="saveGroup()" class="btn-green">💾</button>
+      <button onclick="saveGroup()" class="btn-green">Salva</button>
     </div>
     <div id="saved-groups" style="max-height: 150px; overflow-y: auto; font-size: 12px;"></div>
-    
-    <h2>🔐 PROTEZIONE CASSETTO</h2>
+    <h2>PROTEZIONE CASSETTO</h2>
     <div style="display: flex; gap: 6px; margin-bottom: 10px;">
       <input type="password" id="admin-pwd" placeholder="Password admin..." style="flex: 1;">
-      <button onclick="setAdminPassword()" class="btn-green">🔒 Proteggi</button>
+      <button onclick="setAdminPassword()" class="btn-green">Proteggi</button>
     </div>
-    
-    <h2>➕ NUOVO CASSETTO</h2>
+    <h2>NUOVO CASSETTO</h2>
     <div style="display: flex; gap: 6px; margin-bottom: 10px;">
       <input type="text" id="new-cassetto" placeholder="Nome cassetto..." style="flex: 1;">
-      <button onclick="addCassetto()" class="btn-green">➕</button>
+      <button onclick="addCassetto()" class="btn-green">+</button>
     </div>
-    
-    <h2>🔐 ACCESSO PRIVATO</h2>
+    <h2>ACCESSO PRIVATO</h2>
     <input type="password" id="access-code" placeholder="Codice accesso..." style="width: 100%; margin-bottom: 8px;">
-    <button onclick="toggleAccess()" style="width: 100%;">🔓 Attiva</button>
+    <button onclick="toggleAccess()" style="width: 100%;">Attiva</button>
     <div style="font-size: 11px; color: #9ca3af; margin-top: 5px;" id="access-status">Accesso: PUBBLICO</div>
-    
-    <h2>🌐 WEB SEARCH</h2>
-    <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()" style="width: 100%;">🟢 ON</button>
-    
-    <h2>📤 UPLOAD DOCUMENTI</h2>
-    <button onclick="uploadFile()" style="width: 100%; background: #8b5cf6;">📄 Upload Doc</button>
-    <button onclick="uploadExcel()" style="width: 100%; background: #8b5cf6;">📊 Upload Excel</button>
-    <button onclick="showDocuments()" style="width: 100%; background: #ef4444;">🗑️ Gestisci Documenti</button>
+    <h2>WEB SEARCH</h2>
+    <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()">ON</button>
+    <h2>UPLOAD DOCUMENTI</h2>
+    <select id="upload-brand" style="width:100%; margin-bottom:8px; padding:8px; background:rgba(30,41,59,0.8); border:1px solid rgba(139,92,246,0.5); color:white; border-radius:6px; font-size:12px;">
+      <option value="">-- Seleziona Brand --</option>
+    </select>
+    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:10px; border-radius:6px; cursor:pointer; font-weight:600; font-size:12px; text-align:center; margin-bottom:8px;">
+      Upload Doc
+      <input type="file" id="file-doc" style="display:none" onchange="doUpload(this, 'doc')">
+    </label>
+    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:10px; border-radius:6px; cursor:pointer; font-weight:600; font-size:12px; text-align:center; margin-bottom:8px;">
+      Upload Excel
+      <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
+    </label>
+    <div id="upload-status" style="font-size:11px; color:#9ca3af; margin-top:4px;"></div>
+    <button onclick="showDocuments()" style="width:100%; background:#ef4444; margin-top:8px;">Gestisci Documenti</button>
   </div>
-  
   <div class="main">
-    <div class="title">🔮 Oracolo Covolo</div>
-    
+    <div class="title">Oracolo Covolo</div>
     <div class="btn-3pulsanti">
-      <button class="btn-green" onclick="generateOfferta()">📄 OFFERTA</button>
-      <button class="btn-green" onclick="generateAnalisi()">📊 ANALISI</button>
-      <button class="btn-green" onclick="generateProposta()">🎯 PROPOSTA</button>
+      <button class="btn-green" onclick="generateOfferta()">OFFERTA</button>
+      <button class="btn-green" onclick="generateAnalisi()">ANALISI</button>
+      <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
     </div>
-    
     <div class="chat-area" id="chat"></div>
-    
     <div class="input-area">
       <input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key==='Enter') ask()">
       <button onclick="ask()" style="width: 120px;">Invia</button>
@@ -515,112 +418,89 @@ input { flex: 1; padding: 10px; background: rgba(30,41,59,0.8); border: 1px soli
 </div>
 
 <script>
-// Carica brand HARDCODED (affidabile!)
-let BRANDS = ["Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa", "Ariostea", "Artesia", "Austroflamm", "BGP", "Brera", "Bisazza", "Blue Design", "Baufloor", "Bauwerk", "Caros", "Caesar", "Casalgrande Padana", "Cerasarda", "Cerasa", "Cielo", "Colombo", "Cottodeste", "CP Parquet", "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit", "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi", "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin", "Ier Hürne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti", "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue", "Murexin", "Noorth", "Omegius", "Piastrelle d'Arredo", "Profiletec", "Remer", "Sichenia", "Simas", "Schlüter Systems", "SDR", "Sterneldesign", "Stüv", "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires", "Tubes", "Valdama", "Vismara Vetro", "Wedi"];
+let BRANDS = [];
 let selected = [];
 let webEnabled = true;
 let accessCode = null;
 let accessLevel = "public";
 let groups = JSON.parse(localStorage.getItem('oracolo_groups')) || {};
 
-console.log("✅ Brand caricati HARDCODED: " + BRANDS.length);
-loadGroups();
+fetch('/api/get-brands')
+  .then(r => r.json())
+  .then(d => {
+    BRANDS = d.brands || [];
+    console.log("Brand caricati: " + BRANDS.length);
+    const sel = document.getElementById('upload-brand');
+    if (sel) {
+      BRANDS.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b; opt.textContent = b;
+        sel.appendChild(opt);
+      });
+    }
+    loadGroups();
+  })
+  .catch(e => { console.error("Errore caricamento brand:", e); });
 
 function toggleDropdown() {
-  console.log("toggleDropdown chiamato");
   const dd = document.getElementById('dropdown');
-  console.log("dropdown element:", dd);
-  
-  if (!dd) {
-    console.error("❌ ERRORE: elemento dropdown non trovato!");
-    return;
-  }
-  
-  const isShowing = dd.style.display === 'block';
-  
-  if (isShowing) {
-    dd.style.display = 'none';
-    console.log("✅ Dropdown chiuso");
+  if (!dd) return;
+  if (dd.classList.contains('show')) {
+    dd.classList.remove('show');
   } else {
-    dd.style.display = 'block';
-    console.log("✅ Dropdown aperto");
-    // Carica brand
+    dd.classList.add('show');
     filterBrands();
   }
 }
 
 function filterBrands() {
-  console.log("filterBrands - BRANDS disponibili: " + BRANDS.length);
-  
   const search = document.getElementById('search');
   const brandsList = document.getElementById('brands-list');
-  
-  if (!search || !brandsList) {
-    console.error("❌ Elementi non trovati!");
-    return;
-  }
-  
+  if (!search || !brandsList) return;
   const searchValue = search.value.toLowerCase();
   const filtered = BRANDS.filter(b => b.toLowerCase().includes(searchValue));
-  
-  console.log("Mostrando " + filtered.length + " brand");
-  
-  const html = filtered.map(b => 
+  brandsList.innerHTML = filtered.map(b =>
     '<div class="brand-item"><input type="checkbox" value="' + b + '" onchange="updateSelected()">' + b + '</div>'
   ).join('');
-  
-  brandsList.innerHTML = html;
 }
 
 function updateSelected() {
   selected = [];
-  document.querySelectorAll('.brand-item input:checked').forEach(cb => {
-    selected.push(cb.value);
-  });
-  document.getElementById('selected').innerHTML = selected.map(b => '<span class="badge">' + b + ' ✕</span>').join('');
+  document.querySelectorAll('.brand-item input:checked').forEach(cb => { selected.push(cb.value); });
+  document.getElementById('selected').innerHTML = selected.map(b => '<span class="badge">' + b + ' x</span>').join('');
 }
 
 function toggleWeb() {
   webEnabled = !webEnabled;
   const btn = document.getElementById('web-toggle');
-  if (webEnabled) {
-    btn.textContent = '🟢 ON';
-    btn.className = 'toggle-btn toggle-on';
-  } else {
-    btn.textContent = '🔴 OFF';
-    btn.className = 'toggle-btn toggle-off';
-  }
+  btn.textContent = webEnabled ? 'ON' : 'OFF';
+  btn.className = webEnabled ? 'toggle-btn toggle-on' : 'toggle-btn toggle-off';
 }
 
 function toggleAccess() {
   const code = document.getElementById('access-code').value;
   if (code) {
-    accessCode = code;
-    accessLevel = "private";
-    document.getElementById('access-status').textContent = '🔒 Accesso: PRIVATO (' + code + ')';
+    accessCode = code; accessLevel = "private";
+    document.getElementById('access-status').textContent = 'Accesso: PRIVATO (' + code + ')';
   } else {
-    accessCode = null;
-    accessLevel = "public";
-    document.getElementById('access-status').textContent = '🔓 Accesso: PUBBLICO';
+    accessCode = null; accessLevel = "public";
+    document.getElementById('access-status').textContent = 'Accesso: PUBBLICO';
   }
 }
 
 function saveGroup() {
   const name = document.getElementById('group-name').value;
   if (!name || selected.length === 0) { alert('Nome gruppo e brand richiesti'); return; }
-  
   groups[name] = selected;
   localStorage.setItem('oracolo_groups', JSON.stringify(groups));
   document.getElementById('group-name').value = '';
   loadGroups();
-  alert('✅ Gruppo salvato!');
 }
 
 function loadGroups() {
-  const html = Object.keys(groups).map(name => 
-    '<div style="padding: 6px; background: rgba(59,130,245,0.2); border-radius: 4px; margin: 4px 0;"><strong>' + name + '</strong> <button onclick="loadGroup(\'' + name + '\')" style="padding: 2px 6px; font-size: 10px;">📌</button> <button onclick="deleteGroup(\'' + name + '\')" style="padding: 2px 6px; font-size: 10px; background: #ef4444;">✕</button></div>'
+  document.getElementById('saved-groups').innerHTML = Object.keys(groups).map(name =>
+    '<div style="padding:6px;background:rgba(59,130,245,0.2);border-radius:4px;margin:4px 0"><strong>' + name + '</strong> <button onclick="loadGroup(\'' + name + '\')" style="padding:2px 6px;font-size:10px">carica</button> <button onclick="deleteGroup(\'' + name + '\')" style="padding:2px 6px;font-size:10px;background:#ef4444">x</button></div>'
   ).join('');
-  document.getElementById('saved-groups').innerHTML = html;
 }
 
 function loadGroup(name) {
@@ -635,200 +515,173 @@ function deleteGroup(name) {
   loadGroups();
 }
 
-function addCassetto() {
-  const nome = document.getElementById('new-cassetto').value.trim();
-  if (!nome) { alert('Nome cassetto richiesto'); return; }
-  
-  fetch('/api/add-azienda', {
+function setAdminPassword() {
+  if (selected.length === 0) { alert('Seleziona prima un brand'); return; }
+  const brand = selected[0];
+  const pwd = document.getElementById('admin-pwd').value.trim();
+  if (!pwd) { alert('Inserisci una password'); return; }
+  fetch('/api/set-admin-password', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({nome: nome})
+    body: JSON.stringify({brand: brand, admin_password: pwd})
   })
   .then(r => r.json())
   .then(d => {
-    if (d.ok) {
-      alert('✅ Cassetto aggiunto!');
-      document.getElementById('new-cassetto').value = '';
-      fetch('/api/get-brands').then(r => r.json()).then(data => {
-        BRANDS = data.brands || [];
-      });
-    } else {
-      alert('❌ Errore: ' + d.error);
-    }
+    if (d.ok) alert('OK: ' + d.message);
+    else alert('Errore: ' + d.error);
+    document.getElementById('admin-pwd').value = '';
   });
 }
 
-function uploadFile() {
-  const brand = prompt('Brand:');
-  if (!brand) return;
-  
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.onchange = function() {
-    const file = input.files[0];
-    const reader = new FileReader();
-    reader.onload = function(e) {
-      fetch('/api/upload-document', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          filename: file.name,
-          content: e.target.result,
-          brand: brand,
-          visibility: accessLevel,
-          access_code: accessCode
-        })
-      })
-      .then(r => r.json())
-      .then(d => {
-        if (d.ok) alert('✅ Documento caricato!');
-        else alert('❌ Errore: ' + d.error);
-      });
-    };
-    reader.readAsDataURL(file);
-  };
-  input.click();
-}
-
-function uploadExcel() {
-  const brand = prompt('Brand per EXCEL:');
-  if (!brand) return;
-  
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.xlsx,.xls,.csv';
-  input.onchange = function() {
-    const file = input.files[0];
-    const reader = new FileReader();
-    reader.onload = function(e) {
-      fetch('/api/upload-document', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          filename: file.name + ' [EXCEL]',
-          content: e.target.result,
-          brand: brand,
-          visibility: accessLevel,
-          access_code: accessCode
-        })
-      })
-      .then(r => r.json())
-      .then(d => {
-        if (d.ok) {
-          alert('✅ Excel caricato!');
-          listDocuments(brand);
-        } else {
-          alert('❌ Errore: ' + d.error);
-        }
-      });
-    };
-    reader.readAsDataURL(file);
-  };
-  input.click();
-}
-
-function listDocuments(brand) {
-  fetch('/api/list-documents?brand=' + encodeURIComponent(brand))
-    .then(r => r.json())
-    .then(d => {
-      if (d.documents && d.documents.length > 0) {
-        const html = d.documents.map(doc => 
-          '<div style="padding: 8px; background: rgba(59,130,245,0.1); border-radius: 4px; margin: 4px 0; display: flex; justify-content: space-between;">' +
-          '<span style="font-size: 12px;">' + doc.filename + '</span>' +
-          '<button onclick="deleteDocument(' + doc.id + ')" style="padding: 2px 6px; font-size: 10px; background: #ef4444;">❌</button>' +
-          '</div>'
-        ).join('');
-        alert('📋 Documenti per ' + brand + ':\n' + html);
-      } else {
-        alert('Nessun documento caricato per ' + brand);
-      }
-    });
-}
-
-function deleteDocument(docId) {
-  if (confirm('❌ Sei sicuro di voler cancellare questo documento?')) {
-    fetch('/api/delete-document/' + docId, {
-      method: 'DELETE'
-    })
+function addCassetto() {
+  const nome = document.getElementById('new-cassetto').value.trim();
+  if (!nome) { alert('Nome richiesto'); return; }
+  fetch('/api/add-azienda', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({nome}) })
     .then(r => r.json())
     .then(d => {
       if (d.ok) {
-        alert('✅ Documento cancellato!');
-      } else {
-        alert('❌ Errore: ' + d.error);
-      }
+        alert('Cassetto aggiunto!');
+        document.getElementById('new-cassetto').value = '';
+        fetch('/api/get-brands').then(r => r.json()).then(data => {
+          BRANDS = data.brands || [];
+          const sel = document.getElementById('upload-brand');
+          if (sel) {
+            sel.innerHTML = '<option value="">-- Seleziona Brand --</option>';
+            BRANDS.forEach(b => {
+              const opt = document.createElement('option');
+              opt.value = b; opt.textContent = b;
+              sel.appendChild(opt);
+            });
+          }
+        });
+      } else { alert('Errore: ' + d.error); }
     });
+}
+
+function doUpload(input, tipo) {
+  const brand = document.getElementById('upload-brand').value;
+  if (!brand) {
+    document.getElementById('upload-status').textContent = 'Seleziona prima un brand!';
+    document.getElementById('upload-status').style.color = '#ef4444';
+    input.value = '';
+    return;
   }
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('upload-status').textContent = 'Caricamento in corso...';
+  document.getElementById('upload-status').style.color = '#9ca3af';
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const filename = tipo === 'excel' ? file.name + ' [EXCEL]' : file.name;
+    fetch('/api/upload-document', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ filename: filename, content: e.target.result, brand: brand, visibility: accessLevel, access_code: accessCode }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok) {
+          document.getElementById('upload-status').textContent = 'Caricato: ' + file.name;
+          document.getElementById('upload-status').style.color = '#10b981';
+        } else {
+          document.getElementById('upload-status').textContent = 'Errore: ' + d.error;
+          document.getElementById('upload-status').style.color = '#ef4444';
+        }
+        input.value = '';
+      });
+  };
+  reader.readAsDataURL(file);
 }
 
 function showDocuments() {
   const brand = prompt('Per quale brand vuoi gestire i documenti?');
-  if (brand) {
-    listDocuments(brand);
-  }
+  if (!brand) return;
+  fetch('/api/list-documents?brand=' + encodeURIComponent(brand))
+    .then(r => r.json())
+    .then(d => {
+      if (!d.documents || d.documents.length === 0) {
+        alert('Nessun documento caricato per ' + brand);
+        return;
+      }
+      const list = d.documents.map(doc => doc.id + ' | ' + doc.filename + ' | ' + (doc.date || '')).join('\n');
+      const idStr = prompt('Documenti:\n' + list + '\n\nInserisci ID da eliminare (o annulla):');
+      if (!idStr) return;
+      const docId = parseInt(idStr);
+      if (isNaN(docId)) { alert('ID non valido'); return; }
+      deleteDocument(docId);
+    });
+}
+
+function deleteDocument(docId) {
+  if (!confirm('Sei sicuro di voler cancellare il documento ID ' + docId + '?')) return;
+  fetch('/api/delete-document/' + docId, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) alert('Documento eliminato!');
+      else alert('Errore: ' + d.error);
+    });
 }
 
 function generateOfferta() {
-  if (selected.length === 0) { alert('Seleziona brand'); return; }
-  const q = 'Genera una proposta commerciale per: ' + selected.join(', ');
-  document.getElementById('question').value = q;
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  document.getElementById('question').value = 'Genera una proposta commerciale per: ' + selected.join(', ');
   ask();
 }
-
 function generateAnalisi() {
-  if (selected.length === 0) { alert('Seleziona brand'); return; }
-  const q = 'Analizza il posizionamento di mercato di: ' + selected.join(', ');
-  document.getElementById('question').value = q;
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  document.getElementById('question').value = 'Analizza il posizionamento di mercato di: ' + selected.join(', ');
+  ask();
+}
+function generateProposta() {
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  document.getElementById('question').value = 'Proposta strategica per: ' + selected.join(', ');
   ask();
 }
 
-function generateProposta() {
-  if (selected.length === 0) { alert('Seleziona brand'); return; }
-  const q = 'Proposta strategica per: ' + selected.join(', ');
-  document.getElementById('question').value = q;
-  ask();
+function parseMarkdown(text) {
+  return text
+    .replace(/### (.+)/g, '<h3 style="color:#60a5fa;margin:10px 0 4px 0;font-size:13px">$1</h3>')
+    .replace(/## (.+)/g, '<h2 style="color:#3b82f6;margin:12px 0 6px 0;font-size:14px">$1</h2>')
+    .replace(/# (.+)/g, '<h1 style="color:#3b82f6;margin:12px 0 6px 0;font-size:15px">$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-\u2013\u2014] (.+)/gm, '<li style="margin-left:16px;margin-bottom:3px">$1</li>')
+    .replace(/(<li.*<\/li>)/gs, '<ul style="margin:6px 0">$1</ul>')
+    .replace(/\n{2,}/g, '</p><p style="margin:6px 0">')
+    .replace(/\n/g, '<br>');
 }
 
 function ask() {
-  if (selected.length === 0) { alert('Seleziona brand'); return; }
+  if (!selected.length) { alert('Seleziona brand'); return; }
   const q = document.getElementById('question').value;
   if (!q) return;
-  
   document.getElementById('question').value = '';
   const chat = document.getElementById('chat');
   chat.innerHTML += '<div class="message"><strong>Tu:</strong> ' + q + '</div>';
-  
-  fetch('/api/ask', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      question: q,
-      brands: selected,
-      web: webEnabled,
-      access_code: accessCode
-    })
-  })
-  .then(r => r.json())
-  .then(d => {
-    let answer = d.answer || 'Nessuna risposta';
-    let html = '<div class="message"><strong>Oracolo:</strong> ' + answer;
-    
-    // Aggiungi immagini se disponibili
-    if (d.images && d.images.length > 0) {
-      html += '<div style="margin-top: 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px;">';
-      d.images.forEach(img => {
-        html += '<img src="' + img + '" style="max-width: 100%; height: auto; border-radius: 4px; cursor: pointer;" onclick="window.open(\'' + img + '\', \'_blank\')" title="Clicca per ingrandire">';
-      });
+  const loadingId = 'loading_' + Date.now();
+  chat.innerHTML += '<div class="message" id="' + loadingId + '" style="opacity:0.6;font-style:italic">Oracolo sta elaborando...</div>';
+  chat.scrollTop = chat.scrollHeight;
+  fetch('/api/ask', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ question: q, brands: selected, web: webEnabled, access_code: accessCode }) })
+    .then(r => r.json())
+    .then(d => {
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      const formatted = parseMarkdown(d.answer || 'Nessuna risposta');
+      let html = '<div class="message oracolo-msg"><strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      if (d.images && d.images.length > 0) {
+        html += '<div style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">';
+        d.images.forEach(img => {
+          html += '<img src="' + img + '" style="max-width:100%;height:auto;border-radius:4px;cursor:pointer" onclick="window.open(\'' + img + '\',\'_blank\')" title="Clicca per ingrandire">';
+        });
+        html += '</div>';
+      }
       html += '</div>';
-    }
-    
-    html += '</div>';
-    chat.innerHTML += html;
-    chat.scrollTop = chat.scrollHeight;
-  })
-  .catch(e => {
-    chat.innerHTML += '<div class="message" style="color: #ef4444;"><strong>Errore:</strong> ' + e + '</div>';
-  });
+      chat.innerHTML += html;
+      chat.scrollTop = chat.scrollHeight;
+    })
+    .catch(e => {
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>';
+    });
 }
 </script>
 </body>
