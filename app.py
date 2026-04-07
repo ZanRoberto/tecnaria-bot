@@ -724,7 +724,7 @@ def ask():
         prompt += "\n\nDocumenti disponibili: " + doc_context
     if web_context:
         prompt += "\n\n" + web_context
-    prompt += "\n\nRispondi come esperto del settore, considerando i brand specifici."
+    prompt += "\n\nRispondi come esperto del settore, considerando i brand specifici. La risposta deve essere completa, coerente e non superare i 1500 caratteri."
     answer = deepseek_ask(prompt)
     return jsonify({"answer": answer, "images": images})
 
