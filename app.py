@@ -1509,17 +1509,17 @@ function showDocuments() {
 
 function generateOfferta() {
   if (!selected.length) { alert('Seleziona brand'); return; }
-  document.getElementById('question').value = 'Genera una proposta commerciale per: ' + selected.join(', ');
+  document.getElementById('question').value = 'Genera una proposta commerciale da presentare al cliente finale, illustrando i vantaggi e le caratteristiche dei brand selezionati: ' + selected.join(', ') + '. Il documento deve essere professionale, orientato al cliente e convincente.';
   ask();
 }
 function generateAnalisi() {
   if (!selected.length) { alert('Seleziona brand'); return; }
-  document.getElementById('question').value = 'Analizza il posizionamento di mercato di: ' + selected.join(', ');
+  document.getElementById('question').value = 'Crea una scheda analitica da condividere con il cliente sui brand selezionati: ' + selected.join(', ') + '. Evidenzia punti di forza, materiali, design e perché sono la scelta giusta per un progetto di qualità.';
   ask();
 }
 function generateProposta() {
   if (!selected.length) { alert('Seleziona brand'); return; }
-  document.getElementById('question').value = 'Proposta strategica per: ' + selected.join(', ');
+  document.getElementById('question').value = 'Prepara una proposta strategica da presentare al cliente per un progetto che utilizzi i brand: ' + selected.join(', ') + '. Includi posizionamento, benefici concreti e suggerimenti di abbinamento.';
   ask();
 }
 
