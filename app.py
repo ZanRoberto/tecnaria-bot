@@ -743,9 +743,9 @@ def index():
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system; background: linear-gradient(135deg, #0f172e 0%, #1a1f3a 100%); color: #e0e0e0; min-height: 100vh; }
-.container { display: flex; height: 100vh; }
+.container { display: flex; height: 100vh; overflow: hidden; }
 .sidebar { width: 320px; background: rgba(15,23,46,0.9); border-right: 1px solid rgba(59,130,245,0.2); padding: 16px; overflow-y: auto; flex-shrink: 0; }
-.main { flex: 1; display: flex; flex-direction: column; padding: 16px; min-width: 0; }
+.main { flex: 1; display: flex; flex-direction: column; padding: 16px; min-width: 0; min-height: 0; overflow: hidden; }
 .rightpanel { width: 280px; background: rgba(15,23,46,0.9); border-left: 1px solid rgba(59,130,245,0.2); padding: 12px; overflow-y: auto; flex-shrink: 0; display: none; }
 .rightpanel.visible { display: block; }
 h2 { color: #3b82f6; margin-bottom: 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -761,7 +761,10 @@ button:hover { opacity: 0.85; }
 .brand-item { padding: 4px; cursor: pointer; font-size: 11px; }
 .brand-item input { margin-right: 4px; }
 .badge { display: inline-block; background: #10b981; color: white; padding: 2px 5px; border-radius: 3px; margin: 2px; font-size: 10px; }
-.chat-area { flex: 1; background: rgba(15,23,46,0.5); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 12px; overflow-y: auto; margin-bottom: 8px; font-size: 12px; }
+.chat-area { flex: 1; background: rgba(15,23,46,0.5); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 12px; overflow-y: auto; margin-bottom: 8px; font-size: 12px; min-height: 0; }
+.oracolo-msg { position: relative; }
+.copy-btn { position: absolute; top: 6px; right: 6px; padding: 3px 8px; font-size: 10px; background: rgba(59,130,245,0.3); color: #93c5fd; border: 1px solid rgba(59,130,245,0.4); border-radius: 4px; cursor: pointer; margin-bottom: 0; }
+.copy-btn:hover { background: rgba(59,130,245,0.5); }
 .message { background: rgba(59,130,245,0.1); padding: 8px; margin: 4px 0; border-radius: 4px; border-left: 3px solid #3b82f6; }
 .message img { max-width: 100%; max-height: 180px; margin-top: 6px; border-radius: 4px; }
 .input-area { display: flex; gap: 8px; }
@@ -1520,6 +1523,23 @@ function generateProposta() {
   ask();
 }
 
+function copyRisposta(msgId) {
+  const el = document.getElementById(msgId);
+  if (!el) return;
+  const testo = el.innerText.replace('Copia\n', '').replace('Oracolo:\n', '').trim();
+  navigator.clipboard.writeText(testo).then(() => {
+    const btn = el.querySelector('.copy-btn');
+    if (btn) { btn.textContent = 'Copiato!'; setTimeout(() => { btn.textContent = 'Copia'; }, 2000); }
+  }).catch(() => {
+    const range = document.createRange();
+    range.selectNode(el);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    document.execCommand('copy');
+    window.getSelection().removeAllRanges();
+  });
+}
+
 function parseMarkdown(text) {
   return text
     .replace(/### (.+)/g, '<h3 style="color:#60a5fa;margin:10px 0 4px 0;font-size:13px">$1</h3>')
@@ -1550,7 +1570,10 @@ function ask() {
       const loading = document.getElementById(loadingId);
       if (loading) loading.remove();
       const formatted = parseMarkdown(d.answer || 'Nessuna risposta');
-      let html = '<div class="message oracolo-msg"><strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      const msgId = 'msg_' + Date.now();
+      let html = '<div class="message oracolo-msg" id="' + msgId + '">';
+      html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
+      html += '<strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px">';
         d.images.forEach(img => { html += '<img src="' + img + '" style="max-width:100%;height:auto;border-radius:4px;cursor:pointer" onclick="window.open(\'' + img + '\',\'_blank\')">'; });
