@@ -792,6 +792,11 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .login-title { color: #3b82f6; font-size: 20px; font-weight: 700; margin-bottom: 20px; text-align: center; }
 .sa-panel { background: rgba(139,92,246,0.15); border: 1px solid rgba(139,92,246,0.4); border-radius: 6px; padding: 8px; margin-bottom: 6px; font-size: 11px; }
 .bi-stat { background: rgba(30,41,59,0.8); border-radius: 4px; padding: 6px 8px; margin: 3px 0; font-size: 11px; display: flex; justify-content: space-between; }
+.brand-autocomplete { position: relative; width: 100%; }
+.brand-dropdown-list { position: absolute; top: 100%; left: 0; right: 0; background: #1e293b; border: 1px solid rgba(59,130,245,0.5); border-top: none; border-radius: 0 0 6px 6px; max-height: 180px; overflow-y: auto; z-index: 3000; display: none; }
+.brand-dropdown-list.open { display: block; }
+.brand-dropdown-item { padding: 7px 10px; font-size: 11px; cursor: pointer; color: #e0e0e0; }
+.brand-dropdown-item:hover { background: rgba(59,130,245,0.3); color: white; }
 /* DRAWER CANTIERE */
 .cantiere-drawer { display: none; position: fixed; top: 0; right: 0; width: 520px; height: 100vh; background: #0f172e; border-left: 2px solid rgba(59,130,245,0.4); z-index: 1000; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.5); }
 .cantiere-drawer.open { display: flex; }
@@ -864,9 +869,15 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     <h2 style="margin-top: 10px;">Web search</h2>
     <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()">ON</button>
     <h2>Upload documenti</h2>
-    <select id="upload-brand" style="width:100%; margin-bottom:6px;">
-      <option value="">-- Seleziona Brand --</option>
-    </select>
+    <div class="brand-autocomplete" style="margin-bottom:6px;">
+      <input type="text" id="upload-brand-input" placeholder="Cerca brand..." autocomplete="off"
+        oninput="filterAutocomplete('upload-brand-input','upload-brand-list','upload-brand-val')"
+        onfocus="filterAutocomplete('upload-brand-input','upload-brand-list','upload-brand-val')"
+        onblur="setTimeout(()=>closeAutocomplete('upload-brand-list'),200)"
+        style="width:100%;">
+      <input type="hidden" id="upload-brand-val">
+      <div class="brand-dropdown-list" id="upload-brand-list"></div>
+    </div>
     <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
       Upload Doc <input type="file" id="file-doc" style="display:none" onchange="doUpload(this, 'doc')">
     </label>
@@ -1011,9 +1022,15 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     <div class="drawer-section">
       <div class="drawer-section-title">Aggiungi elemento</div>
       <div class="form-row">
-        <select id="riga-brand" style="flex:1;">
-          <option value="">-- Brand --</option>
-        </select>
+        <div class="brand-autocomplete" style="flex:1;">
+          <input type="text" id="riga-brand-input" placeholder="Cerca brand..." autocomplete="off"
+            oninput="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
+            onfocus="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
+            onblur="setTimeout(()=>closeAutocomplete('riga-brand-list'),200)"
+            style="width:100%;">
+          <input type="hidden" id="riga-brand-val">
+          <div class="brand-dropdown-list" id="riga-brand-list"></div>
+        </div>
         <input type="text" id="riga-categoria" placeholder="Categoria (es. sanitari)" style="flex:1;">
       </div>
       <input type="text" id="riga-descrizione" placeholder="Descrizione prodotto..." style="width:100%; margin-bottom:8px;">
@@ -1040,6 +1057,31 @@ let groups = JSON.parse(localStorage.getItem('oracolo_groups')) || {};
 let currentUser = null;
 let moduliAttivi = [];
 let cantiereAttivo = null;
+
+// ---------------------------------------------------------------------------
+// AUTOCOMPLETE BRAND
+// ---------------------------------------------------------------------------
+function filterAutocomplete(inputId, listId, valId) {
+  const input = document.getElementById(inputId);
+  const list = document.getElementById(listId);
+  const val = input.value.toLowerCase();
+  const filtered = val.length === 0 ? BRANDS : BRANDS.filter(b => b.toLowerCase().includes(val));
+  list.innerHTML = filtered.map(b =>
+    '<div class="brand-dropdown-item" onmousedown="selectBrand(\'' + inputId + '\',\'' + listId + '\',\'' + valId + '\',\'' + b.replace(/'/g, "\\'") + '\')">' + b + '</div>'
+  ).join('');
+  list.classList.add('open');
+}
+
+function selectBrand(inputId, listId, valId, brand) {
+  document.getElementById(inputId).value = brand;
+  document.getElementById(valId).value = brand;
+  closeAutocomplete(listId);
+}
+
+function closeAutocomplete(listId) {
+  const list = document.getElementById(listId);
+  if (list) list.classList.remove('open');
+}
 
 // ---------------------------------------------------------------------------
 // LOGIN
@@ -1246,7 +1288,7 @@ function loadRighe() {
 
 function addRiga() {
   if (!cantiereAttivo) return;
-  const brand = document.getElementById('riga-brand').value;
+  const brand = document.getElementById('riga-brand-val').value;
   const categoria = document.getElementById('riga-categoria').value.trim();
   const descrizione = document.getElementById('riga-descrizione').value.trim();
   const importo = parseFloat(document.getElementById('riga-importo').value) || 0;
@@ -1255,6 +1297,8 @@ function addRiga() {
     body: JSON.stringify({brand, categoria, descrizione, importo}) })
     .then(r => r.json()).then(d => {
       if (d.ok) {
+        document.getElementById('riga-brand-input').value = '';
+        document.getElementById('riga-brand-val').value = '';
         document.getElementById('riga-categoria').value = '';
         document.getElementById('riga-descrizione').value = '';
         document.getElementById('riga-importo').value = '';
@@ -1327,12 +1371,6 @@ function biCancella() {
 function loadBrands() {
   fetch('/api/get-brands').then(r => r.json()).then(d => {
     BRANDS = d.brands || [];
-    const sel = document.getElementById('upload-brand');
-    const rigaBrand = document.getElementById('riga-brand');
-    BRANDS.forEach(b => {
-      const o1 = document.createElement('option'); o1.value = b; o1.textContent = b; sel.appendChild(o1);
-      const o2 = document.createElement('option'); o2.value = b; o2.textContent = b; rigaBrand.appendChild(o2);
-    });
     loadGroups();
   }).catch(e => console.error("Errore brand:", e));
 }
@@ -1422,18 +1460,13 @@ function addCassetto() {
       if (d.ok) {
         alert('Cassetto aggiunto!');
         document.getElementById('new-cassetto').value = '';
-        fetch('/api/get-brands').then(r => r.json()).then(data => {
-          BRANDS = data.brands || [];
-          const sel = document.getElementById('upload-brand');
-          sel.innerHTML = '<option value="">-- Seleziona Brand --</option>';
-          BRANDS.forEach(b => { const o = document.createElement('option'); o.value=b; o.textContent=b; sel.appendChild(o); });
-        });
+        fetch('/api/get-brands').then(r => r.json()).then(data => { BRANDS = data.brands || []; });
       } else alert('Errore: ' + d.error);
     });
 }
 
 function doUpload(input, tipo) {
-  const brand = document.getElementById('upload-brand').value;
+  const brand = document.getElementById('upload-brand-val').value;
   if (!brand) { document.getElementById('upload-status').textContent = 'Seleziona prima un brand!'; document.getElementById('upload-status').style.color = '#ef4444'; input.value=''; return; }
   const file = input.files[0];
   if (!file) return;
