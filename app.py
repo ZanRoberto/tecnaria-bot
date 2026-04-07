@@ -1574,6 +1574,8 @@ function ask() {
       let html = '<div class="message oracolo-msg" id="' + msgId + '">';
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
       html += '<strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      const query = encodeURIComponent(selected.join(' ') + ' ' + q);
+      html += '<div style="margin-top:10px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px">';
         d.images.forEach(img => { html += '<img src="' + img + '" style="max-width:100%;height:auto;border-radius:4px;cursor:pointer" onclick="window.open(\'' + img + '\',\'_blank\')">'; });
