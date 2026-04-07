@@ -18,6 +18,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "tecnaria2024").strip()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "").strip()
 
 BRANDS_LIST = [
     "Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa",
@@ -662,19 +664,31 @@ def search_web(question, brands):
     return None
 
 def search_images(query, brands):
+    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+        return []
     try:
-        search_query = query + " " + " ".join(brands) + " product image"
-        url = "https://www.google.com/search"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        params = {'q': search_query, 'tbm': 'isch'}
-        resp = httpx.get(url, params=params, headers=headers, timeout=5, follow_redirects=True)
+        search_query = " ".join(brands) + " " + query + " product"
+        resp = httpx.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={
+                "key": GOOGLE_API_KEY,
+                "cx": GOOGLE_CSE_ID,
+                "q": search_query,
+                "searchType": "image",
+                "num": 6,
+                "imgSize": "medium",
+                "safe": "active"
+            },
+            timeout=8
+        )
         if resp.status_code == 200:
-            pattern = r'"imgurl":"([^"]+)"'
-            matches = re.findall(pattern, resp.text)
-            return matches[:5] if matches else []
+            data = resp.json()
+            items = data.get("items", [])
+            return [item["link"] for item in items if "link" in item]
+        print("[GOOGLE CSE] Errore: " + str(resp.status_code))
         return []
     except Exception as e:
-        print("[IMAGES ERROR] " + str(e))
+        print("[GOOGLE CSE ERROR] " + str(e))
         return []
 
 def deepseek_ask(prompt):
@@ -1448,7 +1462,19 @@ function askDirect(domanda, brands) {
       let html = '<div class="message oracolo-msg" id="' + msgId + '">';
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
       html += '<strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
-      html += '<div style="margin-top:10px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
+      if (d.images && d.images.length > 0) {
+        html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
+        html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
+        html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
+        d.images.forEach(img => {
+          html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
+          html += '<img src="' + img + '" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.style.display=\'none\'">';
+          html += '</div>';
+        });
+        html += '</div></div>';
+      } else {
+        html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
+      }
       html += '</div>';
       chat.innerHTML += html;
       chat.scrollTop = chat.scrollHeight;
@@ -1706,11 +1732,18 @@ function ask() {
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
       html += '<strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
       const query = encodeURIComponent(selected.join(' ') + ' ' + q);
-      html += '<div style="margin-top:10px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
       if (d.images && d.images.length > 0) {
-        html += '<div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px">';
-        d.images.forEach(img => { html += '<img src="' + img + '" style="max-width:100%;height:auto;border-radius:4px;cursor:pointer" onclick="window.open(\'' + img + '\',\'_blank\')">'; });
-        html += '</div>';
+        html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
+        html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
+        html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
+        d.images.forEach(img => {
+          html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
+          html += '<img src="' + img + '" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.style.display=\'none\'">';
+          html += '</div>';
+        });
+        html += '</div></div>';
+      } else {
+        html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
       }
       html += '</div>';
       chat.innerHTML += html;
