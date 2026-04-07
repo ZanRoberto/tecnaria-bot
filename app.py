@@ -1419,7 +1419,7 @@ function generaOffertaCantiere() {
   fetch('/api/cantieri/' + cantiereAttivo + '/righe').then(r => r.json()).then(d => {
     const righe = d.righe || [];
     if (righe.length === 0) { alert('Aggiungi prima delle righe al cantiere'); return; }
-    const nome = document.getElementById('cantiere-nome-label').textContent;
+    const nome = document.getElementById('drawer-nome').textContent;
     const riepilogo = righe.map(r => '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + (r.importo ? ' | €' + r.importo : '')).join('\n');
     const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
     if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
