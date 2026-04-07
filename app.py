@@ -663,6 +663,21 @@ def _search_docs_internal(brands, question, access_code):
 def search_web(question, brands):
     return None
 
+@app.route('/api/debug-images', methods=['GET'])
+def debug_images():
+    q = request.args.get('q', 'Gessi rubinetto')
+    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+        return jsonify({"error": "Chiavi non configurate", "api_key": bool(GOOGLE_API_KEY), "cse_id": bool(GOOGLE_CSE_ID)})
+    try:
+        resp = httpx.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={"key": GOOGLE_API_KEY, "cx": GOOGLE_CSE_ID, "q": q, "searchType": "image", "num": 3},
+            timeout=8
+        )
+        return jsonify({"status": resp.status_code, "body": resp.json()})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
 def search_images(query, brands):
     if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
         return []
