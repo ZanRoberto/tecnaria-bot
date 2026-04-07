@@ -1423,11 +1423,42 @@ function generaOffertaCantiere() {
     const riepilogo = righe.map(r => '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + (r.importo ? ' | €' + r.importo : '')).join('\n');
     const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
     if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
-    selected = brands;
-    document.getElementById('selected').innerHTML = selected.map(b => '<span class="badge">' + b + ' x</span>').join('');
-    document.getElementById('question').value = 'Genera una proposta commerciale completa per il cantiere "' + nome + '" con i seguenti elementi:\n' + riepilogo;
-    ask();
+    const domanda = 'Genera una proposta commerciale completa da presentare al cliente per il cantiere "' + nome + '" con i seguenti elementi:\n' + riepilogo + '\nIl documento deve essere professionale, orientato al cliente finale e convincente.';
+    // Chiudi drawer e mostra nella chat
+    closeCantiere();
+    askDirect(domanda, brands);
   });
+}
+
+function askDirect(domanda, brands) {
+  const chat = document.getElementById('chat');
+  chat.innerHTML += '<div class="message"><strong>Tu:</strong> Genera offerta cantiere — ' + document.getElementById('drawer-nome') ? '' : brands.join(', ') + '</div>';
+  const loadingId = 'loading_' + Date.now();
+  chat.innerHTML += '<div class="message" id="' + loadingId + '" style="opacity:0.6;font-style:italic">Oracolo sta elaborando l\'offerta...</div>';
+  chat.scrollTop = chat.scrollHeight;
+  fetch('/api/ask', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ question: domanda, brands: brands, web: webEnabled, access_code: accessCode }) })
+    .then(r => r.json())
+    .then(d => {
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      const formatted = parseMarkdown(d.answer || 'Nessuna risposta');
+      const msgId = 'msg_' + Date.now();
+      const query = encodeURIComponent(brands.join(' '));
+      let html = '<div class="message oracolo-msg" id="' + msgId + '">';
+      html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
+      html += '<strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      html += '<div style="margin-top:10px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
+      html += '</div>';
+      chat.innerHTML += html;
+      chat.scrollTop = chat.scrollHeight;
+    })
+    .catch(e => {
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>';
+      chat.scrollTop = chat.scrollHeight;
+    });
 }
 
 // ---------------------------------------------------------------------------
