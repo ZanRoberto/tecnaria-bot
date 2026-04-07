@@ -1030,13 +1030,48 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
             oninput="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
             onfocus="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
             onblur="setTimeout(()=>closeAutocomplete('riga-brand-list'),200)"
+            onchange="aggiornaCampiExtra()"
             style="width:100%;">
-          <input type="hidden" id="riga-brand-val">
+          <input type="hidden" id="riga-brand-val" onchange="aggiornaCampiExtra()">
           <div class="brand-dropdown-list" id="riga-brand-list"></div>
         </div>
         <input type="text" id="riga-categoria" placeholder="Categoria (es. sanitari)" style="flex:1;">
       </div>
       <input type="text" id="riga-descrizione" placeholder="Descrizione prodotto..." style="width:100%; margin-bottom:8px;">
+
+      <!-- CAMPI EXTRA PIASTRELLE -->
+      <div id="extra-piastrelle" style="display:none; background:rgba(59,130,245,0.08); border:1px solid rgba(59,130,245,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
+        <div style="font-size:10px; color:#60a5fa; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli piastrella / rivestimento</div>
+        <div class="form-row">
+          <input type="text" id="extra-formato" placeholder="Formato (es. 60x120 cm)" style="flex:1;">
+          <input type="text" id="extra-finitura" placeholder="Finitura (es. lappato, opaco)" style="flex:1;">
+        </div>
+        <input type="text" id="extra-colore" placeholder="Colore / tono (es. grigio cemento, effetto marmo)" style="width:100%;">
+      </div>
+
+      <!-- CAMPI EXTRA LEGNO / PARQUET -->
+      <div id="extra-legno" style="display:none; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
+        <div style="font-size:10px; color:#10b981; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli legno / parquet</div>
+        <div class="form-row">
+          <input type="text" id="extra-essenza" placeholder="Essenza (es. rovere, noce, frassino)" style="flex:1;">
+          <input type="text" id="extra-legno-finitura" placeholder="Finitura (es. oliato, laccato)" style="flex:1;">
+        </div>
+        <div class="form-row">
+          <input type="text" id="extra-legno-formato" placeholder="Formato doga (es. 190x1900 mm)" style="flex:1;">
+          <input type="text" id="extra-legno-tono" placeholder="Tono (es. sbiancato, miele, wengè)" style="flex:1;">
+        </div>
+      </div>
+
+      <!-- CAMPI EXTRA VINILICO/TECNICO -->
+      <div id="extra-vinilico" style="display:none; background:rgba(139,92,246,0.08); border:1px solid rgba(139,92,246,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
+        <div style="font-size:10px; color:#8b5cf6; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli pavimento tecnico / vinilico</div>
+        <div class="form-row">
+          <input type="text" id="extra-vin-formato" placeholder="Formato" style="flex:1;">
+          <input type="text" id="extra-vin-spessore" placeholder="Spessore (es. 5mm)" style="flex:1;">
+        </div>
+        <input type="text" id="extra-vin-effetto" placeholder="Effetto (es. legno, pietra, cemento)" style="width:100%;">
+      </div>
+
       <div class="form-row">
         <input type="number" id="riga-importo" placeholder="Importo €" style="flex:1;">
         <button onclick="addRiga()" class="btn-green" style="flex:1; margin-bottom:0;">+ Aggiungi</button>
@@ -1079,6 +1114,7 @@ function selectBrand(inputId, listId, valId, brand) {
   document.getElementById(inputId).value = brand;
   document.getElementById(valId).value = brand;
   closeAutocomplete(listId);
+  if (inputId === 'riga-brand-input') aggiornaCampiExtra();
 }
 
 function closeAutocomplete(listId) {
@@ -1289,13 +1325,70 @@ function loadRighe() {
   });
 }
 
+// Mappa brand → categoria materiale
+const BRAND_CATEGORIA = {
+  piastrelle: ['Aparici','Apavisa','Ariostea','Caesar','Casalgrande Padana','Cerasarda','Cottodeste',
+               'Edimax Astor','FAP Ceramiche','FMG','Floorim','Gigacer','Iris','Italgraniti',
+               'Marca Corona','Mirage','Sichenia','Tonalite','Bisazza','Noorth','Tresse'],
+  legno: ['Bauwerk','CP Parquet','Iniziativa Legno','Madegan'],
+  vinilico: ['Gerflor']
+};
+
+function aggiornaCampiExtra() {
+  const brand = document.getElementById('riga-brand-val').value || document.getElementById('riga-brand-input').value;
+  document.getElementById('extra-piastrelle').style.display = 'none';
+  document.getElementById('extra-legno').style.display = 'none';
+  document.getElementById('extra-vinilico').style.display = 'none';
+  if (BRAND_CATEGORIA.piastrelle.includes(brand)) {
+    document.getElementById('extra-piastrelle').style.display = 'block';
+    document.getElementById('riga-categoria').value = 'Pavimenti / Rivestimenti';
+  } else if (BRAND_CATEGORIA.legno.includes(brand)) {
+    document.getElementById('extra-legno').style.display = 'block';
+    document.getElementById('riga-categoria').value = 'Parquet / Legno';
+  } else if (BRAND_CATEGORIA.vinilico.includes(brand)) {
+    document.getElementById('extra-vinilico').style.display = 'block';
+    document.getElementById('riga-categoria').value = 'Pavimento Tecnico';
+  }
+}
+
 function addRiga() {
   if (!cantiereAttivo) return;
   const brand = document.getElementById('riga-brand-val').value;
   const categoria = document.getElementById('riga-categoria').value.trim();
-  const descrizione = document.getElementById('riga-descrizione').value.trim();
+  let descrizione = document.getElementById('riga-descrizione').value.trim();
   const importo = parseFloat(document.getElementById('riga-importo').value) || 0;
   if (!brand && !categoria) { alert('Inserisci almeno brand o categoria'); return; }
+
+  // Raccolta campi extra
+  const extraParts = [];
+  if (document.getElementById('extra-piastrelle').style.display !== 'none') {
+    const fmt = document.getElementById('extra-formato').value.trim();
+    const fin = document.getElementById('extra-finitura').value.trim();
+    const col = document.getElementById('extra-colore').value.trim();
+    if (fmt) extraParts.push('Formato: ' + fmt);
+    if (fin) extraParts.push('Finitura: ' + fin);
+    if (col) extraParts.push('Colore/Tono: ' + col);
+  } else if (document.getElementById('extra-legno').style.display !== 'none') {
+    const ess = document.getElementById('extra-essenza').value.trim();
+    const fin = document.getElementById('extra-legno-finitura').value.trim();
+    const fmt = document.getElementById('extra-legno-formato').value.trim();
+    const ton = document.getElementById('extra-legno-tono').value.trim();
+    if (ess) extraParts.push('Essenza: ' + ess);
+    if (fin) extraParts.push('Finitura: ' + fin);
+    if (fmt) extraParts.push('Formato: ' + fmt);
+    if (ton) extraParts.push('Tono: ' + ton);
+  } else if (document.getElementById('extra-vinilico').style.display !== 'none') {
+    const fmt = document.getElementById('extra-vin-formato').value.trim();
+    const spe = document.getElementById('extra-vin-spessore').value.trim();
+    const eff = document.getElementById('extra-vin-effetto').value.trim();
+    if (fmt) extraParts.push('Formato: ' + fmt);
+    if (spe) extraParts.push('Spessore: ' + spe);
+    if (eff) extraParts.push('Effetto: ' + eff);
+  }
+  if (extraParts.length > 0) {
+    descrizione = (descrizione ? descrizione + ' — ' : '') + extraParts.join(' | ');
+  }
+
   fetch('/api/cantieri/' + cantiereAttivo + '/righe', { method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({brand, categoria, descrizione, importo}) })
     .then(r => r.json()).then(d => {
@@ -1305,6 +1398,13 @@ function addRiga() {
         document.getElementById('riga-categoria').value = '';
         document.getElementById('riga-descrizione').value = '';
         document.getElementById('riga-importo').value = '';
+        // Reset campi extra
+        ['extra-formato','extra-finitura','extra-colore','extra-essenza','extra-legno-finitura',
+         'extra-legno-formato','extra-legno-tono','extra-vin-formato','extra-vin-spessore','extra-vin-effetto']
+          .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        document.getElementById('extra-piastrelle').style.display = 'none';
+        document.getElementById('extra-legno').style.display = 'none';
+        document.getElementById('extra-vinilico').style.display = 'none';
         loadRighe();
       }
     });
