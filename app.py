@@ -1613,11 +1613,23 @@ function generaOffertaCantiere() {
     const righe = d.righe || [];
     if (righe.length === 0) { alert('Aggiungi prima delle righe al cantiere'); return; }
     const nome = document.getElementById('drawer-nome').textContent;
-    const riepilogo = righe.map(r => '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + (r.importo ? ' | €' + r.importo : '')).join('\n');
+    let totale = 0;
+    const riepilogo = righe.map(r => {
+      totale += (r.importo || 0);
+      const prezzo = r.importo ? ' | Prezzo: €' + r.importo.toFixed(2) : ' | Prezzo: da definire';
+      return '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + prezzo;
+    }).join('\n');
     const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
     if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
-    const domanda = 'Genera una proposta commerciale completa da presentare al cliente per il cantiere "' + nome + '" con i seguenti elementi:\n' + riepilogo + '\nIl documento deve essere professionale, orientato al cliente finale e convincente.';
-    // Chiudi drawer e mostra nella chat
+    const domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
+      'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
+      'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
+      'La proposta deve:\n' +
+      '1. Avere un testo introduttivo professionale e convincente\n' +
+      '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
+      '3. Mostrare il totale finale in modo chiaro\n' +
+      '4. Chiudersi con una call to action per il cliente\n' +
+      'Usa un tono elegante, orientato al valore e alla qualità.';
     closeCantiere();
     askDirect(domanda, brands);
   });
@@ -1927,7 +1939,7 @@ function ask() {
       // --- BOTTONE AGGIUNGI AL CARRELLO ---
       const safeBrand = (selected[0] || '').replace(/'/g, "\\'");
       html += '<div style="margin-top:10px; border-top:1px solid rgba(16,185,129,0.2); padding-top:8px;">';
-      html += '<button onclick="apriFormCarrello(\'' + msgId + '\',\'' + safeBrand + '\')" ' +
+      html += '<button id="btn-carrello-' + msgId + '" onclick="apriFormCarrello(\'' + msgId + '\',\'' + safeBrand + '\')" ' +
         'style="background:rgba(16,185,129,0.2); border:1px solid rgba(16,185,129,0.5); color:#10b981; padding:5px 12px; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer; margin-bottom:0;">✓ Aggiungi al carrello</button>';
       html += '</div>';
       // --- FORM CARRELLO (hidden) — desc verrà riempita da AI dopo apertura ---
@@ -1995,6 +2007,11 @@ function confermaDaChat(msgId, brand) {
   if (!desc) { alert('La descrizione è vuota'); return; }
   const descrizione = codice ? '[' + codice + '] ' + desc : desc;
 
+  // Disabilita subito il bottone per evitare doppio click
+  const form = document.getElementById('form-carrello-' + msgId);
+  const confirmBtn = form ? form.querySelector('.btn-green') : null;
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '⏳'; }
+
   fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -2003,12 +2020,16 @@ function confermaDaChat(msgId, brand) {
   .then(r => r.json())
   .then(d => {
     if (d.ok) {
-      const form = document.getElementById('form-carrello-' + msgId);
       if (form) {
         form.innerHTML = '<div style="color:#10b981; font-size:11px; font-weight:600; padding:4px 0;">✓ Aggiunto al carrello!</div>';
         setTimeout(() => { form.style.display = 'none'; }, 2000);
       }
+      // Disabilita anche il bottone esterno
+      const outerBtn = document.getElementById('btn-carrello-' + msgId);
+      if (outerBtn) { outerBtn.textContent = '✓ Aggiunto'; outerBtn.disabled = true; outerBtn.style.opacity = '0.5'; }
       loadRighe();
+    } else {
+      if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '✓ Conferma'; }
     }
   });
 }
