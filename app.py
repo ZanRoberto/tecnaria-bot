@@ -122,6 +122,26 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 init_db()
 
+def dedup_brands_on_start():
+    """Unifica brand duplicati case-insensitive all'avvio"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
+    dups = c.fetchall()
+    for lower_name, ids_str, names_str in dups:
+        ids = [int(x) for x in ids_str.split(',')]
+        names = names_str.split(',')
+        canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
+        canonical_id = ids[names.index(canonical_name)]
+        for i, bid in enumerate(ids):
+            if bid != canonical_id:
+                c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
+                c.execute("DELETE FROM aziende WHERE id=?", (bid,))
+    conn.commit()
+    conn.close()
+
+dedup_brands_on_start()
+
 # ---------------------------------------------------------------------------
 # HELPERS AUTH
 # ---------------------------------------------------------------------------
@@ -503,6 +523,12 @@ def add_azienda():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
+        # Controlla se esiste già (case-insensitive)
+        c.execute('SELECT id, nome FROM aziende WHERE LOWER(nome) = LOWER(?)', (nome,))
+        existing = c.fetchone()
+        if existing:
+            conn.close()
+            return jsonify({"ok": True, "nome": existing[1], "existed": True})
         c.execute('INSERT INTO aziende (nome) VALUES (?)', (nome,))
         conn.commit()
         conn.close()
@@ -510,6 +536,33 @@ def add_azienda():
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)}), 400
+
+@app.route('/api/sa/dedup-brands', methods=['POST'])
+def dedup_brands():
+    """Unifica brand duplicati case-insensitive — mantiene quello con più documenti"""
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
+    dups = c.fetchall()
+    merged = 0
+    for lower_name, ids_str, names_str in dups:
+        ids = [int(x) for x in ids_str.split(',')]
+        names = names_str.split(',')
+        # Tieni quello con il nome corretto (prima maiuscola) o il primo della BRANDS_LIST
+        canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
+        canonical_id = ids[names.index(canonical_name)]
+        for i, bid in enumerate(ids):
+            if bid != canonical_id:
+                # Sposta documenti al brand canonico
+                c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
+                c.execute("UPDATE cantiere_righe SET brand=? WHERE brand=?", (canonical_name, names[i]))
+                c.execute("DELETE FROM aziende WHERE id=?", (bid,))
+                merged += 1
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "merged": merged})
 
 @app.route('/api/set-admin-password', methods=['POST'])
 def set_admin_password():
