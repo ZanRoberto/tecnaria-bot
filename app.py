@@ -1640,7 +1640,7 @@ function askDirect(domanda, brands) {
       const query = encodeURIComponent(brands.join(' '));
       let html = '<div class="message oracolo-msg" id="' + msgId + '">';
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
-      html += '<strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
         html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
@@ -1909,7 +1909,7 @@ function ask() {
       const msgId = 'msg_' + Date.now();
       let html = '<div class="message oracolo-msg" id="' + msgId + '">';
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
-      html += '<strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
       const query = encodeURIComponent(selected.join(' ') + ' ' + q);
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
@@ -1925,25 +1925,26 @@ function ask() {
         html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
       }
       // --- BOTTONE AGGIUNGI AL CARRELLO ---
-      const rawText = (d.answer || '').replace(/\n/g,' ').trim();
-      const safeText = rawText.replace(/'/g, "\\'").substring(0, 400);
       const safeBrand = (selected[0] || '').replace(/'/g, "\\'");
       html += '<div style="margin-top:10px; border-top:1px solid rgba(16,185,129,0.2); padding-top:8px;">';
-      html += '<button onclick="apriFormCarrello(\'' + msgId + '\',\'' + safeBrand + '\',\'' + safeText + '\')" ' +
+      html += '<button onclick="apriFormCarrello(\'' + msgId + '\',\'' + safeBrand + '\')" ' +
         'style="background:rgba(16,185,129,0.2); border:1px solid rgba(16,185,129,0.5); color:#10b981; padding:5px 12px; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer; margin-bottom:0;">✓ Aggiungi al carrello</button>';
       html += '</div>';
-      // --- FORM CARRELLO (hidden) ---
+      // --- FORM CARRELLO (hidden) — desc verrà riempita da AI dopo apertura ---
       html += '<div id="form-carrello-' + msgId + '" style="display:none; margin-top:8px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:10px;">';
       html += '<div style="font-size:10px; color:#10b981; font-weight:700; text-transform:uppercase; margin-bottom:8px;">Aggiungi al carrello</div>';
       html += '<input type="text" id="fc-codice-' + msgId + '" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:6px; font-size:11px;">';
-      html += '<textarea id="fc-desc-' + msgId + '" rows="3" style="width:100%; margin-bottom:6px; font-size:11px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:6px; padding:6px; resize:vertical;">' + (d.answer || '').substring(0, 300).replace(/</g,'&lt;') + '</textarea>';
+      html += '<textarea id="fc-desc-' + msgId + '" rows="2" placeholder="Sintesi in caricamento..." style="width:100%; margin-bottom:6px; font-size:11px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:6px; padding:6px; resize:vertical;"></textarea>';
       html += '<div style="display:flex; gap:6px;">';
-      html += '<input type="number" id="fc-prezzo-' + msgId + '" placeholder="Prezzo € (opzionale)" style="flex:1; font-size:11px;">';
+      html += '<input type="number" id="fc-prezzo-' + msgId + '" placeholder="Prezzo €" style="flex:1; font-size:11px;">';
       html += '<button onclick="confermaDaChat(\'' + msgId + '\',\'' + safeBrand + '\')" class="btn-green" style="flex:1; margin-bottom:0; font-size:11px;">✓ Conferma</button>';
       html += '<button onclick="document.getElementById(\'form-carrello-' + msgId + '\').style.display=\'none\'" class="btn-gray" style="flex:none; margin-bottom:0; font-size:11px;">✕</button>';
       html += '</div></div>';
       html += '</div>';
       chat.innerHTML += html;
+      // Salva testo grezzo sul DOM per uso successivo
+      const msgEl = document.getElementById(msgId);
+      if (msgEl) msgEl.dataset.rawAnswer = d.answer || '';
       chat.scrollTop = chat.scrollHeight;
     })
     .catch(e => {
@@ -1956,13 +1957,32 @@ function ask() {
 // ---------------------------------------------------------------------------
 // AGGIUNGI DA CHAT AL CARRELLO
 // ---------------------------------------------------------------------------
-function apriFormCarrello(msgId, brand, testo) {
+function apriFormCarrello(msgId, brand) {
   if (!cantiereAttivo) {
     alert('Apri prima un cantiere dal pannello destra');
     return;
   }
   const form = document.getElementById('form-carrello-' + msgId);
-  if (form) form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  if (!form) return;
+  const isOpen = form.style.display !== 'none';
+  form.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) {
+    // Se la textarea è ancora vuota, chiedi sintesi AI
+    const ta = document.getElementById('fc-desc-' + msgId);
+    if (ta && !ta.value.trim()) {
+      const msgEl = document.getElementById(msgId);
+      const rawAnswer = msgEl ? msgEl.dataset.rawAnswer || '' : '';
+      ta.value = 'Sintesi in caricamento...';
+      fetch('/api/arricchisci-prodotto', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ descrizione: rawAnswer, brand: brand })
+      })
+      .then(r => r.json())
+      .then(d => { if (d.ok) ta.value = d.descrizione_ai; else ta.value = rawAnswer.substring(0, 200); })
+      .catch(() => { ta.value = rawAnswer.substring(0, 200); });
+    }
+  }
 }
 
 function confermaDaChat(msgId, brand) {
