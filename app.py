@@ -797,10 +797,63 @@ def ask():
     access_code = data.get('access_code')
     if not question or not brands:
         return jsonify({"error": "Domanda e brand richiesti"}), 400
+
+    # 1. Cerca prima nel listino Excel dei brand selezionati
+    listino_context = ""
+    for brand in brands:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT d.content FROM documents d
+                     JOIN aziende a ON d.azienda_id = a.id
+                     WHERE LOWER(a.nome) = LOWER(?) AND d.filename LIKE '%[EXCEL]%'
+                     ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            try:
+                import base64 as b64mod, io as iomod
+                content = row[0]
+                if ',' in content: content = content.split(',',1)[1]
+                raw = b64mod.b64decode(content)
+                import openpyxl as oxl
+                wb = oxl.load_workbook(iomod.BytesIO(raw), data_only=True)
+                ws = wb.active
+                # Leggi tutte le righe prodotto
+                headers = None
+                prodotti_trovati = []
+                q_lower = question.lower()
+                for row_data in ws.iter_rows(values_only=True):
+                    row_str = [str(c).lower().strip() if c else '' for c in row_data]
+                    if headers is None:
+                        if 'codice' in ' '.join(row_str): headers = row_str
+                        continue
+                    if not any(row_data): continue
+                    riga_str = ' '.join([str(v).lower() if v else '' for v in row_data])
+                    # Match fuzzy: cerca parole della domanda nella riga
+                    parole = [p for p in q_lower.split() if len(p) > 3]
+                    if parole and any(p in riga_str for p in parole):
+                        vals = [str(v).strip() if v else '—' for v in row_data]
+                        if headers:
+                            prodotti_trovati.append(dict(zip(headers, vals)))
+                        else:
+                            prodotti_trovati.append({'riga': ' | '.join(vals[:6])})
+                if prodotti_trovati:
+                    listino_context += f"\n[LISTINO {brand.upper()} — FONTE EXCEL]\n"
+                    for p in prodotti_trovati[:5]:
+                        if 'codice' in p:
+                            listino_context += f"Codice: {p.get('codice','—')} | Nome: {p.get('nome prodotto', p.get('nome','—'))} | Prezzo cliente: €{p.get('prezzo cliente (€)', p.get('prezzo','—'))} | Prezzo riv.: €{p.get('prezzo rivenditore (€)', p.get('prezzo_rivenditore','—'))} | Disponibilità: {p.get('disponibilità', p.get('disponibilita','—'))} | Desc: {p.get('descrizione breve', p.get('descrizione','—'))}\n"
+                        else:
+                            listino_context += p.get('riga','') + '\n'
+            except Exception as e:
+                pass
+
+    # 2. Cerca nei documenti caricati
     doc_context = ""
     docs = _search_docs_internal(brands, question, access_code)
     if docs:
         doc_context = "\n".join(["[DOC: " + d[0] + "] " + d[1][:200] for d in docs])
+
+    # 3. Web solo come fallback
     web_context = ""
     images = []
     if use_web:
@@ -808,14 +861,110 @@ def ask():
         if web_result:
             web_context = "[WEB] " + web_result
         images = search_images(question, brands)
+
+    # Costruisci prompt con priorità: listino Excel > doc > web
     prompt = "Sei un esperto commerciale di arredo bagno per i brand: " + ", ".join(brands) + "\n\nDomanda: " + question
+
+    if listino_context:
+        prompt += "\n\n═══ DATI DAL LISTINO UFFICIALE (fonte EXCEL — massima priorità) ═══\n" + listino_context
+        prompt += "IMPORTANTE: usa SEMPRE i prezzi e codici dal listino Excel sopra. Non inventare prezzi."
     if doc_context:
-        prompt += "\n\nDATI DAL NOSTRO ARCHIVIO (usali come fonte primaria):\n" + doc_context
-    if web_context:
-        prompt += "\n\n" + web_context
-    prompt += "\n\nREGOLE IMPORTANTI:\n- Rispondi SOLO con le informazioni che possiedi\n- NON rimandare mai a siti web, cataloghi online o URL esterni\n- NON dire 'visita il sito' o 'consulta il catalogo'\n- Se non hai un dato, dillo chiaramente senza inventare\n- Risposta max 1200 caratteri, professionale e diretta"
+        prompt += "\n\nALTRI DOCUMENTI ARCHIVIO:\n" + doc_context
+    if web_context and not listino_context:
+        prompt += "\n\n[FONTE WEB — usa solo se non hai dati da listino]\n" + web_context
+
+    prompt += "\n\nREGOLE:\n- Prezzi da listino Excel = VERDE (affidabili)\n- Se il prezzo viene dal web, segnalalo come 'prezzo indicativo'\n- NON rimandare mai a siti esterni\n- Se trovi il prodotto nel listino, mostra: codice, nome, prezzo cliente, disponibilità\n- Risposta max 1200 caratteri, professionale"
+
     answer = deepseek_ask(prompt)
-    return jsonify({"answer": answer, "images": images})
+
+    # Indica se i dati vengono dal listino o dal web
+    fonte = "excel" if listino_context else ("doc" if doc_context else "web")
+    return jsonify({"answer": answer, "images": images, "fonte": fonte})
+
+@app.route('/api/cerca-prodotto', methods=['POST'])
+def cerca_prodotto():
+    """Ricerca fuzzy nel listino Excel — restituisce prodotti matching con fonte"""
+    data = request.get_json()
+    query = data.get('query', '').lower().strip()
+    brand = data.get('brand', '')
+    if not query or not brand:
+        return jsonify({"prodotti": [], "fonte": None})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT d.content, d.filename FROM documents d
+                 JOIN aziende a ON d.azienda_id = a.id
+                 WHERE LOWER(a.nome) = LOWER(?) AND d.filename LIKE '%[EXCEL]%'
+                 ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"prodotti": [], "fonte": None, "messaggio": "Nessun listino Excel caricato per " + brand})
+    try:
+        import base64 as b64m, io as iom
+        content = row[0]
+        if ',' in content: content = content.split(',',1)[1]
+        raw = b64m.b64decode(content)
+        import openpyxl as oxl2
+        wb = oxl2.load_workbook(iom.BytesIO(raw), data_only=True)
+        ws = wb.active
+        SINONIMI_HDR = {
+            'codice': ['codice','cod','code','sku'],
+            'nome': ['nome prodotto','nome','name','prodotto'],
+            'categoria': ['categoria','category'],
+            'collezione': ['collezione','collection','linea'],
+            'prezzo': ['prezzo cliente (€)','prezzo cliente','prezzo (€)','prezzo'],
+            'prezzo_rivenditore': ['prezzo rivenditore (€)','prezzo rivenditore','rivenditore'],
+            'disponibilita': ['disponibilità','disponibilita'],
+            'descrizione': ['descrizione breve','descrizione'],
+            'finiture': ['colori / finiture','finiture','colori'],
+        }
+        header_row = None
+        col_map = {}
+        prodotti = []
+        parole = [p for p in query.split() if len(p) > 2]
+        for row_data in ws.iter_rows(values_only=True):
+            if header_row is None:
+                row_str = [str(v).lower().strip() if v else '' for v in row_data]
+                found = {}
+                for campo, syns in SINONIMI_HDR.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s == cell or s in cell for s in syns):
+                            found[campo] = j; break
+                if len(found) >= 2:
+                    header_row = True
+                    col_map = found
+                continue
+            if not any(row_data): continue
+            def gv(campo, rd=row_data):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(rd): return ''
+                v = rd[idx]; return str(v).strip() if v is not None else ''
+            codice = gv('codice')
+            if not codice or codice.lower() == 'codice': continue
+            riga_str = ' '.join([str(v).lower() if v else '' for v in row_data])
+            score = sum(1 for p in parole if p in riga_str)
+            if score == 0: continue
+            def pp(raw):
+                if not raw: return None
+                try: return float(re.sub(r'[^\d.,]','',raw).replace(',','.'))
+                except: return None
+            prodotti.append({
+                'score': score,
+                'codice': codice,
+                'nome': gv('nome'),
+                'categoria': gv('categoria'),
+                'collezione': gv('collezione'),
+                'prezzo': pp(gv('prezzo')),
+                'prezzo_rivenditore': pp(gv('prezzo_rivenditore')),
+                'disponibilita': gv('disponibilita'),
+                'descrizione': gv('descrizione'),
+                'finiture': gv('finiture'),
+                'fonte': 'excel'
+            })
+        prodotti.sort(key=lambda x: -x['score'])
+        return jsonify({"prodotti": prodotti[:10], "fonte": row[1]})
+    except Exception as e:
+        return jsonify({"prodotti": [], "fonte": None, "errore": str(e)})
 
 @app.route('/api/listino/<brand>', methods=['GET'])
 def get_listino(brand):
@@ -1248,8 +1397,11 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     </div>
     <div class="chat-area" id="chat"></div>
     <div class="input-area">
-      <input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key==='Enter') ask()" style="flex: 1;">
+      <input type="text" id="question" placeholder="Domanda libera o cerca prodotto..." onkeypress="if(event.key==='Enter') ask()" oninput="cercaRapidaListino(this.value)" style="flex: 1;">
       <button onclick="ask()" style="width: 100px;">Invia</button>
+    </div>
+    <!-- RISULTATI RICERCA RAPIDA LISTINO -->
+    <div id="quick-search-results" style="display:none; background:rgba(15,23,46,0.98); border:1px solid rgba(59,130,245,0.3); border-radius:6px; margin-top:4px; max-height:280px; overflow-y:auto; z-index:100;">
     </div>
   </div>
 
@@ -1339,6 +1491,11 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
               <option value="">-- Cliente --</option>
             </select>
             <button onclick="saAddUtente()" class="btn-green" style="width:100%;">Crea utente</button>
+          </div>
+          <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
+            <button onclick="dedupBrands()" class="btn-red" style="width:100%; font-size:10px;">🧹 Unifica brand duplicati</button>
+            <div id="dedup-result" style="font-size:10px; color:#10b981; margin-top:4px;"></div>
+          </div>
           </div>
         </div>
       </div>
@@ -1660,6 +1817,18 @@ function loadSAModuli() {
 function toggleModulo(cid, modulo, attivo) {
   fetch('/api/sa/moduli/' + cid, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({modulo, attivo}) })
     .then(r => r.json()).then(d => { if (d.ok) loadSAModuli(); });
+}
+
+function dedupBrands() {
+  if (!confirm('Unificare tutti i brand duplicati (es. Gessi + GESSI → Gessi)? I documenti verranno spostati al brand corretto.')) return;
+  fetch('/api/sa/dedup-brands', { method:'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        document.getElementById('dedup-result').textContent = '✓ ' + d.merged + ' duplicati rimossi. Ricarica la pagina.';
+        setTimeout(() => location.reload(), 2000);
+      }
+    });
 }
 
 function saAddUtente() {
@@ -2734,6 +2903,97 @@ function addVoceManuale() {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// RICERCA RAPIDA LISTINO DALLA CHAT
+// ---------------------------------------------------------------------------
+let cercaRapidaTimer = null;
+
+function cercaRapidaListino(val) {
+  const qsr = document.getElementById('quick-search-results');
+  clearTimeout(cercaRapidaTimer);
+  if (!val || val.length < 3 || !selected.length) {
+    qsr.style.display = 'none';
+    return;
+  }
+  cercaRapidaTimer = setTimeout(() => {
+    fetch('/api/cerca-prodotto', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ query: val, brand: selected[0] })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (!d.prodotti || d.prodotti.length === 0) {
+        qsr.style.display = 'none';
+        return;
+      }
+      const listinoTipoAttuale = listinoTipo || 'cliente';
+      let html = '<div style="padding:6px 10px; font-size:9px; color:#6b7280; border-bottom:1px solid rgba(59,130,245,0.15);">📄 Trovato nel listino Excel — clicca per aggiungere al carrello</div>';
+      d.prodotti.forEach((p, idx) => {
+        const prezzo = listinoTipoAttuale === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : p.prezzo;
+        const prezzoRiv = p.prezzo_rivenditore;
+        const prezzoLabel = prezzo ? '<span style="color:#10b981;font-weight:700;">€' + parseFloat(prezzo).toFixed(0) + '</span>' + (prezzoRiv && listinoTipoAttuale === 'cliente' ? '<span style="color:#f59e0b;font-size:9px;margin-left:4px;">riv.€' + parseFloat(prezzoRiv).toFixed(0) + '</span>' : '') : '<span style="color:#6b7280;">—</span>';
+        const disp = (p.disponibilita||'').toLowerCase().includes('ordine') ? '⏳' : '✓';
+        const dispColor = (p.disponibilita||'').toLowerCase().includes('ordine') ? '#f59e0b' : '#10b981';
+        html += '<div style="padding:8px 10px; border-bottom:1px solid rgba(59,130,245,0.1); display:flex; align-items:center; gap:8px; cursor:pointer;" ' +
+          'onmouseover="this.style.background=\'rgba(59,130,245,0.1)\'" onmouseout="this.style.background=\'\'">' +
+          '<div style="flex:1;">' +
+          '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (p.nome||p.codice) + '</div>' +
+          '<div style="font-size:9px; color:#9ca3af;">' + (p.codice||'') + (p.collezione ? ' · ' + p.collezione : '') + ' <span style="color:' + dispColor + ';">' + disp + '</span></div>' +
+          '</div>' +
+          '<div style="text-align:right;">' + prezzoLabel + '</div>' +
+          '<button onclick="aggiungiDaRicercaRapida(' + idx + ',this)" class="btn-green btn-sm" style="margin-bottom:0;white-space:nowrap;">+ Carrello</button>' +
+          '<button onclick="usaDescrizioneRapida(' + idx + ')" class="btn-sm" style="background:rgba(59,130,245,0.3);color:#93c5fd;margin-bottom:0;">AI ✨</button>' +
+          '</div>';
+      });
+      // Salva risultati per uso nei bottoni
+      window._qsResults = d.prodotti;
+      qsr.innerHTML = html;
+      qsr.style.display = 'block';
+    });
+  }, 350);
+}
+
+function aggiungiDaRicercaRapida(idx, btn) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const p = window._qsResults[idx];
+  if (!p) return;
+  const listinoTipoAttuale = listinoTipo || 'cliente';
+  const importo = listinoTipoAttuale === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
+  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: selected[0] || '', categoria: p.categoria||'', descrizione, importo })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      if (btn) { btn.textContent = '✓'; btn.style.background = '#10b981'; }
+      loadRighe();
+      setTimeout(() => { document.getElementById('quick-search-results').style.display = 'none'; }, 1000);
+    }
+  });
+}
+
+function usaDescrizioneRapida(idx) {
+  const p = window._qsResults[idx];
+  if (!p) return;
+  document.getElementById('question').value = 'Descrivi commercialmente: ' + (p.nome||p.codice) + ' [' + (p.codice||'') + '] — ' + (p.descrizione||'');
+  document.getElementById('quick-search-results').style.display = 'none';
+  ask();
+}
+
+// Chiudi risultati rapidi se clicco fuori
+document.addEventListener('click', function(e) {
+  const qsr = document.getElementById('quick-search-results');
+  const q = document.getElementById('question');
+  if (qsr && q && !qsr.contains(e.target) && e.target !== q) {
+    qsr.style.display = 'none';
+  }
+});
 
 // ---------------------------------------------------------------------------
 // LISTINO DASHBOARD — flusso 1-click
