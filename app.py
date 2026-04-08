@@ -1775,8 +1775,16 @@ function loadBrands() {
 function toggleDropdown() {
   const dd = document.getElementById('dropdown');
   if (!dd) return;
-  if (dd.classList.contains('show')) { dd.classList.remove('show'); }
-  else { dd.classList.add('show'); filterBrands(); }
+  if (dd.classList.contains('show')) {
+    dd.classList.remove('show');
+  } else {
+    dd.classList.add('show');
+    // Costruisce la lista solo se è vuota
+    const brandsList = document.getElementById('brands-list');
+    if (brandsList && brandsList.querySelectorAll('.brand-item').length === 0) {
+      filterBrands();
+    }
+  }
 }
 
 function filterBrands() {
@@ -1784,10 +1792,21 @@ function filterBrands() {
   const brandsList = document.getElementById('brands-list');
   if (!search || !brandsList) return;
   const sv = search.value.toLowerCase();
-  const filtered = BRANDS.filter(b => b.toLowerCase().includes(sv));
-  // Mantieni i brand già selezionati
+
+  // Se la lista è già popolata, filtra per visibilità senza ricostruire il DOM
+  const existing = brandsList.querySelectorAll('.brand-item');
+  if (existing.length > 0) {
+    existing.forEach(item => {
+      const inp = item.querySelector('input');
+      const val = inp ? inp.value.toLowerCase() : '';
+      item.style.display = val.includes(sv) ? '' : 'none';
+    });
+    return;
+  }
+
+  // Prima costruzione — popola con stato checked corrente
   const alreadySelected = new Set(selected);
-  brandsList.innerHTML = filtered.map(b =>
+  brandsList.innerHTML = BRANDS.map(b =>
     '<div class="brand-item"><input type="checkbox" value="' + b + '" ' +
     (alreadySelected.has(b) ? 'checked' : '') +
     ' onchange="updateSelected()">' + b + '</div>'
