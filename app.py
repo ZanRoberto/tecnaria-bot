@@ -753,14 +753,147 @@ def ask():
         if web_result:
             web_context = "[WEB] " + web_result
         images = search_images(question, brands)
-    prompt = "Sei un esperto di arredo bagno per i brand: " + ", ".join(brands) + "\n\nDomanda: " + question
+    prompt = "Sei un esperto commerciale di arredo bagno per i brand: " + ", ".join(brands) + "\n\nDomanda: " + question
     if doc_context:
-        prompt += "\n\nDocumenti disponibili: " + doc_context
+        prompt += "\n\nDATI DAL NOSTRO ARCHIVIO (usali come fonte primaria):\n" + doc_context
     if web_context:
         prompt += "\n\n" + web_context
-    prompt += "\n\nRispondi come esperto del settore, considerando i brand specifici. La risposta deve essere completa, coerente e non superare i 1500 caratteri."
+    prompt += "\n\nREGOLE IMPORTANTI:\n- Rispondi SOLO con le informazioni che possiedi\n- NON rimandare mai a siti web, cataloghi online o URL esterni\n- NON dire 'visita il sito' o 'consulta il catalogo'\n- Se non hai un dato, dillo chiaramente senza inventare\n- Risposta max 1200 caratteri, professionale e diretta"
     answer = deepseek_ask(prompt)
     return jsonify({"answer": answer, "images": images})
+
+@app.route('/api/listino/<brand>', methods=['GET'])
+def get_listino(brand):
+    """Restituisce i prodotti dal listino Excel caricato per un brand"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Cerca documenti Excel per questo brand
+    c.execute("""SELECT d.content, d.filename FROM documents d
+                 JOIN aziende a ON d.azienda_id = a.id
+                 WHERE a.nome = ? AND d.filename LIKE '%[EXCEL]%'
+                 ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": False, "prodotti": [], "fonte": None})
+    content_b64, filename = row
+    try:
+        import base64, io
+        if ',' in content_b64:
+            content_b64 = content_b64.split(',', 1)[1]
+        raw = base64.b64decode(content_b64)
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        ws = wb.active
+        # Trova header row
+        header_row = None
+        col_map = {}
+        SINONIMI = {
+            'codice': ['codice','cod','code','sku','art'],
+            'nome': ['nome','name','prodotto','denominazione','descrizione breve','nome prodotto'],
+            'categoria': ['categoria','category','tipo'],
+            'collezione': ['collezione','collection','linea'],
+            'prezzo': ['prezzo','price','costo','importo','listino','prezzo (€)'],
+            'prezzo_scontato': ['prezzo scontato','scontato','offerta','prezzo scontato (€)'],
+            'disponibilita': ['disponibilità','disponibilita','stock','disponibile'],
+            'descrizione': ['descrizione','description','note','dettaglio'],
+            'finiture': ['finiture','colori','finitura','colori / finiture'],
+        }
+        for i, row_data in enumerate(ws.iter_rows(values_only=True)):
+            if header_row is None:
+                row_str = [str(c).lower().strip() if c else '' for c in row_data]
+                found = {}
+                for campo, syns in SINONIMI.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s in cell for s in syns):
+                            found[campo] = j
+                            break
+                if len(found) >= 3:
+                    header_row = i
+                    col_map = found
+                continue
+            if not any(row_data): continue
+            def get(campo):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(row_data): return ''
+                v = row_data[idx]
+                return str(v).strip() if v is not None else ''
+            codice = get('codice')
+            if not codice or codice == 'CODICE': continue
+            prezzo_raw = get('prezzo')
+            prezzo = None
+            if prezzo_raw:
+                try: prezzo = float(re.sub(r'[^\d.,]','',prezzo_raw).replace(',','.'))
+                except: pass
+            prezzo_sc_raw = get('prezzo_scontato')
+            prezzo_sc = None
+            if prezzo_sc_raw:
+                try: prezzo_sc = float(re.sub(r'[^\d.,]','',prezzo_sc_raw).replace(',','.'))
+                except: pass
+            yield_obj = {
+                'codice': codice,
+                'nome': get('nome'),
+                'categoria': get('categoria'),
+                'collezione': get('collezione'),
+                'prezzo': prezzo,
+                'prezzo_scontato': prezzo_sc,
+                'disponibilita': get('disponibilita'),
+                'descrizione': get('descrizione'),
+                'finiture': get('finiture'),
+                'fonte': 'excel'
+            }
+            if not yield_obj['nome'] and not yield_obj['descrizione']: continue
+            # append would need list — collect below
+        # redo as list
+        prodotti = []
+        header_row = None
+        col_map = {}
+        for i, row_data in enumerate(ws.iter_rows(values_only=True)):
+            if header_row is None:
+                row_str = [str(c).lower().strip() if c else '' for c in row_data]
+                found = {}
+                for campo, syns in SINONIMI.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s in cell for s in syns):
+                            found[campo] = j
+                            break
+                if len(found) >= 3:
+                    header_row = i
+                    col_map = found
+                continue
+            if not any(row_data): continue
+            def get2(campo, rd=row_data):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(rd): return ''
+                v = rd[idx]
+                return str(v).strip() if v is not None else ''
+            codice = get2('codice')
+            if not codice or codice == 'CODICE': continue
+            prezzo_raw = get2('prezzo')
+            prezzo = None
+            if prezzo_raw:
+                try: prezzo = float(re.sub(r'[^\d.,]','',prezzo_raw).replace(',','.'))
+                except: pass
+            prezzo_sc_raw = get2('prezzo_scontato')
+            prezzo_sc = None
+            if prezzo_sc_raw:
+                try: prezzo_sc = float(re.sub(r'[^\d.,]','',prezzo_sc_raw).replace(',','.'))
+                except: pass
+            prodotti.append({
+                'codice': codice,
+                'nome': get2('nome'),
+                'categoria': get2('categoria'),
+                'collezione': get2('collezione'),
+                'prezzo': prezzo,
+                'prezzo_scontato': prezzo_sc,
+                'disponibilita': get2('disponibilita'),
+                'descrizione': get2('descrizione'),
+                'finiture': get2('finiture'),
+                'fonte': 'excel'
+            })
+        return jsonify({"ok": True, "prodotti": prodotti, "fonte": filename})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "prodotti": []})
 
 # ---------------------------------------------------------------------------
 # API EXCEL INTELLIGENTE
@@ -970,6 +1103,35 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
 .form-row > * { flex: 1; }
 .drawer-footer { border-top: 1px solid rgba(59,130,245,0.3); padding: 12px 18px; display: flex; gap: 8px; flex-shrink: 0; background: rgba(15,23,46,0.95); }
+/* LISTINO DASHBOARD */
+.listino-panel { position: fixed; top: 0; left: 320px; right: 0; bottom: 0; background: rgba(10,15,35,0.97); z-index: 500; display: none; flex-direction: column; }
+.listino-panel.open { display: flex; }
+.listino-header { background: rgba(59,130,245,0.15); border-bottom: 1px solid rgba(59,130,245,0.3); padding: 12px 18px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.listino-brand-tag { background: rgba(59,130,245,0.3); border: 1px solid rgba(59,130,245,0.5); color: #93c5fd; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+.listino-search { flex: 1; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; padding: 8px 12px; font-size: 12px; }
+.listino-body { flex: 1; overflow-y: auto; padding: 12px 18px; }
+.filtri-bar { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.filtro-btn { padding: 4px 10px; font-size: 10px; border-radius: 20px; border: 1px solid rgba(59,130,245,0.3); background: transparent; color: #9ca3af; cursor: pointer; margin-bottom: 0; }
+.filtro-btn.active { background: rgba(59,130,245,0.4); color: white; border-color: #3b82f6; }
+.domande-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.domanda-chip { padding: 5px 10px; font-size: 10px; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; border-radius: 20px; cursor: pointer; margin-bottom: 0; }
+.domanda-chip:hover { background: rgba(16,185,129,0.3); }
+.prodotti-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.prodotto-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 8px; padding: 12px; cursor: pointer; transition: border-color 0.2s; }
+.prodotto-card:hover { border-color: rgba(59,130,245,0.6); }
+.prodotto-card.su-ordine { border-left: 3px solid #f59e0b; }
+.prodotto-card.disponibile { border-left: 3px solid #10b981; }
+.prodotto-codice { font-size: 9px; color: #6b7280; font-family: monospace; margin-bottom: 3px; }
+.prodotto-nome { font-size: 12px; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; }
+.prodotto-cat { font-size: 10px; color: #9ca3af; margin-bottom: 6px; }
+.prodotto-prezzo-excel { color: #10b981; font-weight: 700; font-size: 13px; }
+.prodotto-prezzo-web { color: #ef4444; font-weight: 700; font-size: 13px; }
+.prodotto-prezzo-sc { color: #f59e0b; font-size: 11px; text-decoration: line-through; margin-left: 4px; }
+.prodotto-disp { font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 10px; }
+.disp-ok { background: rgba(16,185,129,0.2); color: #10b981; }
+.disp-ord { background: rgba(245,158,11,0.2); color: #f59e0b; }
+.prodotto-actions { display: flex; gap: 4px; margin-top: 8px; }
+.prodotto-actions button { flex: 1; padding: 4px; font-size: 9px; margin-bottom: 0; }
 /* EXCEL PANEL */
 .excel-row { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.15); border-radius: 6px; padding: 8px 10px; margin: 4px 0; font-size: 11px; }
 .excel-row-header { display: flex; align-items: center; gap: 8px; }
@@ -1073,11 +1235,35 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       <button class="btn-green" onclick="generateOfferta()">OFFERTA</button>
       <button class="btn-green" onclick="generateAnalisi()">ANALISI</button>
       <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
+      <button style="background:#8b5cf6;" onclick="apriListino()">📋 LISTINO</button>
     </div>
     <div class="chat-area" id="chat"></div>
     <div class="input-area">
       <input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key==='Enter') ask()" style="flex: 1;">
       <button onclick="ask()" style="width: 100px;">Invia</button>
+    </div>
+  </div>
+
+  <!-- PANNELLO LISTINO -->
+  <div class="listino-panel" id="listino-panel">
+    <div class="listino-header">
+      <span id="listino-brand-tag" class="listino-brand-tag">—</span>
+      <input type="text" id="listino-search" class="listino-search" placeholder="Cerca prodotto per nome, codice, collezione..." oninput="filtraListino()">
+      <button onclick="chiudiListino()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+    </div>
+    <!-- DOMANDE SUGGERITE -->
+    <div style="padding: 10px 18px 0 18px; border-bottom: 1px solid rgba(59,130,245,0.15);">
+      <div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; margin-bottom:6px;">Domande rapide</div>
+      <div class="domande-bar" id="domande-bar"></div>
+    </div>
+    <!-- FILTRI -->
+    <div style="padding: 10px 18px 0 18px;">
+      <div class="filtri-bar" id="filtri-bar"></div>
+    </div>
+    <!-- GRIGLIA PRODOTTI -->
+    <div class="listino-body">
+      <div id="listino-count" style="font-size:10px; color:#6b7280; margin-bottom:8px;"></div>
+      <div class="prodotti-grid" id="prodotti-grid"></div>
     </div>
   </div>
 
@@ -2450,6 +2636,180 @@ function addVoceManuale() {
     if (d.ok) {
       document.getElementById('voce-desc').value = '';
       document.getElementById('voce-importo').value = '';
+      loadRighe();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// LISTINO DASHBOARD
+// ---------------------------------------------------------------------------
+let listinoData = [];
+let listinoBrand = '';
+let filtroAttivo = 'tutti';
+
+const DOMANDE_SUGGERITE = [
+  'Quali sono i prodotti più venduti?',
+  'Cosa abbinare per un bagno moderno?',
+  'Mostrami le novità',
+  'Prodotti sotto €300',
+  'Cosa c\'è disponibile subito?',
+  'Soluzioni per bagno piccolo',
+  'Differenze tra le collezioni',
+];
+
+function apriListino() {
+  if (!selected || selected.length === 0) { alert('Seleziona prima un brand'); return; }
+  listinoBrand = selected[0];
+  document.getElementById('listino-brand-tag').textContent = listinoBrand;
+  document.getElementById('listino-panel').classList.add('open');
+  document.getElementById('listino-search').value = '';
+  caricaListino();
+}
+
+function chiudiListino() {
+  document.getElementById('listino-panel').classList.remove('open');
+}
+
+function caricaListino() {
+  document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px;">Caricamento...</div>';
+  fetch('/api/listino/' + encodeURIComponent(listinoBrand))
+    .then(r => r.json())
+    .then(d => {
+      listinoData = d.prodotti || [];
+      costruisciFiltri();
+      costruisciDomande();
+      filtraListino();
+      const fonte = d.fonte ? '📄 Dati da: ' + d.fonte : '🌐 Nessun listino caricato — dati solo da web';
+      document.getElementById('listino-count').innerHTML = fonte;
+    })
+    .catch(() => {
+      listinoData = [];
+      filtraListino();
+    });
+}
+
+function costruisciFiltri() {
+  const categorie = [...new Set(listinoData.map(p => p.categoria).filter(Boolean))];
+  let html = '<button class="filtro-btn active" onclick="setFiltro(\'tutti\', this)">Tutti (' + listinoData.length + ')</button>';
+  categorie.forEach(cat => {
+    const n = listinoData.filter(p => p.categoria === cat).length;
+    html += '<button class="filtro-btn" onclick="setFiltro(\'' + cat + '\', this)">' + cat + ' (' + n + ')</button>';
+  });
+  document.getElementById('filtri-bar').innerHTML = html;
+}
+
+function costruisciDomande() {
+  document.getElementById('domande-bar').innerHTML = DOMANDE_SUGGERITE.map(d =>
+    '<button class="domanda-chip" onclick="faiDomandaListino(\'' + d.replace(/'/g,"\\'") + '\')">' + d + '</button>'
+  ).join('');
+}
+
+function setFiltro(cat, btn) {
+  filtroAttivo = cat;
+  document.querySelectorAll('.filtro-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  filtraListino();
+}
+
+function filtraListino() {
+  const sv = (document.getElementById('listino-search').value || '').toLowerCase();
+  let prodotti = listinoData;
+  if (filtroAttivo !== 'tutti') prodotti = prodotti.filter(p => p.categoria === filtroAttivo);
+  if (sv) prodotti = prodotti.filter(p =>
+    (p.nome||'').toLowerCase().includes(sv) ||
+    (p.codice||'').toLowerCase().includes(sv) ||
+    (p.collezione||'').toLowerCase().includes(sv) ||
+    (p.descrizione||'').toLowerCase().includes(sv)
+  );
+
+  if (prodotti.length === 0) {
+    document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px;">Nessun prodotto trovato</div>';
+    return;
+  }
+
+  document.getElementById('prodotti-grid').innerHTML = prodotti.map((p, i) => {
+    const dispClass = (p.disponibilita||'').includes('ordine') ? 'su-ordine' : 'disponibile';
+    const dispLabel = (p.disponibilita||'').includes('ordine') ? 'Su ordine' : 'Disponibile';
+    const dispBadge = (p.disponibilita||'').includes('ordine') ? 'disp-ord' : 'disp-ok';
+
+    // Prezzo — verde se da Excel, rosso se da web
+    let prezzoHtml = '';
+    if (p.prezzo !== null && p.prezzo !== undefined) {
+      const cls = p.fonte === 'excel' ? 'prodotto-prezzo-excel' : 'prodotto-prezzo-web';
+      const icon = p.fonte === 'excel' ? '' : ' ⚠';
+      prezzoHtml = '<span class="' + cls + '">€' + parseFloat(p.prezzo).toFixed(0) + icon + '</span>';
+      if (p.prezzo_scontato) {
+        prezzoHtml = '<span class="prodotto-prezzo-excel">€' + parseFloat(p.prezzo_scontato).toFixed(0) + '</span>' +
+          '<span class="prodotto-prezzo-sc">€' + parseFloat(p.prezzo).toFixed(0) + '</span>';
+      }
+    } else {
+      prezzoHtml = '<span style="color:#6b7280;font-size:10px;">prezzo da definire</span>';
+    }
+
+    const idx = listinoData.indexOf(p);
+    return '<div class="prodotto-card ' + dispClass + '" onclick="espandiProdotto(' + idx + ')">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">' +
+      '<div class="prodotto-codice">' + (p.codice||'—') + '</div>' +
+      '<span class="prodotto-disp ' + dispBadge + '">' + dispLabel + '</span>' +
+      '</div>' +
+      '<div class="prodotto-nome">' + (p.nome||p.descrizione||'—') + '</div>' +
+      '<div class="prodotto-cat">' + (p.collezione ? p.collezione + ' · ' : '') + (p.categoria||'') + '</div>' +
+      prezzoHtml +
+      (p.finiture ? '<div style="font-size:9px;color:#6b7280;margin-top:3px;">' + p.finiture + '</div>' : '') +
+      '<div class="prodotto-actions">' +
+      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'abbinamenti\')" class="btn-sm" style="background:rgba(59,130,245,0.2);color:#93c5fd;">🔗 Abbina</button>' +
+      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(16,185,129,0.2);color:#10b981;">✍ Descrivi</button>' +
+      '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green">✓ Carrello</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+function espandiProdotto(idx) {
+  const p = listinoData[idx];
+  if (!p) return;
+  const desc = [p.descrizione, p.finiture, p.note].filter(Boolean).join(' | ');
+  alert(p.nome + '\n' + p.codice + '\n\n' + desc);
+}
+
+function chiediAIprodotto(idx, tipo) {
+  const p = listinoData[idx];
+  if (!p) return;
+  let domanda = '';
+  if (tipo === 'abbinamenti') domanda = 'Cosa abbinare al prodotto ' + p.nome + ' (' + p.codice + ') di ' + listinoBrand + '?';
+  if (tipo === 'descrizione') domanda = 'Crea una descrizione commerciale breve e convincente per il prodotto: ' + p.nome + ' — ' + (p.descrizione||'') + ' — Prezzo: €' + (p.prezzo||'da definire');
+  chiudiListino();
+  document.getElementById('question').value = domanda;
+  ask();
+}
+
+function faiDomandaListino(domanda) {
+  chiudiListino();
+  document.getElementById('question').value = domanda + ' di ' + listinoBrand;
+  ask();
+}
+
+function aggiungiDaListino(idx) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const p = listinoData[idx];
+  if (!p) return;
+  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome||p.descrizione||'');
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      brand: listinoBrand,
+      categoria: p.categoria || '',
+      descrizione: descrizione,
+      importo: p.prezzo_scontato || p.prezzo || 0
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      // Feedback visivo
+      const btn = document.querySelectorAll('.prodotto-card')[idx];
+      if (btn) btn.style.borderColor = '#10b981';
       loadRighe();
     }
   });
