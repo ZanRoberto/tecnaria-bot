@@ -792,62 +792,16 @@ def get_listino(brand):
         col_map = {}
         SINONIMI = {
             'codice': ['codice','cod','code','sku','art'],
-            'nome': ['nome','name','prodotto','denominazione','descrizione breve','nome prodotto'],
+            'nome': ['nome prodotto','nome','name','prodotto','denominazione'],
             'categoria': ['categoria','category','tipo'],
             'collezione': ['collezione','collection','linea'],
-            'prezzo': ['prezzo cliente','prezzo (€)','prezzo','price','costo','importo','listino'],
-            'prezzo_rivenditore': ['prezzo rivenditore','rivenditore','prezzo riv','costo acquisto','prezzo rivenditore (€)'],
-            'prezzo_scontato': ['prezzo scontato','scontato','offerta','prezzo scontato (€)'],
+            'prezzo': ['prezzo cliente (€)','prezzo cliente','prezzo (€)','prezzo','price','costo','importo','listino'],
+            'prezzo_rivenditore': ['prezzo rivenditore (€)','prezzo rivenditore','rivenditore','prezzo riv','costo acquisto'],
+            'prezzo_scontato': ['prezzo scontato (€)','prezzo scontato','scontato','offerta'],
             'disponibilita': ['disponibilità','disponibilita','stock','disponibile'],
-            'descrizione': ['descrizione','description','note','dettaglio'],
-            'finiture': ['finiture','colori','finitura','colori / finiture'],
+            'descrizione': ['descrizione breve','descrizione','description','dettaglio'],
+            'finiture': ['colori / finiture','finiture','colori','finitura'],
         }
-        for i, row_data in enumerate(ws.iter_rows(values_only=True)):
-            if header_row is None:
-                row_str = [str(c).lower().strip() if c else '' for c in row_data]
-                found = {}
-                for campo, syns in SINONIMI.items():
-                    for j, cell in enumerate(row_str):
-                        if any(s in cell for s in syns):
-                            found[campo] = j
-                            break
-                if len(found) >= 3:
-                    header_row = i
-                    col_map = found
-                continue
-            if not any(row_data): continue
-            def get(campo):
-                idx = col_map.get(campo)
-                if idx is None or idx >= len(row_data): return ''
-                v = row_data[idx]
-                return str(v).strip() if v is not None else ''
-            codice = get('codice')
-            if not codice or codice == 'CODICE': continue
-            prezzo_raw = get('prezzo')
-            prezzo = None
-            if prezzo_raw:
-                try: prezzo = float(re.sub(r'[^\d.,]','',prezzo_raw).replace(',','.'))
-                except: pass
-            prezzo_sc_raw = get('prezzo_scontato')
-            prezzo_sc = None
-            if prezzo_sc_raw:
-                try: prezzo_sc = float(re.sub(r'[^\d.,]','',prezzo_sc_raw).replace(',','.'))
-                except: pass
-            yield_obj = {
-                'codice': codice,
-                'nome': get('nome'),
-                'categoria': get('categoria'),
-                'collezione': get('collezione'),
-                'prezzo': prezzo,
-                'prezzo_scontato': prezzo_sc,
-                'disponibilita': get('disponibilita'),
-                'descrizione': get('descrizione'),
-                'finiture': get('finiture'),
-                'fonte': 'excel'
-            }
-            if not yield_obj['nome'] and not yield_obj['descrizione']: continue
-            # append would need list — collect below
-        # redo as list
         prodotti = []
         header_row = None
         col_map = {}
@@ -857,41 +811,36 @@ def get_listino(brand):
                 found = {}
                 for campo, syns in SINONIMI.items():
                     for j, cell in enumerate(row_str):
-                        if any(s in cell for s in syns):
+                        if any(s == cell or s in cell for s in syns):
                             found[campo] = j
                             break
-                if len(found) >= 3:
+                if len(found) >= 2:
                     header_row = i
                     col_map = found
                 continue
             if not any(row_data): continue
-            def get2(campo, rd=row_data):
+            def getv(campo, rd=row_data):
                 idx = col_map.get(campo)
                 if idx is None or idx >= len(rd): return ''
                 v = rd[idx]
                 return str(v).strip() if v is not None else ''
-            codice = get2('codice')
-            if not codice or codice == 'CODICE': continue
-            prezzo_raw = get2('prezzo')
-            prezzo = None
-            if prezzo_raw:
-                try: prezzo = float(re.sub(r'[^\d.,]','',prezzo_raw).replace(',','.'))
-                except: pass
-            prezzo_sc_raw = get2('prezzo_scontato')
-            prezzo_sc = None
-            if prezzo_sc_raw:
-                try: prezzo_sc = float(re.sub(r'[^\d.,]','',prezzo_sc_raw).replace(',','.'))
-                except: pass
+            codice = getv('codice')
+            if not codice or codice.lower() == 'codice': continue
+            def parse_price(raw):
+                if not raw: return None
+                try: return float(re.sub(r'[^\d.,]','',raw).replace(',','.'))
+                except: return None
             prodotti.append({
                 'codice': codice,
-                'nome': get2('nome'),
-                'categoria': get2('categoria'),
-                'collezione': get2('collezione'),
-                'prezzo': prezzo,
-                'prezzo_scontato': prezzo_sc,
-                'disponibilita': get2('disponibilita'),
-                'descrizione': get2('descrizione'),
-                'finiture': get2('finiture'),
+                'nome': getv('nome'),
+                'categoria': getv('categoria'),
+                'collezione': getv('collezione'),
+                'prezzo': parse_price(getv('prezzo')),
+                'prezzo_rivenditore': parse_price(getv('prezzo_rivenditore')),
+                'prezzo_scontato': parse_price(getv('prezzo_scontato')),
+                'disponibilita': getv('disponibilita'),
+                'descrizione': getv('descrizione'),
+                'finiture': getv('finiture'),
                 'fonte': 'excel'
             })
         return jsonify({"ok": True, "prodotti": prodotti, "fonte": filename})
