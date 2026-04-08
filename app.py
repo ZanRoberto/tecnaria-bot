@@ -1924,6 +1924,24 @@ function ask() {
       } else {
         html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
       }
+      // --- BOTTONE AGGIUNGI AL CARRELLO ---
+      const rawText = (d.answer || '').replace(/\n/g,' ').trim();
+      const safeText = rawText.replace(/'/g, "\\'").substring(0, 400);
+      const safeBrand = (selected[0] || '').replace(/'/g, "\\'");
+      html += '<div style="margin-top:10px; border-top:1px solid rgba(16,185,129,0.2); padding-top:8px;">';
+      html += '<button onclick="apriFormCarrello(\'' + msgId + '\',\'' + safeBrand + '\',\'' + safeText + '\')" ' +
+        'style="background:rgba(16,185,129,0.2); border:1px solid rgba(16,185,129,0.5); color:#10b981; padding:5px 12px; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer; margin-bottom:0;">✓ Aggiungi al carrello</button>';
+      html += '</div>';
+      // --- FORM CARRELLO (hidden) ---
+      html += '<div id="form-carrello-' + msgId + '" style="display:none; margin-top:8px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:10px;">';
+      html += '<div style="font-size:10px; color:#10b981; font-weight:700; text-transform:uppercase; margin-bottom:8px;">Aggiungi al carrello</div>';
+      html += '<input type="text" id="fc-codice-' + msgId + '" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:6px; font-size:11px;">';
+      html += '<textarea id="fc-desc-' + msgId + '" rows="3" style="width:100%; margin-bottom:6px; font-size:11px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:6px; padding:6px; resize:vertical;">' + (d.answer || '').substring(0, 300).replace(/</g,'&lt;') + '</textarea>';
+      html += '<div style="display:flex; gap:6px;">';
+      html += '<input type="number" id="fc-prezzo-' + msgId + '" placeholder="Prezzo € (opzionale)" style="flex:1; font-size:11px;">';
+      html += '<button onclick="confermaDaChat(\'' + msgId + '\',\'' + safeBrand + '\')" class="btn-green" style="flex:1; margin-bottom:0; font-size:11px;">✓ Conferma</button>';
+      html += '<button onclick="document.getElementById(\'form-carrello-' + msgId + '\').style.display=\'none\'" class="btn-gray" style="flex:none; margin-bottom:0; font-size:11px;">✕</button>';
+      html += '</div></div>';
       html += '</div>';
       chat.innerHTML += html;
       chat.scrollTop = chat.scrollHeight;
@@ -1933,6 +1951,46 @@ function ask() {
       if (loading) loading.remove();
       chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>';
     });
+}
+
+// ---------------------------------------------------------------------------
+// AGGIUNGI DA CHAT AL CARRELLO
+// ---------------------------------------------------------------------------
+function apriFormCarrello(msgId, brand, testo) {
+  if (!cantiereAttivo) {
+    alert('Apri prima un cantiere dal pannello destra');
+    return;
+  }
+  const form = document.getElementById('form-carrello-' + msgId);
+  if (form) form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+function confermaDaChat(msgId, brand) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const codice = document.getElementById('fc-codice-' + msgId).value.trim();
+  const descEl = document.getElementById('fc-desc-' + msgId);
+  const prezzoEl = document.getElementById('fc-prezzo-' + msgId);
+  const desc = descEl ? descEl.value.trim() : '';
+  const prezzo = parseFloat(prezzoEl ? prezzoEl.value : '') || 0;
+  if (!desc) { alert('La descrizione è vuota'); return; }
+  const descrizione = codice ? '[' + codice + '] ' + desc : desc;
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: brand, categoria: 'Da Oracolo', descrizione: descrizione, importo: prezzo })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      const form = document.getElementById('form-carrello-' + msgId);
+      if (form) {
+        form.innerHTML = '<div style="color:#10b981; font-size:11px; font-weight:600; padding:4px 0;">✓ Aggiunto al carrello!</div>';
+        setTimeout(() => { form.style.display = 'none'; }, 2000);
+      }
+      loadRighe();
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
