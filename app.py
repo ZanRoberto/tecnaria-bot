@@ -1468,16 +1468,51 @@ function openCantiere(id, nome, stato) {
   document.getElementById('drawer-nome').textContent = nome;
   document.getElementById('cantiere-stato').value = stato;
   document.getElementById('cantiere-drawer').classList.add('open');
-  // Pre-compila brand dal selezionato nella sidebar
-  if (selected && selected.length > 0) {
-    const b = selected[0];
-    const inp = document.getElementById('riga-brand-input');
-    const val = document.getElementById('riga-brand-val');
-    if (inp) inp.value = b;
-    if (val) val.value = b;
+  precompilaBrandDrawer();
+  loadRighe();
+}
+
+function precompilaBrandDrawer() {
+  if (!selected || selected.length === 0) return;
+  const inp = document.getElementById('riga-brand-input');
+  const val = document.getElementById('riga-brand-val');
+  if (selected.length === 1) {
+    if (inp) inp.value = selected[0];
+    if (val) val.value = selected[0];
+    aggiornaCampiExtra();
+  } else {
+    // Più brand: mostra quick-select buttons sopra il campo
+    let container = document.getElementById('brand-quick-select');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'brand-quick-select';
+      container.style.cssText = 'display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px;';
+      const brandRow = document.querySelector('.form-row');
+      if (brandRow) brandRow.parentNode.insertBefore(container, brandRow);
+    }
+    container.innerHTML = '<div style="font-size:10px;color:#9ca3af;width:100%;margin-bottom:2px;">Seleziona brand per questa riga:</div>' +
+      selected.map(b =>
+        '<button type="button" onclick="setBrandRiga(\'' + b.replace(/'/g,"\\'") + '\')" ' +
+        'style="padding:3px 8px;font-size:10px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);color:#93c5fd;border-radius:4px;cursor:pointer;margin-bottom:0;">' + b + '</button>'
+      ).join('');
+    // Pre-compila col primo
+    if (inp) inp.value = selected[0];
+    if (val) val.value = selected[0];
     aggiornaCampiExtra();
   }
-  loadRighe();
+}
+
+function setBrandRiga(brand) {
+  const inp = document.getElementById('riga-brand-input');
+  const val = document.getElementById('riga-brand-val');
+  if (inp) inp.value = brand;
+  if (val) val.value = brand;
+  // Evidenzia bottone attivo
+  document.querySelectorAll('#brand-quick-select button').forEach(b => {
+    b.style.background = b.textContent === brand ? 'rgba(59,130,245,0.6)' : 'rgba(59,130,245,0.2)';
+    b.style.color = b.textContent === brand ? 'white' : '#93c5fd';
+  });
+  aggiornaCampiExtra();
 }
 
 function closeCantiere() {
@@ -1767,12 +1802,9 @@ function updateSelected() {
     const uploadVal = document.getElementById('upload-brand-val');
     if (uploadInp) uploadInp.value = b;
     if (uploadVal) uploadVal.value = b;
-    // Drawer cantiere — solo se non già compilato
-    const rigaInp = document.getElementById('riga-brand-input');
-    const rigaVal = document.getElementById('riga-brand-val');
-    if (rigaInp && !rigaInp.value) rigaInp.value = b;
-    if (rigaVal && !rigaVal.value) rigaVal.value = b;
   }
+  // Se drawer aperto, aggiorna quick-select
+  if (cantiereAttivo) precompilaBrandDrawer();
 }
 
 function toggleWeb() {
