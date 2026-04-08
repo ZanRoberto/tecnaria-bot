@@ -1468,6 +1468,15 @@ function openCantiere(id, nome, stato) {
   document.getElementById('drawer-nome').textContent = nome;
   document.getElementById('cantiere-stato').value = stato;
   document.getElementById('cantiere-drawer').classList.add('open');
+  // Pre-compila brand dal selezionato nella sidebar
+  if (selected && selected.length > 0) {
+    const b = selected[0];
+    const inp = document.getElementById('riga-brand-input');
+    const val = document.getElementById('riga-brand-val');
+    if (inp) inp.value = b;
+    if (val) val.value = b;
+    aggiornaCampiExtra();
+  }
   loadRighe();
 }
 
@@ -1750,6 +1759,14 @@ function updateSelected() {
   selected = [];
   document.querySelectorAll('.brand-item input:checked').forEach(cb => { selected.push(cb.value); });
   document.getElementById('selected').innerHTML = selected.map(b => '<span class="badge">' + b + ' x</span>').join('');
+  // Se il drawer è aperto, aggiorna il brand nel form
+  if (cantiereAttivo && selected.length > 0) {
+    const b = selected[0];
+    const inp = document.getElementById('riga-brand-input');
+    const val = document.getElementById('riga-brand-val');
+    if (inp && !inp.value) { inp.value = b; }
+    if (val && !val.value) { val.value = b; }
+  }
 }
 
 function toggleWeb() {
