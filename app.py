@@ -1759,13 +1759,19 @@ function updateSelected() {
   selected = [];
   document.querySelectorAll('.brand-item input:checked').forEach(cb => { selected.push(cb.value); });
   document.getElementById('selected').innerHTML = selected.map(b => '<span class="badge">' + b + ' x</span>').join('');
-  // Se il drawer è aperto, aggiorna il brand nel form
-  if (cantiereAttivo && selected.length > 0) {
+  // Propaga brand selezionato in tutti i campi brand dell'app
+  if (selected.length > 0) {
     const b = selected[0];
-    const inp = document.getElementById('riga-brand-input');
-    const val = document.getElementById('riga-brand-val');
-    if (inp && !inp.value) { inp.value = b; }
-    if (val && !val.value) { val.value = b; }
+    // Upload documenti
+    const uploadInp = document.getElementById('upload-brand-input');
+    const uploadVal = document.getElementById('upload-brand-val');
+    if (uploadInp) uploadInp.value = b;
+    if (uploadVal) uploadVal.value = b;
+    // Drawer cantiere — solo se non già compilato
+    const rigaInp = document.getElementById('riga-brand-input');
+    const rigaVal = document.getElementById('riga-brand-val');
+    if (rigaInp && !rigaInp.value) rigaInp.value = b;
+    if (rigaVal && !rigaVal.value) rigaVal.value = b;
   }
 }
 
