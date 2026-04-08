@@ -1785,8 +1785,12 @@ function filterBrands() {
   if (!search || !brandsList) return;
   const sv = search.value.toLowerCase();
   const filtered = BRANDS.filter(b => b.toLowerCase().includes(sv));
+  // Mantieni i brand già selezionati
+  const alreadySelected = new Set(selected);
   brandsList.innerHTML = filtered.map(b =>
-    '<div class="brand-item"><input type="checkbox" value="' + b + '" onchange="updateSelected()">' + b + '</div>'
+    '<div class="brand-item"><input type="checkbox" value="' + b + '" ' +
+    (alreadySelected.has(b) ? 'checked' : '') +
+    ' onchange="updateSelected()">' + b + '</div>'
   ).join('');
 }
 
