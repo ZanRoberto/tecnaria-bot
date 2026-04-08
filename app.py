@@ -1257,15 +1257,23 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       </div>
       <button onclick="chiudiListino()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
     </div>
-    <!-- DOMANDE SUGGERITE -->
-    <div style="padding: 10px 18px 0 18px; border-bottom: 1px solid rgba(59,130,245,0.15);">
-      <div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; margin-bottom:6px;">Domande rapide</div>
+
+    <!-- FILTRI LINEA + CATEGORIA + RICERCA -->
+    <div style="padding:8px 18px; background:rgba(15,23,46,0.8); border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0;">
+      <div id="filtri-linea" class="filtri-bar" style="margin-bottom:6px;"></div>
+      <div id="filtri-cat" class="filtri-bar" style="margin-bottom:6px;"></div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="text" id="listino-search" class="listino-search" style="flex:1;" placeholder="Cerca nome, codice..." oninput="filtraListino()">
+        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;white-space:nowrap;">👤 Cliente</button>
+        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.2);border-radius:4px;color:#f59e0b;white-space:nowrap;">🏪 Riv.</button>
+      </div>
+    </div>
+
+    <!-- DOMANDE RAPIDE AI -->
+    <div style="padding:6px 18px; border-bottom:1px solid rgba(59,130,245,0.1); flex-shrink:0;">
       <div class="domande-bar" id="domande-bar"></div>
     </div>
-    <!-- FILTRI -->
-    <div style="padding: 10px 18px 0 18px;">
-      <div class="filtri-bar" id="filtri-bar"></div>
-    </div>
+
     <!-- GRIGLIA PRODOTTI -->
     <div class="listino-body">
       <div id="listino-count" style="font-size:10px; color:#6b7280; margin-bottom:8px;"></div>
@@ -2648,12 +2656,13 @@ function addVoceManuale() {
 }
 
 // ---------------------------------------------------------------------------
-// LISTINO DASHBOARD
+// LISTINO DASHBOARD — flusso 1-click
 // ---------------------------------------------------------------------------
 let listinoData = [];
 let listinoBrand = '';
-let filtroAttivo = 'tutti';
-let listinoTipo = 'cliente'; // 'cliente' o 'rivenditore'
+let filtroLinea = 'tutti';
+let filtroCategoria = 'tutti';
+let listinoTipo = 'cliente';
 
 function setListinoTipo(tipo) {
   listinoTipo = tipo;
@@ -2663,19 +2672,12 @@ function setListinoTipo(tipo) {
   filtraListino();
 }
 
-const DOMANDE_SUGGERITE = [
-  'Quali sono i prodotti più venduti?',
-  'Cosa abbinare per un bagno moderno?',
-  'Mostrami le novità',
-  'Prodotti sotto €300',
-  'Cosa c\'è disponibile subito?',
-  'Soluzioni per bagno piccolo',
-  'Differenze tra le collezioni',
-];
-
+// Apre listino automaticamente quando brand selezionato ha un listino caricato
 function apriListino() {
   if (!selected || selected.length === 0) { alert('Seleziona prima un brand'); return; }
   listinoBrand = selected[0];
+  filtroLinea = 'tutti';
+  filtroCategoria = 'tutti';
   document.getElementById('listino-brand-tag').textContent = listinoBrand;
   document.getElementById('listino-panel').classList.add('open');
   document.getElementById('listino-search').value = '';
@@ -2687,116 +2689,136 @@ function chiudiListino() {
 }
 
 function caricaListino() {
-  document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px;">Caricamento...</div>';
+  document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Caricamento prodotti...</div>';
   fetch('/api/listino/' + encodeURIComponent(listinoBrand))
     .then(r => r.json())
     .then(d => {
       listinoData = d.prodotti || [];
-      costruisciFiltri();
+      costruisciFiltriLinea();
+      costruisciFiltriCat();
       costruisciDomande();
       filtraListino();
-      const fonte = d.fonte ? '📄 Dati da: ' + d.fonte : '🌐 Nessun listino caricato — dati solo da web';
+      const n = listinoData.length;
+      const fonte = d.fonte
+        ? '<span style="color:#10b981;">📄 ' + n + ' prodotti da listino</span>'
+        : '<span style="color:#ef4444;">⚠ Nessun listino caricato per ' + listinoBrand + ' — carica un Excel prima</span>';
       document.getElementById('listino-count').innerHTML = fonte;
-    })
-    .catch(() => {
-      listinoData = [];
-      filtraListino();
     });
 }
 
-function costruisciFiltri() {
-  const categorie = [...new Set(listinoData.map(p => p.categoria).filter(Boolean))];
-  let html = '<button class="filtro-btn active" onclick="setFiltro(\'tutti\', this)">Tutti (' + listinoData.length + ')</button>';
-  categorie.forEach(cat => {
-    const n = listinoData.filter(p => p.categoria === cat).length;
-    html += '<button class="filtro-btn" onclick="setFiltro(\'' + cat + '\', this)">' + cat + ' (' + n + ')</button>';
+function costruisciFiltriLinea() {
+  const linee = [...new Set(listinoData.map(p => p.collezione).filter(Boolean))].sort();
+  let html = '<button class="filtro-btn active" onclick="setFiltroLinea(\'tutti\',this)">Tutte le linee</button>';
+  linee.forEach(l => {
+    const n = listinoData.filter(p => p.collezione === l).length;
+    html += '<button class="filtro-btn" onclick="setFiltroLinea(\'' + l.replace(/'/g,"\\'") + '\',this)">' + l + ' <span style="opacity:0.6;">(' + n + ')</span></button>';
   });
-  document.getElementById('filtri-bar').innerHTML = html;
+  document.getElementById('filtri-linea').innerHTML = html;
+}
+
+function costruisciFiltriCat() {
+  const cats = [...new Set(listinoData.map(p => p.categoria).filter(Boolean))].sort();
+  let html = '<button class="filtro-btn active" onclick="setFiltroCategoria(\'tutti\',this)">Tutte le cat.</button>';
+  cats.forEach(c => {
+    html += '<button class="filtro-btn" onclick="setFiltroCategoria(\'' + c.replace(/'/g,"\\'") + '\',this)">' + c + '</button>';
+  });
+  document.getElementById('filtri-cat').innerHTML = html;
 }
 
 function costruisciDomande() {
-  document.getElementById('domande-bar').innerHTML = DOMANDE_SUGGERITE.map(d =>
+  const domande = [
+    'Quali prodotti abbinare per un bagno moderno?',
+    'Cosa è disponibile subito?',
+    'Prodotti entry level sotto €400',
+    'Soluzioni premium per progetto di lusso',
+    'Cosa abbinare a ' + listinoBrand + ' per doccia?',
+    'Differenze tra le collezioni',
+    'Novità e best seller'
+  ];
+  document.getElementById('domande-bar').innerHTML = domande.map(d =>
     '<button class="domanda-chip" onclick="faiDomandaListino(\'' + d.replace(/'/g,"\\'") + '\')">' + d + '</button>'
   ).join('');
 }
 
-function setFiltro(cat, btn) {
-  filtroAttivo = cat;
-  document.querySelectorAll('.filtro-btn').forEach(b => b.classList.remove('active'));
+function setFiltroLinea(val, btn) {
+  filtroLinea = val;
+  document.querySelectorAll('#filtri-linea .filtro-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  filtraListino();
+}
+
+function setFiltroCategoria(val, btn) {
+  filtroCategoria = val;
+  document.querySelectorAll('#filtri-cat .filtro-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   filtraListino();
 }
 
 function filtraListino() {
-  const sv = (document.getElementById('listino-search').value || '').toLowerCase();
+  const sv = (document.getElementById('listino-search') ? document.getElementById('listino-search').value : '').toLowerCase();
   let prodotti = listinoData;
-  if (filtroAttivo !== 'tutti') prodotti = prodotti.filter(p => p.categoria === filtroAttivo);
+  if (filtroLinea !== 'tutti') prodotti = prodotti.filter(p => p.collezione === filtroLinea);
+  if (filtroCategoria !== 'tutti') prodotti = prodotti.filter(p => p.categoria === filtroCategoria);
   if (sv) prodotti = prodotti.filter(p =>
     (p.nome||'').toLowerCase().includes(sv) ||
     (p.codice||'').toLowerCase().includes(sv) ||
-    (p.collezione||'').toLowerCase().includes(sv) ||
     (p.descrizione||'').toLowerCase().includes(sv)
   );
 
   if (prodotti.length === 0) {
-    document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px;">Nessun prodotto trovato</div>';
+    document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Nessun prodotto trovato</div>';
     return;
   }
 
-  document.getElementById('prodotti-grid').innerHTML = prodotti.map((p, i) => {
-    const dispClass = (p.disponibilita||'').includes('ordine') ? 'su-ordine' : 'disponibile';
-    const dispLabel = (p.disponibilita||'').includes('ordine') ? 'Su ordine' : 'Disponibile';
-    const dispBadge = (p.disponibilita||'').includes('ordine') ? 'disp-ord' : 'disp-ok';
+  document.getElementById('prodotti-grid').innerHTML = prodotti.map(p => {
+    const idx = listinoData.indexOf(p);
+    const dispClass = (p.disponibilita||'').toLowerCase().includes('ordine') ? 'su-ordine' : 'disponibile';
+    const dispBadge = (p.disponibilita||'').toLowerCase().includes('ordine') ? 'disp-ord' : 'disp-ok';
+    const dispLabel = (p.disponibilita||'').toLowerCase().includes('ordine') ? '⏳ Su ordine' : '✓ Disponibile';
 
-    // Prezzo in base al tipo listino selezionato
-    let prezzoUsato = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : p.prezzo;
-    let prezzoHtml = '';
-    if (prezzoUsato !== null && prezzoUsato !== undefined) {
-      const cls = p.fonte === 'excel' ? 'prodotto-prezzo-excel' : 'prodotto-prezzo-web';
-      const icon = p.fonte !== 'excel' ? ' ⚠' : '';
-      const tipoLabel = listinoTipo === 'rivenditore' ? '<span style="font-size:9px;color:#f59e0b;margin-left:4px;">riv.</span>' : '';
-      prezzoHtml = '<span class="' + cls + '">€' + parseFloat(prezzoUsato).toFixed(0) + icon + '</span>' + tipoLabel;
-      // Mostra anche l'altro prezzo in piccolo
-      if (listinoTipo === 'cliente' && p.prezzo_rivenditore) {
-        prezzoHtml += '<span style="font-size:9px;color:#f59e0b;margin-left:6px;">riv. €' + parseFloat(p.prezzo_rivenditore).toFixed(0) + '</span>';
-      } else if (listinoTipo === 'rivenditore' && p.prezzo) {
-        prezzoHtml += '<span style="font-size:9px;color:#6b7280;margin-left:6px;">cliente €' + parseFloat(p.prezzo).toFixed(0) + '</span>';
-      }
-    } else {
-      prezzoHtml = '<span style="color:#6b7280;font-size:10px;">prezzo da definire</span>';
+    // Prezzo principale + secondario
+    const pCliente = p.prezzo;
+    const pRiv = p.prezzo_rivenditore;
+    const pUsato = listinoTipo === 'rivenditore' && pRiv ? pRiv : pCliente;
+    const pSecondario = listinoTipo === 'rivenditore' ? pCliente : pRiv;
+    const clsPrezzo = p.fonte === 'excel' ? 'prodotto-prezzo-excel' : 'prodotto-prezzo-web';
+    const iconWeb = p.fonte !== 'excel' ? ' ⚠' : '';
+
+    let prezzoHtml = pUsato
+      ? '<span class="' + clsPrezzo + '">€' + parseFloat(pUsato).toFixed(0) + iconWeb + '</span>'
+      : '<span style="color:#6b7280;font-size:10px;">—</span>';
+    if (pSecondario) {
+      const lbl = listinoTipo === 'cliente' ? 'riv.' : 'cl.';
+      const clr = listinoTipo === 'cliente' ? '#f59e0b' : '#9ca3af';
+      prezzoHtml += '<span style="font-size:9px;color:' + clr + ';margin-left:6px;">' + lbl + ' €' + parseFloat(pSecondario).toFixed(0) + '</span>';
     }
 
-    const idx = listinoData.indexOf(p);
-    return '<div class="prodotto-card ' + dispClass + '" onclick="espandiProdotto(' + idx + ')">' +
-      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">' +
-      '<div class="prodotto-codice">' + (p.codice||'—') + '</div>' +
+    return '<div class="prodotto-card ' + dispClass + '" id="pcard-' + idx + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px;">' +
+      '<span class="prodotto-codice">' + (p.codice||'—') + '</span>' +
       '<span class="prodotto-disp ' + dispBadge + '">' + dispLabel + '</span>' +
       '</div>' +
-      '<div class="prodotto-nome">' + (p.nome||p.descrizione||'—') + '</div>' +
-      '<div class="prodotto-cat">' + (p.collezione ? p.collezione + ' · ' : '') + (p.categoria||'') + '</div>' +
-      prezzoHtml +
-      (p.finiture ? '<div style="font-size:9px;color:#6b7280;margin-top:3px;">' + p.finiture + '</div>' : '') +
-      '<div class="prodotto-actions">' +
-      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'abbinamenti\')" class="btn-sm" style="background:rgba(59,130,245,0.2);color:#93c5fd;">🔗 Abbina</button>' +
-      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(16,185,129,0.2);color:#10b981;">✍ Descrivi</button>' +
-      '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green">✓ Carrello</button>' +
+      '<div class="prodotto-nome">' + (p.nome||'—') + '</div>' +
+      '<div class="prodotto-cat">' + [p.collezione, p.categoria].filter(Boolean).join(' · ') + '</div>' +
+      (p.descrizione ? '<div style="font-size:10px;color:#9ca3af;margin:3px 0;line-height:1.3;">' + p.descrizione + '</div>' : '') +
+      (p.finiture ? '<div style="font-size:9px;color:#6b7280;">🎨 ' + p.finiture + '</div>' : '') +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">' +
+      '<div>' + prezzoHtml + '</div>' +
+      '</div>' +
+      '<div class="prodotto-actions" style="margin-top:8px;">' +
+      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'abbinamenti\')" class="btn-sm" style="background:rgba(59,130,245,0.2);color:#93c5fd;flex:1;">🔗 Abbina</button>' +
+      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
+      '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
       '</div></div>';
   }).join('');
-}
-
-function espandiProdotto(idx) {
-  const p = listinoData[idx];
-  if (!p) return;
-  const desc = [p.descrizione, p.finiture, p.note].filter(Boolean).join(' | ');
-  alert(p.nome + '\n' + p.codice + '\n\n' + desc);
 }
 
 function chiediAIprodotto(idx, tipo) {
   const p = listinoData[idx];
   if (!p) return;
   let domanda = '';
-  if (tipo === 'abbinamenti') domanda = 'Cosa abbinare al prodotto ' + p.nome + ' (' + p.codice + ') di ' + listinoBrand + '?';
-  if (tipo === 'descrizione') domanda = 'Crea una descrizione commerciale breve e convincente per il prodotto: ' + p.nome + ' — ' + (p.descrizione||'') + ' — Prezzo: €' + (p.prezzo||'da definire');
+  if (tipo === 'abbinamenti') domanda = 'Cosa abbinare al prodotto ' + (p.nome||p.codice) + ' di ' + listinoBrand + '? Suggerisci prodotti complementari dello stesso brand o di altri brand che trattiamo.';
+  if (tipo === 'descrizione') domanda = 'Crea una descrizione commerciale breve (max 120 caratteri) per: ' + (p.nome||p.codice) + ' — ' + (p.descrizione||'') + '. Prezzo: €' + (p.prezzo||'da definire') + '. Brand: ' + listinoBrand;
   chiudiListino();
   document.getElementById('question').value = domanda;
   ask();
@@ -2804,32 +2826,40 @@ function chiediAIprodotto(idx, tipo) {
 
 function faiDomandaListino(domanda) {
   chiudiListino();
-  document.getElementById('question').value = domanda + ' di ' + listinoBrand;
+  document.getElementById('question').value = domanda;
   ask();
 }
 
 function aggiungiDaListino(idx) {
-  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  if (!cantiereAttivo) {
+    if (confirm('Nessun cantiere aperto. Vuoi aprire il pannello cantieri?')) {
+      chiudiListino();
+      document.getElementById('mod-cantieri') && toggleModule('cantieri-body');
+    }
+    return;
+  }
   const p = listinoData[idx];
   if (!p) return;
-  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome||p.descrizione||'');
+  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
+  const importo = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
+
+  const btn = document.getElementById('addbtn-' + idx);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+
   fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      brand: listinoBrand,
-      categoria: p.categoria || '',
-      descrizione: descrizione,
-      importo: listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0)
-    })
+    body: JSON.stringify({ brand: listinoBrand, categoria: p.categoria||'', descrizione, importo })
   })
   .then(r => r.json())
   .then(d => {
     if (d.ok) {
-      // Feedback visivo
-      const btn = document.querySelectorAll('.prodotto-card')[idx];
-      if (btn) btn.style.borderColor = '#10b981';
+      if (btn) { btn.textContent = '✓ Aggiunto'; btn.style.background = '#10b981'; }
+      const card = document.getElementById('pcard-' + idx);
+      if (card) card.style.opacity = '0.6';
       loadRighe();
+    } else {
+      if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
     }
   });
 }
