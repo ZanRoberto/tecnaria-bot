@@ -1498,16 +1498,18 @@ function loadRighe() {
     righe.forEach(r => { totale += (r.importo || 0); });
     document.getElementById('righe-list').innerHTML = righe.length === 0
       ? '<div style="color:#6b7280; font-size:11px; text-align:center; padding:12px 0;">Nessun elemento aggiunto</div>'
-      : righe.map(r =>
-          '<div class="riga-card">' +
+      : righe.map(r => {
+          const desc = (r.descrizione || '').replace(/^Da Oracolo\s*[—-]\s*/i, '');
+          const cat = (r.categoria && r.categoria !== 'Da Oracolo') ? r.categoria : '';
+          return '<div class="riga-card">' +
           '<div class="riga-card-info">' +
           '<div class="riga-card-brand">' + (r.brand||'—') + '</div>' +
-          '<div class="riga-card-cat">' + (r.categoria||'') + (r.descrizione ? ' — ' + r.descrizione : '') + '</div>' +
+          '<div class="riga-card-cat">' + (cat ? cat + (desc ? ' — ' : '') : '') + desc + '</div>' +
           '</div>' +
           '<div class="riga-card-importo">' + (r.importo ? '€' + r.importo.toFixed(0) : '—') + '</div>' +
           '<button onclick="deleteRiga(' + r.id + ')" class="btn-red btn-sm" style="margin-bottom:0; padding:3px 7px;">✕</button>' +
-          '</div>'
-        ).join('');
+          '</div>';
+        }).join('');
     const totBar = document.getElementById('totale-bar');
     if (righe.length > 0) {
       totBar.style.display = 'flex';
@@ -2006,6 +2008,8 @@ function confermaDaChat(msgId, brand) {
   const prezzo = parseFloat(prezzoEl ? prezzoEl.value : '') || 0;
   if (!desc) { alert('La descrizione è vuota'); return; }
   const descrizione = codice ? '[' + codice + '] ' + desc : desc;
+  // Brand = sempre quello selezionato nella sidebar
+  const brandEffettivo = (selected && selected.length > 0) ? selected[0] : brand;
 
   // Disabilita subito il bottone per evitare doppio click
   const form = document.getElementById('form-carrello-' + msgId);
@@ -2015,7 +2019,7 @@ function confermaDaChat(msgId, brand) {
   fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ brand: brand, categoria: 'Da Oracolo', descrizione: descrizione, importo: prezzo })
+    body: JSON.stringify({ brand: brandEffettivo, categoria: '', descrizione: descrizione, importo: prezzo })
   })
   .then(r => r.json())
   .then(d => {
