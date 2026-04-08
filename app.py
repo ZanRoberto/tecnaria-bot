@@ -592,18 +592,20 @@ def upload_document():
 
 @app.route('/api/list-documents', methods=['GET'])
 def list_documents():
-    brand = request.args.get('brand', '')
+    brand = request.args.get('brand', '').strip()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     if brand:
-        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility
+        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility, a.nome
                      FROM documents d JOIN aziende a ON d.azienda_id = a.id
-                     WHERE a.nome = ? ORDER BY d.upload_date DESC''', (brand,))
+                     WHERE LOWER(a.nome) = LOWER(?) ORDER BY d.upload_date DESC''', (brand,))
     else:
-        c.execute('SELECT id, filename, upload_date, visibility FROM documents ORDER BY upload_date DESC LIMIT 20')
+        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility, a.nome
+                     FROM documents d JOIN aziende a ON d.azienda_id = a.id
+                     ORDER BY a.nome, d.upload_date DESC LIMIT 100''')
     docs = c.fetchall()
     conn.close()
-    return jsonify({"documents": [{"id": d[0], "filename": d[1], "date": d[2], "visibility": d[3]} for d in docs]})
+    return jsonify({"documents": [{"id": d[0], "filename": d[1], "date": d[2], "visibility": d[3], "brand": d[4]} for d in docs]})
 
 @app.route('/api/delete-document/<int:doc_id>', methods=['DELETE'])
 def delete_document(doc_id):
@@ -1133,6 +1135,10 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .disp-ord { background: rgba(245,158,11,0.2); color: #f59e0b; }
 .prodotto-actions { display: flex; gap: 4px; margin-top: 8px; }
 .prodotto-actions button { flex: 1; padding: 4px; font-size: 9px; margin-bottom: 0; }
+.doc-row { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; margin-bottom:4px; background:rgba(30,41,59,0.7); border:1px solid rgba(59,130,245,0.15); font-size:11px; }
+.doc-brand-tag { background:rgba(59,130,245,0.2); color:#93c5fd; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; white-space:nowrap; }
+.doc-tipo-excel { background:rgba(16,185,129,0.2); color:#10b981; padding:2px 6px; border-radius:10px; font-size:9px; font-weight:600; }
+.doc-tipo-doc { background:rgba(139,92,246,0.2); color:#a78bfa; padding:2px 6px; border-radius:10px; font-size:9px; font-weight:600; }
 /* EXCEL PANEL */
 .excel-row { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.15); border-radius: 6px; padding: 8px 10px; margin: 4px 0; font-size: 11px; }
 .excel-row-header { display: flex; align-items: center; gap: 8px; }
@@ -1226,7 +1232,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       Upload Excel <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
     </label>
     <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
-    <button onclick="showDocuments()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
+    <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
   </div>
 
   <!-- CENTRO -->
@@ -1278,6 +1284,25 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     <div class="listino-body">
       <div id="listino-count" style="font-size:10px; color:#6b7280; margin-bottom:8px;"></div>
       <div class="prodotti-grid" id="prodotti-grid"></div>
+    </div>
+  </div>
+
+  <!-- PANNELLO GESTIONE DOCUMENTI -->
+  <div id="gestisci-doc-panel" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:2000; align-items:center; justify-content:center;">
+    <div style="background:#0f172e; border:1px solid rgba(59,130,245,0.4); border-radius:12px; width:700px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column;">
+      <!-- Header -->
+      <div style="padding:16px 20px; border-bottom:1px solid rgba(59,130,245,0.2); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+        <div style="font-size:14px; font-weight:700; color:#60a5fa;">📁 Gestione Documenti</div>
+        <button onclick="chiudiGestisciDoc()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+      </div>
+      <!-- Filtro brand -->
+      <div style="padding:12px 20px; border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0; display:flex; gap:8px;">
+        <input type="text" id="filtro-doc-brand" placeholder="Filtra per brand (lascia vuoto per tutti)..." style="flex:1; font-size:11px;" oninput="filtraDocumenti()">
+        <button onclick="filtraDocumenti()" style="margin-bottom:0; padding:6px 12px; font-size:11px;">🔍 Cerca</button>
+        <button onclick="filtraDocumenti(true)" class="btn-gray" style="margin-bottom:0; padding:6px 12px; font-size:11px;">Tutti</button>
+      </div>
+      <!-- Lista documenti -->
+      <div id="doc-list-panel" style="flex:1; overflow-y:auto; padding:12px 20px;"></div>
     </div>
   </div>
 
@@ -2268,22 +2293,75 @@ function doUpload(input, tipo) {
   reader.readAsDataURL(file);
 }
 
-function showDocuments() {
-  const brand = prompt('Per quale brand?');
-  if (!brand) return;
-  fetch('/api/list-documents?brand=' + encodeURIComponent(brand)).then(r => r.json()).then(d => {
-    if (!d.documents || d.documents.length === 0) { alert('Nessun documento per ' + brand); return; }
-    const list = d.documents.map(doc => doc.id + ' | ' + doc.filename + ' | ' + (doc.date||'')).join('\n');
-    const idStr = prompt('Documenti:\n' + list + '\n\nID da eliminare:');
-    if (!idStr) return;
-    const docId = parseInt(idStr);
-    if (isNaN(docId)) { alert('ID non valido'); return; }
-    if (!confirm('Eliminare documento ID ' + docId + '?')) return;
-    fetch('/api/delete-document/' + docId, { method:'DELETE' }).then(r => r.json()).then(d => {
-      if (d.ok) alert('Eliminato!');
-      else alert('Errore: ' + d.error);
+function apriGestisciDoc() {
+  document.getElementById('gestisci-doc-panel').style.display = 'flex';
+  document.getElementById('filtro-doc-brand').value = selected.length > 0 ? selected[0] : '';
+  filtraDocumenti();
+}
+
+function chiudiGestisciDoc() {
+  document.getElementById('gestisci-doc-panel').style.display = 'none';
+}
+
+function filtraDocumenti(tutti) {
+  const brand = tutti ? '' : document.getElementById('filtro-doc-brand').value.trim();
+  const url = brand ? '/api/list-documents?brand=' + encodeURIComponent(brand) : '/api/list-documents';
+  const container = document.getElementById('doc-list-panel');
+  container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Caricamento...</div>';
+
+  fetch(url).then(r => r.json()).then(d => {
+    const docs = d.documents || [];
+    if (docs.length === 0) {
+      container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Nessun documento trovato' + (brand ? ' per "' + brand + '"' : '') + '</div>';
+      return;
+    }
+    // Raggruppa per brand
+    const grouped = {};
+    docs.forEach(doc => {
+      const b = doc.brand || '—';
+      if (!grouped[b]) grouped[b] = [];
+      grouped[b].push(doc);
     });
+
+    let html = '';
+    Object.entries(grouped).sort().forEach(([b, bdocs]) => {
+      html += '<div style="font-size:10px;font-weight:700;color:#60a5fa;text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 6px 0;">' + b + ' <span style="color:#6b7280;font-weight:400;">(' + bdocs.length + ')</span></div>';
+      bdocs.forEach(doc => {
+        const isExcel = doc.filename.includes('[EXCEL]');
+        const tipoHtml = isExcel
+          ? '<span class="doc-tipo-excel">📊 Excel</span>'
+          : '<span class="doc-tipo-doc">📄 Doc</span>';
+        const dataStr = doc.date ? doc.date.substring(0, 16).replace('T', ' ') : '—';
+        const visHtml = doc.visibility === 'private'
+          ? '<span style="font-size:9px;color:#f59e0b;">🔒 Privato</span>'
+          : '<span style="font-size:9px;color:#6b7280;">🌐 Pubblico</span>';
+        const nomeFile = doc.filename.replace(' [EXCEL]', '');
+        html += '<div class="doc-row" id="docrow-' + doc.id + '">' +
+          tipoHtml +
+          '<div style="flex:1;min-width:0;">' +
+          '<div style="font-weight:600;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + nomeFile + '</div>' +
+          '<div style="color:#6b7280;font-size:10px;">' + dataStr + ' · ' + visHtml + '</div>' +
+          '</div>' +
+          '<button onclick="eliminaDocumento(' + doc.id + ',\'' + b.replace(/'/g,"\\'") + '\')" class="btn-red btn-sm" style="margin-bottom:0;white-space:nowrap;">✕ Elimina</button>' +
+          '</div>';
+      });
+    });
+    container.innerHTML = html;
   });
+}
+
+function eliminaDocumento(id, brand) {
+  if (!confirm('Eliminare questo documento di ' + brand + '?')) return;
+  fetch('/api/delete-document/' + id, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        const row = document.getElementById('docrow-' + id);
+        if (row) { row.style.opacity = '0.3'; row.style.pointerEvents = 'none'; setTimeout(() => row.remove(), 600); }
+      } else {
+        alert('Errore: ' + (d.error || 'sconosciuto'));
+      }
+    });
 }
 
 function generateOfferta() {
