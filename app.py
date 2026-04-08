@@ -5,10 +5,15 @@ ORACOLO COVOLO - SISTEMA COMPLETO V2
 + Pannello destra: Cantieri, Carrello, BI
 + Tutto il precedente invariato
 """
-import os, json, sqlite3, re, hashlib, secrets
+import os, json, sqlite3, re, hashlib, secrets, base64, io
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, session
 import httpx
+try:
+    import openpyxl
+    OPENPYXL_OK = True
+except ImportError:
+    OPENPYXL_OK = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -758,6 +763,125 @@ def ask():
     return jsonify({"answer": answer, "images": images})
 
 # ---------------------------------------------------------------------------
+# API EXCEL INTELLIGENTE
+# ---------------------------------------------------------------------------
+
+@app.route('/api/parse-excel', methods=['POST'])
+def parse_excel():
+    """Legge un file Excel base64 e restituisce righe con codice/descrizione/prezzo"""
+    if not OPENPYXL_OK:
+        return jsonify({"error": "openpyxl non installato sul server"}), 500
+    data = request.get_json()
+    b64 = data.get('content', '')
+    # Rimuovi eventuale data-URI prefix
+    if ',' in b64:
+        b64 = b64.split(',', 1)[1]
+    try:
+        raw = base64.b64decode(b64)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        ws = wb.active
+        rows = []
+        header_row = None
+        col_map = {}  # nome_campo -> indice colonna (0-based)
+        SINONIMI = {
+            'codice': ['codice','cod','code','sku','art','articolo','ref'],
+            'descrizione': ['descrizione','desc','nome','prodotto','name','denominazione'],
+            'prezzo': ['prezzo','price','costo','cost','importo','€','euro','listino']
+        }
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if header_row is None:
+                # Cerca riga header
+                row_str = [str(c).lower().strip() if c else '' for c in row]
+                found = {}
+                for campo, syns in SINONIMI.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s in cell for s in syns):
+                            found[campo] = j
+                            break
+                if len(found) >= 2:
+                    header_row = i
+                    col_map = found
+                continue
+            if not any(row):
+                continue
+            def get(campo):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(row): return ''
+                v = row[idx]
+                return str(v).strip() if v is not None else ''
+            codice = get('codice')
+            descrizione = get('descrizione')
+            prezzo_raw = get('prezzo')
+            if not codice and not descrizione:
+                continue
+            # Pulisci prezzo
+            prezzo = None
+            if prezzo_raw:
+                try:
+                    prezzo = float(re.sub(r'[^\d.,]', '', prezzo_raw).replace(',', '.'))
+                except:
+                    pass
+            rows.append({'codice': codice, 'descrizione': descrizione, 'prezzo': prezzo, 'prezzo_src': 'excel' if prezzo is not None else None})
+            if len(rows) >= 200:
+                break
+        return jsonify({"ok": True, "righe": rows, "totale": len(rows)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/arricchisci-prodotto', methods=['POST'])
+def arricchisci_prodotto():
+    """Prende codice+descrizione+prezzo e genera descrizione commerciale sintetica via DeepSeek"""
+    data = request.get_json()
+    codice = data.get('codice', '')
+    descrizione = data.get('descrizione', '')
+    prezzo = data.get('prezzo')
+    brand = data.get('brand', '')
+    prezzo_str = f"€{prezzo}" if prezzo else "non specificato"
+
+    prompt = f"""Sei un esperto commerciale di arredo bagno e pavimentazioni di alto livello.
+
+Devi creare una descrizione commerciale SINTETICA (max 3 righe, circa 150 caratteri) di questo prodotto, da inserire in un'offerta/proposta per un cliente finale.
+
+Brand: {brand if brand else 'non specificato'}
+Codice: {codice if codice else 'non specificato'}
+Descrizione originale: {descrizione}
+Prezzo: {prezzo_str}
+
+La descrizione deve:
+- Essere convincente e professionale
+- Evidenziare il valore e la qualità
+- NON inventare caratteristiche tecniche specifiche non note
+- Essere massimo 150 caratteri
+- Non includere il prezzo nel testo
+
+Rispondi SOLO con la descrizione commerciale, nient'altro."""
+
+    risposta = deepseek_ask(prompt)
+    return jsonify({"ok": True, "descrizione_ai": risposta.strip()})
+
+@app.route('/api/cantieri/<int:cid>/righe-da-ai', methods=['POST'])
+def add_riga_da_ai(cid):
+    """Aggiunge una riga al cantiere proveniente dall'arricchimento AI/Excel"""
+    u = require_login(['superadmin', 'admin', 'commerciale'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    codice = data.get('codice', '')
+    descrizione = data.get('descrizione', '')
+    if codice:
+        descrizione = f"[{codice}] {descrizione}" if descrizione else codice
+    c.execute("INSERT INTO cantiere_righe (cantiere_id, brand, categoria, descrizione, note, importo) VALUES (?,?,?,?,?,?)",
+              (cid, data.get('brand',''), data.get('categoria',''), descrizione,
+               data.get('note',''), data.get('importo', 0) or 0))
+    rid = c.lastrowid
+    c.execute("UPDATE cantieri SET data_aggiornamento=? WHERE id=?", (datetime.now().isoformat(), cid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "id": rid})
+
+# ---------------------------------------------------------------------------
 # FRONTEND
 # ---------------------------------------------------------------------------
 
@@ -846,6 +970,15 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
 .form-row > * { flex: 1; }
 .drawer-footer { border-top: 1px solid rgba(59,130,245,0.3); padding: 12px 18px; display: flex; gap: 8px; flex-shrink: 0; background: rgba(15,23,46,0.95); }
+/* EXCEL PANEL */
+.excel-row { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.15); border-radius: 6px; padding: 8px 10px; margin: 4px 0; font-size: 11px; }
+.excel-row-header { display: flex; align-items: center; gap: 8px; }
+.excel-codice { color: #9ca3af; font-size: 10px; font-family: monospace; }
+.excel-desc { flex: 1; color: #e0e0e0; font-size: 11px; }
+.prezzo-excel { color: #10b981; font-weight: 700; font-size: 12px; }
+.prezzo-web { color: #ef4444; font-weight: 700; font-size: 12px; }
+.excel-ai-desc { color: #93c5fd; font-size: 11px; margin-top: 4px; padding: 4px 6px; background: rgba(59,130,245,0.08); border-radius: 4px; border-left: 2px solid #3b82f6; }
+.excel-actions { display: flex; gap: 4px; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -1104,6 +1237,37 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       <div class="form-row">
         <input type="number" id="riga-importo" placeholder="Importo €" style="flex:1;">
         <button onclick="addRiga()" class="btn-green" style="flex:1; margin-bottom:0;">+ Aggiungi</button>
+      </div>
+    </div>
+    <!-- AGGIUNGI MANUALE / VOCE LIBERA -->
+    <div class="drawer-section">
+      <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleExcelPanel()">
+        ⚡ Importa da Excel / Voce libera
+        <span id="excel-panel-arrow" style="float:right; color:#9ca3af;">▼</span>
+      </div>
+      <div id="excel-panel" style="display:none;">
+        <!-- Upload Excel -->
+        <div style="margin-bottom:8px;">
+          <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:7px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
+            📊 Carica Excel prodotti
+            <input type="file" id="excel-listino" accept=".xlsx,.xls" style="display:none" onchange="caricaExcelListino(this)">
+          </label>
+          <div id="excel-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px;"></div>
+        </div>
+
+        <!-- Lista righe Excel -->
+        <div id="excel-righe-list" style="max-height:340px; overflow-y:auto;"></div>
+
+        <!-- Separatore -->
+        <div style="border-top:1px solid rgba(59,130,245,0.15); margin: 10px 0 8px 0;"></div>
+
+        <!-- Voce manuale libera -->
+        <div style="font-size:10px; color:#9ca3af; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Voce manuale (trasporto, manodopera, ecc.)</div>
+        <input type="text" id="voce-desc" placeholder="Descrizione voce..." style="width:100%; margin-bottom:6px;">
+        <div class="form-row">
+          <input type="number" id="voce-importo" placeholder="Importo €" style="flex:1;">
+          <button onclick="addVoceManuale()" class="btn-purple" style="flex:1; margin-bottom:0; font-size:11px;">+ Aggiungi</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1769,6 +1933,194 @@ function ask() {
       if (loading) loading.remove();
       chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>';
     });
+}
+
+// ---------------------------------------------------------------------------
+// EXCEL INTELLIGENTE
+// ---------------------------------------------------------------------------
+let excelRighe = [];  // righe caricate dall'Excel
+
+function toggleExcelPanel() {
+  const panel = document.getElementById('excel-panel');
+  const arrow = document.getElementById('excel-panel-arrow');
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  arrow.textContent = open ? '▼' : '▲';
+}
+
+function caricaExcelListino(input) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('excel-status').textContent = 'Lettura Excel...';
+  document.getElementById('excel-status').style.color = '#9ca3af';
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    fetch('/api/parse-excel', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: e.target.result})
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        excelRighe = d.righe;
+        document.getElementById('excel-status').textContent = '✓ ' + d.totale + ' prodotti trovati';
+        document.getElementById('excel-status').style.color = '#10b981';
+        renderExcelRighe();
+      } else {
+        document.getElementById('excel-status').textContent = 'Errore: ' + d.error;
+        document.getElementById('excel-status').style.color = '#ef4444';
+      }
+    })
+    .catch(err => {
+      document.getElementById('excel-status').textContent = 'Errore: ' + err;
+      document.getElementById('excel-status').style.color = '#ef4444';
+    });
+  };
+  reader.readAsDataURL(file);
+  input.value = '';
+}
+
+function renderExcelRighe() {
+  const container = document.getElementById('excel-righe-list');
+  if (!excelRighe.length) { container.innerHTML = ''; return; }
+
+  // Campo ricerca
+  let html = '<input type="text" id="excel-search" placeholder="Filtra prodotti..." ' +
+    'oninput="renderExcelRigheFiltered()" style="width:100%; margin-bottom:8px; font-size:11px;">';
+  html += '<div id="excel-righe-inner"></div>';
+  container.innerHTML = html;
+  renderExcelRigheFiltered();
+}
+
+function renderExcelRigheFiltered() {
+  const searchEl = document.getElementById('excel-search');
+  const sv = searchEl ? searchEl.value.toLowerCase() : '';
+  const filtered = sv
+    ? excelRighe.filter(r => (r.codice + ' ' + r.descrizione).toLowerCase().includes(sv))
+    : excelRighe;
+
+  const inner = document.getElementById('excel-righe-inner');
+  if (!inner) return;
+
+  inner.innerHTML = filtered.slice(0, 50).map((r, i) => {
+    const idx = excelRighe.indexOf(r);
+    const prezzoHtml = r.prezzo !== null && r.prezzo !== undefined
+      ? '<span class="' + (r.prezzo_src === 'excel' ? 'prezzo-excel' : 'prezzo-web') + '">€' +
+        parseFloat(r.prezzo).toFixed(2) + (r.prezzo_src !== 'excel' ? ' ⚠web' : '') + '</span>'
+      : '<span style="color:#6b7280; font-size:10px;">prezzo mancante</span>';
+
+    const aiDesc = r.descrizione_ai
+      ? '<div class="excel-ai-desc">' + r.descrizione_ai + '</div>'
+      : '';
+
+    return '<div class="excel-row" id="excel-row-' + idx + '">' +
+      '<div class="excel-row-header">' +
+      '<span class="excel-codice">' + (r.codice || '—') + '</span>' +
+      '<span class="excel-desc">' + (r.descrizione || '—') + '</span>' +
+      prezzoHtml +
+      '</div>' +
+      aiDesc +
+      '<div class="excel-actions">' +
+      '<button onclick="arricchisciRiga(' + idx + ')" class="btn-sm" style="background:rgba(59,130,245,0.3);color:#93c5fd;margin-bottom:0;">✨ Arricchisci</button>' +
+      '<input type="number" id="prezzo-edit-' + idx + '" placeholder="Modifica €" value="' + (r.prezzo !== null ? r.prezzo : '') + '" ' +
+        'style="width:90px; font-size:10px; padding:3px 6px; flex:none;" ' +
+        'onchange="aggiornaPrezzo(' + idx + ')">' +
+      '<button onclick="aggiungiAlCarrello(' + idx + ')" class="btn-sm btn-green" style="margin-bottom:0;">✓ Carrello</button>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+
+  if (filtered.length > 50) {
+    inner.innerHTML += '<div style="font-size:10px; color:#9ca3af; text-align:center; padding:6px;">Mostrati 50 di ' + filtered.length + ' — usa il filtro per trovare</div>';
+  }
+}
+
+function aggiornaPrezzo(idx) {
+  const input = document.getElementById('prezzo-edit-' + idx);
+  if (!input) return;
+  const val = parseFloat(input.value);
+  if (!isNaN(val)) {
+    excelRighe[idx].prezzo = val;
+    excelRighe[idx].prezzo_src = 'excel';  // manuale = trattato come excel (verde)
+    renderExcelRigheFiltered();
+  }
+}
+
+function arricchisciRiga(idx) {
+  const r = excelRighe[idx];
+  const btn = document.querySelector('#excel-row-' + idx + ' button');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+
+  fetch('/api/arricchisci-prodotto', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: r.codice,
+      descrizione: r.descrizione,
+      prezzo: r.prezzo,
+      brand: selected.length === 1 ? selected[0] : (selected[0] || '')
+    })
+  })
+  .then(res => res.json())
+  .then(d => {
+    if (d.ok) {
+      excelRighe[idx].descrizione_ai = d.descrizione_ai;
+      renderExcelRigheFiltered();
+    }
+  })
+  .catch(() => { if (btn) { btn.textContent = '✨ Arricchisci'; btn.disabled = false; } });
+}
+
+function aggiungiAlCarrello(idx) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const r = excelRighe[idx];
+  const descrizione = r.descrizione_ai || r.descrizione || '';
+  const importo = r.prezzo || 0;
+  const brand = selected.length === 1 ? selected[0] : (selected[0] || '');
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe-da-ai', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      brand: brand,
+      categoria: '',
+      codice: r.codice,
+      descrizione: descrizione,
+      importo: importo
+    })
+  })
+  .then(res => res.json())
+  .then(d => {
+    if (d.ok) {
+      // Feedback visivo sul bottone
+      const btns = document.querySelectorAll('#excel-row-' + idx + ' button');
+      const addBtn = btns[btns.length - 1];
+      if (addBtn) { addBtn.textContent = '✓ Aggiunto!'; addBtn.style.background = '#10b981'; setTimeout(() => { addBtn.textContent = '✓ Carrello'; addBtn.style.background = ''; }, 2000); }
+      loadRighe();
+    }
+  });
+}
+
+function addVoceManuale() {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const desc = document.getElementById('voce-desc').value.trim();
+  const importo = parseFloat(document.getElementById('voce-importo').value) || 0;
+  if (!desc) { alert('Inserisci una descrizione'); return; }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({brand: '', categoria: 'Voce manuale', descrizione: desc, importo: importo})
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      document.getElementById('voce-desc').value = '';
+      document.getElementById('voce-importo').value = '';
+      loadRighe();
+    }
+  });
 }
 
 // Controlla se già loggato
