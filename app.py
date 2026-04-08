@@ -1007,8 +1007,21 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     <h2>Seleziona brand</h2>
     <button onclick="toggleDropdown()" style="width: 100%;">Seleziona Brand</button>
     <div id="dropdown" class="dropdown">
-      <input type="text" id="search" placeholder="Ricerca brand..." onkeyup="filterBrands()" style="width: 100%; margin-bottom: 6px;">
-      <div id="brands-list"></div>
+      <!-- TAB BAR -->
+      <div style="display:flex; gap:4px; margin-bottom:8px;">
+        <button id="tab-brand" onclick="switchTab('brand')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:#3b82f6;">Per nome</button>
+        <button id="tab-cat" onclick="switchTab('cat')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:rgba(59,130,245,0.3);">Per categoria</button>
+      </div>
+      <!-- TAB BRAND -->
+      <div id="tab-content-brand">
+        <input type="text" id="search" placeholder="Ricerca brand..." onkeyup="filterBrands()" style="width: 100%; margin-bottom: 6px;">
+        <div id="brands-list"></div>
+      </div>
+      <!-- TAB CATEGORIA -->
+      <div id="tab-content-cat" style="display:none;">
+        <input type="text" id="search-cat" placeholder="Es: rubinetteria, piastrelle, doccia..." onkeyup="filterPerCategoria()" style="width: 100%; margin-bottom: 6px;">
+        <div id="cat-results"></div>
+      </div>
     </div>
     <div style="margin: 8px 0;" id="selected"></div>
     <h2>Gruppi salvati</h2>
@@ -1765,6 +1778,144 @@ function biCancella() {
 // ---------------------------------------------------------------------------
 // BRANDS / DROPDOWN
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// MAPPA BRAND → CATEGORIE + FASCIA DI MERCATO
+// ---------------------------------------------------------------------------
+const BRAND_MAP = {
+  // LUXURY
+  'Antoniolupi':    { categorie: ['rubinetteria','lavabi','vasche','accessori bagno','specchi'], fascia: 'luxury' },
+  'Gessi':          { categorie: ['rubinetteria','doccia','vasche','accessori bagno','wellness'], fascia: 'luxury' },
+  'Duscholux':      { categorie: ['box doccia','piatti doccia'], fascia: 'luxury' },
+  'Kaldewei':       { categorie: ['vasche','piatti doccia'], fascia: 'luxury' },
+  'Glamm Fire':     { categorie: ['camini','fuoco'], fascia: 'luxury' },
+  'Tubes':          { categorie: ['radiatori','scaldasalviette'], fascia: 'luxury' },
+  'Vismara Vetro':  { categorie: ['box doccia','vetro','partizioni'], fascia: 'luxury' },
+  'Decor Walther':  { categorie: ['accessori bagno','specchi'], fascia: 'luxury' },
+  'Bisazza':        { categorie: ['mosaico','piastrelle'], fascia: 'luxury' },
+  'Cottodeste':     { categorie: ['piastrelle','pavimenti'], fascia: 'luxury' },
+  'Sunshower':      { categorie: ['wellness','doccia','sauna'], fascia: 'luxury' },
+  'Sunshower Wellness': { categorie: ['wellness','sauna'], fascia: 'luxury' },
+  'Trimline Fires': { categorie: ['camini','fuoco'], fascia: 'luxury' },
+  'Stuv':           { categorie: ['camini','stufe'], fascia: 'luxury' },
+  'Austroflamm':    { categorie: ['camini','stufe'], fascia: 'luxury' },
+  'Valdama':        { categorie: ['lavabi','vasche','sanitari'], fascia: 'luxury' },
+  'Milldue':        { categorie: ['mobili bagno','arredo bagno'], fascia: 'luxury' },
+  'Noorth':         { categorie: ['piastrelle','pavimenti'], fascia: 'luxury' },
+  // PREMIUM
+  'Duravit':        { categorie: ['sanitari','lavabi','vasche','mobili bagno','rubinetteria'], fascia: 'premium' },
+  'Cielo':          { categorie: ['sanitari','lavabi'], fascia: 'premium' },
+  'Cerasa':         { categorie: ['mobili bagno','specchi','sanitari'], fascia: 'premium' },
+  'Colombo':        { categorie: ['accessori bagno','rubinetteria'], fascia: 'premium' },
+  'Grupp Bardelli': { categorie: ['piastrelle','rivestimenti'], fascia: 'premium' },
+  'Gruppo Bardelli':{ categorie: ['piastrelle','rivestimenti'], fascia: 'premium' },
+  'Gruppo Geromin': { categorie: ['vasche','box doccia','idromassaggio'], fascia: 'premium' },
+  'FAP Ceramiche':  { categorie: ['piastrelle','rivestimenti','pavimenti'], fascia: 'premium' },
+  'Ariostea':       { categorie: ['piastrelle','grandi lastre','pavimenti'], fascia: 'premium' },
+  'Mirage':         { categorie: ['piastrelle','pavimenti'], fascia: 'premium' },
+  'FMG':            { categorie: ['piastrelle','pavimenti','grandi lastre'], fascia: 'premium' },
+  'Floorim':        { categorie: ['piastrelle','pavimenti'], fascia: 'premium' },
+  'Gigacer':        { categorie: ['piastrelle','grandi lastre'], fascia: 6 },
+  'Italgraniti':    { categorie: ['piastrelle','pavimenti'], fascia: 'premium' },
+  'Bauwerk':        { categorie: ['parquet','legno'], fascia: 'premium' },
+  'CP Parquet':     { categorie: ['parquet','legno'], fascia: 'premium' },
+  'Iniziativa Legno':{ categorie: ['parquet','legno'], fascia: 'premium' },
+  'Madegan':        { categorie: ['parquet','legno'], fascia: 'premium' },
+  'Gerflor':        { categorie: ['pavimento vinilico','pavimento tecnico'], fascia: 'premium' },
+  'Acquabella':     { categorie: ['piatti doccia','vasche','box doccia'], fascia: 'premium' },
+  'Gridiron':       { categorie: ['accessori bagno','portasalviette'], fascia: 'premium' },
+  'Wedi':           { categorie: ['impermeabilizzazione','sistemi doccia','edilizia'], fascia: 'premium' },
+  'Schluter Systems':{ categorie: ['profili','impermeabilizzazione','piastrelle'], fascia: 'premium' },
+  'Tresse':         { categorie: ['piastrelle','mosaico'], fascia: 'premium' },
+  'Tonalite':       { categorie: ['piastrelle','rivestimenti'], fascia: 'premium' },
+  'Sterneldesign':  { categorie: ['accessori bagno'], fascia: 'premium' },
+  // MID
+  'Altamarea':      { categorie: ['rubinetteria','doccia'], fascia: 'mid' },
+  'Anem':           { categorie: ['rubinetteria','doccia'], fascia: 'mid' },
+  'Aparici':        { categorie: ['piastrelle','rivestimenti'], fascia: 'mid' },
+  'Apavisa':        { categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Artesia':        { categorie: ['vasche','piatti doccia'], fascia: 'mid' },
+  'BGP':            { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Blue Design':    { categorie: ['mobili bagno'], fascia: 'mid' },
+  'Baufloor':       { categorie: ['pavimenti'], fascia: 'mid' },
+  'Caros':          { categorie: ['piastrelle'], fascia: 'mid' },
+  'Caesar':         { categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Casalgrande Padana':{ categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Cerasarda':      { categorie: ['piastrelle','rivestimenti'], fascia: 'mid' },
+  'CSA':            { categorie: ['rubinetteria'], fascia: 'mid' },
+  'Demm':           { categorie: ['accessori bagno'], fascia: 'mid' },
+  'DoorAmeda':      { categorie: ['porte','pareti'], fascia: 'mid' },
+  'Edimax Astor':   { categorie: ['piastrelle','mosaico'], fascia: 'mid' },
+  'Brera':          { categorie: ['sanitari','lavabi'], fascia: 'mid' },
+  'GOman':          { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Ier Hurne':      { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Inklostro Bianco':{ categorie: ['pitture','rivestimenti'], fascia: 'mid' },
+  'Iris':           { categorie: ['piastrelle','sanitari'], fascia: 'mid' },
+  'Linki':          { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Marca Corona':   { categorie: ['piastrelle','rivestimenti'], fascia: 'mid' },
+  'Murexin':        { categorie: ['impermeabilizzazione','massetti','posa'], fascia: 'mid' },
+  'Omegius':        { categorie: ['accessori bagno'], fascia: 'mid' },
+  "Piastrelle d Arredo":{ categorie: ['piastrelle'], fascia: 'mid' },
+  'Profiletec':     { categorie: ['profili','bordi'], fascia: 'mid' },
+  'SDR':            { categorie: ['sanitari'], fascia: 'mid' },
+  'Sichenia':       { categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Simas':          { categorie: ['sanitari','lavabi'], fascia: 'mid' },
+  'Remer':          { categorie: ['rubinetteria','accessori bagno'], fascia: 'mid' },
+};
+
+const FASCIA_LABEL = {
+  luxury:  { label: 'Luxury',  color: '#f59e0b' },
+  premium: { label: 'Premium', color: '#8b5cf6' },
+  mid:     { label: 'Mid',     color: '#3b82f6' },
+  entry:   { label: 'Entry',   color: '#6b7280' },
+};
+
+function switchTab(tab) {
+  const isBrand = tab === 'brand';
+  document.getElementById('tab-content-brand').style.display = isBrand ? '' : 'none';
+  document.getElementById('tab-content-cat').style.display = isBrand ? 'none' : '';
+  document.getElementById('tab-brand').style.background = isBrand ? '#3b82f6' : 'rgba(59,130,245,0.3)';
+  document.getElementById('tab-cat').style.background = isBrand ? 'rgba(59,130,245,0.3)' : '#3b82f6';
+  if (!isBrand) document.getElementById('search-cat').focus();
+}
+
+function filterPerCategoria() {
+  const sv = document.getElementById('search-cat').value.toLowerCase().trim();
+  const container = document.getElementById('cat-results');
+  if (!sv) { container.innerHTML = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Digita una categoria...</div>'; return; }
+
+  // Trova brand che matchano la categoria cercata
+  const risultati = { luxury: [], premium: [], mid: [], entry: [] };
+  Object.entries(BRAND_MAP).forEach(([brand, info]) => {
+    if (info.categorie && info.categorie.some(c => c.toLowerCase().includes(sv))) {
+      const fascia = info.fascia || 'mid';
+      if (risultati[fascia]) risultati[fascia].push(brand);
+    }
+  });
+
+  const ordine = ['luxury', 'premium', 'mid', 'entry'];
+  let html = '';
+  let totale = 0;
+  ordine.forEach(f => {
+    if (risultati[f].length === 0) return;
+    const fl = FASCIA_LABEL[f];
+    html += '<div style="font-size:9px;font-weight:700;color:' + fl.color + ';text-transform:uppercase;margin:6px 0 3px 0;letter-spacing:0.06em;">' + fl.label + '</div>';
+    risultati[f].forEach(brand => {
+      totale++;
+      const checked = new Set(selected).has(brand) ? 'checked' : '';
+      html += '<div class="brand-item cat-item" style="display:flex;align-items:center;gap:6px;">' +
+        '<input type="checkbox" value="' + brand + '" ' + checked + ' onchange="updateSelected()">' +
+        '<span style="flex:1">' + brand + '</span>' +
+        '<span style="font-size:9px;color:' + fl.color + ';font-weight:600;">' + fl.label + '</span>' +
+        '</div>';
+    });
+  });
+
+  if (totale === 0) {
+    html = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Nessun brand trovato per "' + sv + '"</div>';
+  }
+  container.innerHTML = html;
+}
+
 function loadBrands() {
   fetch('/api/get-brands').then(r => r.json()).then(d => {
     BRANDS = d.brands || [];
