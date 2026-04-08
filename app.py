@@ -793,7 +793,8 @@ def get_listino(brand):
             'nome': ['nome','name','prodotto','denominazione','descrizione breve','nome prodotto'],
             'categoria': ['categoria','category','tipo'],
             'collezione': ['collezione','collection','linea'],
-            'prezzo': ['prezzo','price','costo','importo','listino','prezzo (€)'],
+            'prezzo': ['prezzo cliente','prezzo (€)','prezzo','price','costo','importo','listino'],
+            'prezzo_rivenditore': ['prezzo rivenditore','rivenditore','prezzo riv','costo acquisto','prezzo rivenditore (€)'],
             'prezzo_scontato': ['prezzo scontato','scontato','offerta','prezzo scontato (€)'],
             'disponibilita': ['disponibilità','disponibilita','stock','disponibile'],
             'descrizione': ['descrizione','description','note','dettaglio'],
@@ -1249,6 +1250,11 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     <div class="listino-header">
       <span id="listino-brand-tag" class="listino-brand-tag">—</span>
       <input type="text" id="listino-search" class="listino-search" placeholder="Cerca prodotto per nome, codice, collezione..." oninput="filtraListino()">
+      <!-- SELETTORE LISTINO -->
+      <div style="display:flex;gap:4px;flex-shrink:0;">
+        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;">👤 Cliente</button>
+        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.3);border-radius:4px;color:#f59e0b;">🏪 Rivenditore</button>
+      </div>
       <button onclick="chiudiListino()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
     </div>
     <!-- DOMANDE SUGGERITE -->
@@ -2647,6 +2653,15 @@ function addVoceManuale() {
 let listinoData = [];
 let listinoBrand = '';
 let filtroAttivo = 'tutti';
+let listinoTipo = 'cliente'; // 'cliente' o 'rivenditore'
+
+function setListinoTipo(tipo) {
+  listinoTipo = tipo;
+  document.getElementById('btn-listino-cliente').style.background = tipo === 'cliente' ? '#3b82f6' : 'rgba(59,130,245,0.2)';
+  document.getElementById('btn-listino-riv').style.background = tipo === 'rivenditore' ? '#f59e0b' : 'rgba(245,158,11,0.2)';
+  document.getElementById('btn-listino-riv').style.color = tipo === 'rivenditore' ? 'white' : '#f59e0b';
+  filtraListino();
+}
 
 const DOMANDE_SUGGERITE = [
   'Quali sono i prodotti più venduti?',
@@ -2733,15 +2748,19 @@ function filtraListino() {
     const dispLabel = (p.disponibilita||'').includes('ordine') ? 'Su ordine' : 'Disponibile';
     const dispBadge = (p.disponibilita||'').includes('ordine') ? 'disp-ord' : 'disp-ok';
 
-    // Prezzo — verde se da Excel, rosso se da web
+    // Prezzo in base al tipo listino selezionato
+    let prezzoUsato = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : p.prezzo;
     let prezzoHtml = '';
-    if (p.prezzo !== null && p.prezzo !== undefined) {
+    if (prezzoUsato !== null && prezzoUsato !== undefined) {
       const cls = p.fonte === 'excel' ? 'prodotto-prezzo-excel' : 'prodotto-prezzo-web';
-      const icon = p.fonte === 'excel' ? '' : ' ⚠';
-      prezzoHtml = '<span class="' + cls + '">€' + parseFloat(p.prezzo).toFixed(0) + icon + '</span>';
-      if (p.prezzo_scontato) {
-        prezzoHtml = '<span class="prodotto-prezzo-excel">€' + parseFloat(p.prezzo_scontato).toFixed(0) + '</span>' +
-          '<span class="prodotto-prezzo-sc">€' + parseFloat(p.prezzo).toFixed(0) + '</span>';
+      const icon = p.fonte !== 'excel' ? ' ⚠' : '';
+      const tipoLabel = listinoTipo === 'rivenditore' ? '<span style="font-size:9px;color:#f59e0b;margin-left:4px;">riv.</span>' : '';
+      prezzoHtml = '<span class="' + cls + '">€' + parseFloat(prezzoUsato).toFixed(0) + icon + '</span>' + tipoLabel;
+      // Mostra anche l'altro prezzo in piccolo
+      if (listinoTipo === 'cliente' && p.prezzo_rivenditore) {
+        prezzoHtml += '<span style="font-size:9px;color:#f59e0b;margin-left:6px;">riv. €' + parseFloat(p.prezzo_rivenditore).toFixed(0) + '</span>';
+      } else if (listinoTipo === 'rivenditore' && p.prezzo) {
+        prezzoHtml += '<span style="font-size:9px;color:#6b7280;margin-left:6px;">cliente €' + parseFloat(p.prezzo).toFixed(0) + '</span>';
       }
     } else {
       prezzoHtml = '<span style="color:#6b7280;font-size:10px;">prezzo da definire</span>';
@@ -2801,7 +2820,7 @@ function aggiungiDaListino(idx) {
       brand: listinoBrand,
       categoria: p.categoria || '',
       descrizione: descrizione,
-      importo: p.prezzo_scontato || p.prezzo || 0
+      importo: listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0)
     })
   })
   .then(r => r.json())
