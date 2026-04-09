@@ -103,6 +103,53 @@ def init_db():
         importo REAL DEFAULT 0,
         FOREIGN KEY (cantiere_id) REFERENCES cantieri(id)
     )''')
+    
+    # TABELLE LAZY LOADING ABBINAMENTI
+    c.execute('''CREATE TABLE IF NOT EXISTS categories_accessori (
+        id INTEGER PRIMARY KEY,
+        categoria_id TEXT UNIQUE NOT NULL,
+        categoria_nome TEXT NOT NULL,
+        descrizione TEXT,
+        icona TEXT,
+        created_at TEXT
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS product_accessories (
+        id INTEGER PRIMARY KEY,
+        prodotto_padre TEXT NOT NULL,
+        accessorio_id TEXT NOT NULL,
+        accessorio_nome TEXT,
+        brand_accessorio TEXT,
+        categoria_accessorio TEXT,
+        tipo_relazione TEXT,
+        priority INTEGER DEFAULT 99,
+        note TEXT,
+        created_at TEXT,
+        FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id),
+        UNIQUE(prodotto_padre, accessorio_id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS product_accessories_vincoli (
+        id INTEGER PRIMARY KEY,
+        relazione_id INTEGER NOT NULL,
+        campo_vincolo TEXT,
+        valore_vincolo TEXT,
+        severity TEXT,
+        messaggio TEXT,
+        created_at TEXT,
+        FOREIGN KEY (relazione_id) REFERENCES product_accessories(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS matching_rules (
+        id INTEGER PRIMARY KEY,
+        categoria_prodotto TEXT,
+        categoria_accessorio TEXT,
+        soglia_compatibilita TEXT,
+        nota TEXT,
+        created_at TEXT,
+        FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id)
+    )''')
+    
     # Cliente default Covolo
     c.execute("INSERT OR IGNORE INTO clienti (nome, slug) VALUES ('Covolo SRL', 'covolo')")
     conn.commit()
@@ -1168,6 +1215,177 @@ def add_riga_da_ai(cid):
     conn.close()
     return jsonify({"ok": True, "id": rid})
 
+# ============================================================================
+# LAZY LOADING ABBINAMENTI PER BRAND
+# ============================================================================
+
+def load_accessories_from_excel_lazy(file_content, brand, conn, c):
+    """Carica categorie, abbinamenti, vincoli da Excel in memoria"""
+    try:
+        if ',' in file_content:
+            file_content = file_content.split(',', 1)[1]
+        
+        raw = base64.b64decode(file_content)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        
+        count_categories = 0
+        count_abbinamenti = 0
+        count_vincoli = 0
+        
+        # CARICA CATEGORIE
+        if "CATEGORIE_ACCESSORI" in wb.sheetnames:
+            ws = wb["CATEGORIE_ACCESSORI"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not any(row):
+                    continue
+                categoria_id = row[0]
+                categoria_nome = row[1]
+                descrizione = row[2] if len(row) > 2 else ""
+                icona = row[3] if len(row) > 3 else ""
+                
+                try:
+                    c.execute("""
+                        INSERT OR REPLACE INTO categories_accessori 
+                        (categoria_id, categoria_nome, descrizione, icona, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (categoria_id, categoria_nome, descrizione, icona, datetime.now().isoformat()))
+                    count_categories += 1
+                except:
+                    pass
+        
+        # CARICA ABBINAMENTI
+        if "ABBINAMENTI" in wb.sheetnames:
+            ws = wb["ABBINAMENTI"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not any(row):
+                    continue
+                
+                prodotto_padre = row[0]
+                accessorio_id = row[1]
+                accessorio_nome = row[2] if len(row) > 2 else ""
+                brand_accessorio = row[3] if len(row) > 3 else brand
+                categoria_accessorio = row[4] if len(row) > 4 else ""
+                tipo_relazione = row[5] if len(row) > 5 else "ufficiale"
+                priority = row[6] if len(row) > 6 else 99
+                
+                vincoli_campo = row[7] if len(row) > 7 else None
+                vincoli_valore = row[8] if len(row) > 8 else None
+                vincoli_severity = row[9] if len(row) > 9 else None
+                vincoli_messaggio = row[10] if len(row) > 10 else None
+                
+                note = row[11] if len(row) > 11 else ""
+                
+                try:
+                    c.execute("""
+                        INSERT OR REPLACE INTO product_accessories
+                        (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio,
+                         categoria_accessorio, tipo_relazione, priority, note, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio,
+                          categoria_accessorio, tipo_relazione, int(priority) if priority else 99,
+                          note, datetime.now().isoformat()))
+                    
+                    rel_id = c.lastrowid
+                    count_abbinamenti += 1
+                    
+                    if vincoli_campo:
+                        c.execute("""
+                            INSERT INTO product_accessories_vincoli
+                            (relazione_id, campo_vincolo, valore_vincolo, severity, messaggio, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (rel_id, vincoli_campo, vincoli_valore, vincoli_severity,
+                              vincoli_messaggio, datetime.now().isoformat()))
+                        count_vincoli += 1
+                except:
+                    pass
+        
+        # CARICA REGOLE
+        if "REGOLE_MATCHING" in wb.sheetnames:
+            ws = wb["REGOLE_MATCHING"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not any(row):
+                    continue
+                categoria_prodotto = row[0]
+                categoria_accessorio = row[1]
+                soglia = row[2] if len(row) > 2 else "media"
+                nota = row[3] if len(row) > 3 else ""
+                
+                try:
+                    c.execute("""
+                        INSERT INTO matching_rules
+                        (categoria_prodotto, categoria_accessorio, soglia_compatibilita, nota, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (categoria_prodotto, categoria_accessorio, soglia, nota,
+                          datetime.now().isoformat()))
+                except:
+                    pass
+        
+        msg = f"✅ {brand}: {count_abbinamenti} abbinamenti caricati"
+        total = count_categories + count_abbinamenti + count_vincoli
+        return True, msg, total
+        
+    except Exception as e:
+        return False, f"❌ Errore: {str(e)}", 0
+
+@app.route('/api/load-brand-accessories/<brand>', methods=['GET'])
+def load_brand_accessories(brand):
+    """Carica SOLO i file Excel del brand selezionato"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Cerca i file Excel del brand
+        c.execute("""
+            SELECT d.content, d.filename 
+            FROM documents d
+            JOIN aziende a ON d.azienda_id = a.id
+            WHERE LOWER(a.nome) LIKE ? 
+            AND (d.filename LIKE '%ABBINAMENTI%' OR d.filename LIKE '%abbinamenti%')
+            ORDER BY d.upload_date DESC
+            LIMIT 1
+        """, (f'%{brand.lower()}%',))
+        
+        row = c.fetchone()
+        
+        if not row:
+            conn.close()
+            return jsonify({
+                "ok": False, 
+                "message": f"Nessun file abbinamenti trovato per {brand}",
+                "loaded": 0
+            }), 404
+        
+        file_content, filename = row
+        
+        # Carica i dati dal file
+        success, msg, count = load_accessories_from_excel_lazy(file_content, brand, conn, c)
+        
+        conn.commit()
+        conn.close()
+        
+        if success:
+            return jsonify({
+                "ok": True,
+                "message": msg,
+                "brand": brand,
+                "filename": filename,
+                "loaded": count,
+                "status": "✅ Caricato"
+            })
+        else:
+            return jsonify({
+                "ok": False,
+                "message": msg,
+                "brand": brand
+            }), 400
+            
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "brand": brand
+        }), 500
+
 # ---------------------------------------------------------------------------
 # FRONTEND
 # ---------------------------------------------------------------------------
@@ -1343,7 +1561,8 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
         <div id="cat-results"></div>
       </div>
     </div>
-    <div style="margin: 8px 0;" id="selected"></div>
+    <div id="selected"></div>
+    <div id="brand-loading-status" style="font-size:11px; color:#10b981; margin-bottom:8px;"></div>
     <h2>Gruppi salvati</h2>
     <div style="display: flex; gap: 6px; margin-bottom: 8px;">
       <input type="text" id="group-name" placeholder="Nome gruppo..." style="flex: 1;">
@@ -1705,6 +1924,29 @@ function selectBrand(inputId, listId, valId, brand) {
   document.getElementById(valId).value = brand;
   closeAutocomplete(listId);
   if (inputId === 'riga-brand-input') aggiornaCampiExtra();
+  
+  // LAZY LOADING ABBINAMENTI quando seleziona il brand principale
+  if (inputId === 'brand-input') {
+    console.log('Caricando accessori per:', brand);
+    const statusEl = document.getElementById('brand-loading-status');
+    if (statusEl) statusEl.textContent = '⏳ Caricamento ' + brand + '...';
+    
+    fetch('/api/load-brand-accessories/' + encodeURIComponent(brand))
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          console.log('✅', data.message);
+          if (statusEl) statusEl.textContent = '✅ ' + data.message;
+        } else {
+          console.error('❌', data.message);
+          if (statusEl) statusEl.textContent = '❌ ' + data.message;
+        }
+      })
+      .catch(e => {
+        console.error('Errore:', e);
+        if (statusEl) statusEl.textContent = '❌ Errore nel caricamento';
+      });
+  }
 }
 
 function closeAutocomplete(listId) {
