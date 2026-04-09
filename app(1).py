@@ -103,6 +103,53 @@ def init_db():
         importo REAL DEFAULT 0,
         FOREIGN KEY (cantiere_id) REFERENCES cantieri(id)
     )''')
+    
+    # TABELLE LAZY LOADING ABBINAMENTI
+    c.execute('''CREATE TABLE IF NOT EXISTS categories_accessori (
+        id INTEGER PRIMARY KEY,
+        categoria_id TEXT UNIQUE NOT NULL,
+        categoria_nome TEXT NOT NULL,
+        descrizione TEXT,
+        icona TEXT,
+        created_at TEXT
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS product_accessories (
+        id INTEGER PRIMARY KEY,
+        prodotto_padre TEXT NOT NULL,
+        accessorio_id TEXT NOT NULL,
+        accessorio_nome TEXT,
+        brand_accessorio TEXT,
+        categoria_accessorio TEXT,
+        tipo_relazione TEXT,
+        priority INTEGER DEFAULT 99,
+        note TEXT,
+        created_at TEXT,
+        FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id),
+        UNIQUE(prodotto_padre, accessorio_id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS product_accessories_vincoli (
+        id INTEGER PRIMARY KEY,
+        relazione_id INTEGER NOT NULL,
+        campo_vincolo TEXT,
+        valore_vincolo TEXT,
+        severity TEXT,
+        messaggio TEXT,
+        created_at TEXT,
+        FOREIGN KEY (relazione_id) REFERENCES product_accessories(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS matching_rules (
+        id INTEGER PRIMARY KEY,
+        categoria_prodotto TEXT,
+        categoria_accessorio TEXT,
+        soglia_compatibilita TEXT,
+        nota TEXT,
+        created_at TEXT,
+        FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id)
+    )''')
+    
     # Cliente default Covolo
     c.execute("INSERT OR IGNORE INTO clienti (nome, slug) VALUES ('Covolo SRL', 'covolo')")
     conn.commit()
@@ -1168,6 +1215,177 @@ def add_riga_da_ai(cid):
     conn.close()
     return jsonify({"ok": True, "id": rid})
 
+# ============================================================================
+# LAZY LOADING ABBINAMENTI PER BRAND
+# ============================================================================
+
+def load_accessories_from_excel_lazy(file_content, brand, conn, c):
+    """Carica categorie, abbinamenti, vincoli da Excel in memoria"""
+    try:
+        if ',' in file_content:
+            file_content = file_content.split(',', 1)[1]
+        
+        raw = base64.b64decode(file_content)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        
+        count_categories = 0
+        count_abbinamenti = 0
+        count_vincoli = 0
+        
+        # CARICA CATEGORIE
+        if "CATEGORIE_ACCESSORI" in wb.sheetnames:
+            ws = wb["CATEGORIE_ACCESSORI"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not any(row):
+                    continue
+                categoria_id = row[0]
+                categoria_nome = row[1]
+                descrizione = row[2] if len(row) > 2 else ""
+                icona = row[3] if len(row) > 3 else ""
+                
+                try:
+                    c.execute("""
+                        INSERT OR REPLACE INTO categories_accessori 
+                        (categoria_id, categoria_nome, descrizione, icona, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (categoria_id, categoria_nome, descrizione, icona, datetime.now().isoformat()))
+                    count_categories += 1
+                except:
+                    pass
+        
+        # CARICA ABBINAMENTI
+        if "ABBINAMENTI" in wb.sheetnames:
+            ws = wb["ABBINAMENTI"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not any(row):
+                    continue
+                
+                prodotto_padre = row[0]
+                accessorio_id = row[1]
+                accessorio_nome = row[2] if len(row) > 2 else ""
+                brand_accessorio = row[3] if len(row) > 3 else brand
+                categoria_accessorio = row[4] if len(row) > 4 else ""
+                tipo_relazione = row[5] if len(row) > 5 else "ufficiale"
+                priority = row[6] if len(row) > 6 else 99
+                
+                vincoli_campo = row[7] if len(row) > 7 else None
+                vincoli_valore = row[8] if len(row) > 8 else None
+                vincoli_severity = row[9] if len(row) > 9 else None
+                vincoli_messaggio = row[10] if len(row) > 10 else None
+                
+                note = row[11] if len(row) > 11 else ""
+                
+                try:
+                    c.execute("""
+                        INSERT OR REPLACE INTO product_accessories
+                        (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio,
+                         categoria_accessorio, tipo_relazione, priority, note, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio,
+                          categoria_accessorio, tipo_relazione, int(priority) if priority else 99,
+                          note, datetime.now().isoformat()))
+                    
+                    rel_id = c.lastrowid
+                    count_abbinamenti += 1
+                    
+                    if vincoli_campo:
+                        c.execute("""
+                            INSERT INTO product_accessories_vincoli
+                            (relazione_id, campo_vincolo, valore_vincolo, severity, messaggio, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (rel_id, vincoli_campo, vincoli_valore, vincoli_severity,
+                              vincoli_messaggio, datetime.now().isoformat()))
+                        count_vincoli += 1
+                except:
+                    pass
+        
+        # CARICA REGOLE
+        if "REGOLE_MATCHING" in wb.sheetnames:
+            ws = wb["REGOLE_MATCHING"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not any(row):
+                    continue
+                categoria_prodotto = row[0]
+                categoria_accessorio = row[1]
+                soglia = row[2] if len(row) > 2 else "media"
+                nota = row[3] if len(row) > 3 else ""
+                
+                try:
+                    c.execute("""
+                        INSERT INTO matching_rules
+                        (categoria_prodotto, categoria_accessorio, soglia_compatibilita, nota, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (categoria_prodotto, categoria_accessorio, soglia, nota,
+                          datetime.now().isoformat()))
+                except:
+                    pass
+        
+        msg = f"✅ {brand}: {count_abbinamenti} abbinamenti caricati"
+        total = count_categories + count_abbinamenti + count_vincoli
+        return True, msg, total
+        
+    except Exception as e:
+        return False, f"❌ Errore: {str(e)}", 0
+
+@app.route('/api/load-brand-accessories/<brand>', methods=['GET'])
+def load_brand_accessories(brand):
+    """Carica SOLO i file Excel del brand selezionato"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Cerca i file Excel del brand
+        c.execute("""
+            SELECT d.content, d.filename 
+            FROM documents d
+            JOIN aziende a ON d.azienda_id = a.id
+            WHERE LOWER(a.nome) LIKE ? 
+            AND (d.filename LIKE '%ABBINAMENTI%' OR d.filename LIKE '%abbinamenti%')
+            ORDER BY d.upload_date DESC
+            LIMIT 1
+        """, (f'%{brand.lower()}%',))
+        
+        row = c.fetchone()
+        
+        if not row:
+            conn.close()
+            return jsonify({
+                "ok": False, 
+                "message": f"Nessun file abbinamenti trovato per {brand}",
+                "loaded": 0
+            }), 404
+        
+        file_content, filename = row
+        
+        # Carica i dati dal file
+        success, msg, count = load_accessories_from_excel_lazy(file_content, brand, conn, c)
+        
+        conn.commit()
+        conn.close()
+        
+        if success:
+            return jsonify({
+                "ok": True,
+                "message": msg,
+                "brand": brand,
+                "filename": filename,
+                "loaded": count,
+                "status": "✅ Caricato"
+            })
+        else:
+            return jsonify({
+                "ok": False,
+                "message": msg,
+                "brand": brand
+            }), 400
+            
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "brand": brand
+        }), 500
+
 # ---------------------------------------------------------------------------
 # FRONTEND
 # ---------------------------------------------------------------------------
@@ -1343,7 +1561,8 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
         <div id="cat-results"></div>
       </div>
     </div>
-    <div style="margin: 8px 0;" id="selected"></div>
+    <div id="selected"></div>
+    <div id="brand-loading-status" style="font-size:11px; color:#10b981; margin-bottom:8px;"></div>
     <h2>Gruppi salvati</h2>
     <div style="display: flex; gap: 6px; margin-bottom: 8px;">
       <input type="text" id="group-name" placeholder="Nome gruppo..." style="flex: 1;">
@@ -1580,6 +1799,19 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       </div>
     </div>
 
+    <!-- ACCESSORI CONSIGLIATI -->
+    <div class="drawer-section" id="accessori-section" style="display:none;">
+      <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleAccessoriSection()">
+        🔗 Accessori Consigliati
+        <span id="accessori-arrow" style="float:right; color:#9ca3af;">▼</span>
+      </div>
+      <div id="accessori-panel" style="display:block;">
+        <div id="accessori-ufficiali"></div>
+        <div id="accessori-alternative"></div>
+        <div id="accessori-esclusi"></div>
+      </div>
+    </div>
+
     <!-- AGGIUNGI RIGA -->
     <div class="drawer-section">
       <div class="drawer-section-title">Aggiungi elemento</div>
@@ -1705,6 +1937,58 @@ function selectBrand(inputId, listId, valId, brand) {
   document.getElementById(valId).value = brand;
   closeAutocomplete(listId);
   if (inputId === 'riga-brand-input') aggiornaCampiExtra();
+  
+  // LAZY LOADING ABBINAMENTI E LISTINO quando seleziona il brand principale
+  if (inputId === 'brand-input') {
+    console.log('Caricando accessori e listino per:', brand);
+    const statusEl = document.getElementById('brand-loading-status');
+    if (statusEl) statusEl.textContent = '⏳ Caricamento ' + brand + '...';
+    
+    // 1. Carica abbinamenti
+    fetch('/api/load-brand-accessories/' + encodeURIComponent(brand))
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          console.log('✅ Abbinamenti:', data.message);
+        } else {
+          console.error('❌ Abbinamenti:', data.message);
+        }
+      })
+      .catch(e => console.error('Errore abbinamenti:', e));
+    
+    // 2. Carica listino
+    caricaListinoBrand(brand);
+  }
+}
+
+function caricaListinoBrand(brand) {
+  console.log('Caricando listino per:', brand);
+  
+  fetch('/api/listino/' + encodeURIComponent(brand))
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok && data.prodotti) {
+        console.log('✅ Listino:', data.prodotti.length, 'prodotti');
+        
+        window.listinoData = data.prodotti || [];
+        window.listinoBrand = brand;
+        window.listinoTipo = data.tipo || 'cliente';
+        
+        const statusEl = document.getElementById('brand-loading-status');
+        if (statusEl) {
+          statusEl.textContent = '✅ ' + brand + ': ' + data.prodotti.length + ' prodotti caricati';
+        }
+        
+        if (window.renderListino) {
+          renderListino(window.listinoData);
+        }
+      } else {
+        console.error('❌ Listino non trovato');
+      }
+    })
+    .catch(e => {
+      console.error('Errore listino:', e);
+    });
 }
 
 function closeAutocomplete(listId) {
@@ -1846,8 +2130,102 @@ function saAddUtente() {
 }
 
 // ---------------------------------------------------------------------------
-// CANTIERI
+// ACCESSORI CONSIGLIATI
 // ---------------------------------------------------------------------------
+function toggleAccessoriSection() {
+  const panel = document.getElementById('accessori-panel');
+  const arrow = document.getElementById('accessori-arrow');
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  arrow.textContent = open ? '▼' : '▲';
+}
+
+function caricaAccessoriProdotto(prodottoId, brand) {
+  if (!prodottoId) return;
+  
+  fetch('/api/abbina/' + encodeURIComponent(prodottoId))
+    .then(r => r.json())
+    .then(d => {
+      if (d.ufficiali && (d.ufficiali.length > 0 || d.alternative.length > 0 || d.esclusi.length > 0)) {
+        document.getElementById('accessori-section').style.display = 'block';
+        renderAccessoriHtml(d.ufficiali, d.alternative, d.esclusi);
+      }
+    })
+    .catch(e => console.error('Errore accessori:', e));
+}
+
+function renderAccessoriHtml(ufficiali, alternative, esclusi) {
+  let html = '';
+
+  if (ufficiali && ufficiali.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#10b981; margin-bottom:6px;">✅ Abbinamenti Ufficiali</div>';
+    ufficiali.forEach(acc => {
+      html += '<div style="background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
+        '<div style="flex:1;">' +
+        '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '</div>' +
+        '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm btn-green" style="margin-bottom:0; white-space:nowrap;">✓ Aggiungi</button>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (alternative && alternative.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#f59e0b; margin-bottom:6px;">🔹 Alternative</div>';
+    alternative.forEach(acc => {
+      html += '<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
+        '<div style="flex:1;">' +
+        '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '</div>' +
+        '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm" style="background:rgba(245,158,11,0.2); color:#f59e0b; margin-bottom:0; white-space:nowrap;">+ Aggiungi</button>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (esclusi && esclusi.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#ef4444; margin-bottom:6px;">❌ Non Compatibili</div>';
+    esclusi.forEach(acc => {
+      html += '<div style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:8px; margin-bottom:4px; opacity:0.6;">' +
+        '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '<div style="font-size:9px; color:#fca5a5; margin-top:3px;">⚠️ Non compatibile con il prodotto principale</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  document.getElementById('accessori-ufficiali').innerHTML = html;
+}
+
+function aggiungiAccessorioAlCantiere(accessorioId, nome, brand) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const descrizione = '[' + accessorioId + '] ' + nome;
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: brand, categoria: 'Accessorio', descrizione: descrizione, importo: 0 })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadRighe();
+      const msg = document.createElement('div');
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 16px;border-radius:6px;font-size:12px;z-index:9999;';
+      msg.textContent = '✓ ' + nome + ' aggiunto!';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 2000);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// CANTIERI (fine accessori)
 function loadCantieri() {
   if (!document.getElementById('mod-cantieri') || document.getElementById('mod-cantieri').style.display === 'none') return;
   fetch('/api/cantieri').then(r => r.json()).then(d => {
@@ -3146,7 +3524,7 @@ function filtraListino() {
       '<div>' + prezzoHtml + '</div>' +
       '</div>' +
       '<div class="prodotto-actions" style="margin-top:8px;">' +
-      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'abbinamenti\')" class="btn-sm" style="background:rgba(59,130,245,0.2);color:#93c5fd;flex:1;">🔗 Abbina</button>' +
+      '<button onclick="event.stopPropagation();mostraAbbinamenti(\'' + (p.codice||'') + '\')" class="btn-sm" style="background:rgba(16,185,129,0.2);color:#10b981;flex:1;">📋 Abbina</button>' +
       '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
       '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
       '</div></div>';
@@ -3198,6 +3576,9 @@ function aggiungiDaListino(idx) {
       const card = document.getElementById('pcard-' + idx);
       if (card) card.style.opacity = '0.6';
       loadRighe();
+      // Carica accessori consigliati
+      const prodottoId = p.codice || '';
+      if (prodottoId) caricaAccessoriProdotto(prodottoId, listinoBrand);
     } else {
       if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
     }
@@ -3213,6 +3594,361 @@ fetch('/api/me').then(r => r.json()).then(d => {
   }
 });
 </script>
+
+<!-- ============================================================================
+     MODAL ABBINAMENTI — HTML/CSS/JavaScript
+     ============================================================================ -->
+
+<style>
+.modal-abbinamenti {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 10000;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    box-sizing: border-box;
+}
+
+.modal-abbinamenti.show {
+    display: flex;
+}
+
+.modal-abbinamenti-content {
+    background: #0f172a;
+    border: 2px solid #3b82f6;
+    border-radius: 12px;
+    width: 100%;
+    max-width: 1000px;
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 30px;
+    color: #e0e0e0;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 25px;
+    border-bottom: 2px solid #1e40af;
+    padding-bottom: 15px;
+}
+
+.modal-header h2 {
+    margin: 0;
+    color: #60a5fa;
+    font-size: 24px;
+    font-weight: bold;
+}
+
+.modal-close {
+    background: #ef4444;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    cursor: pointer;
+    font-size: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-close:hover {
+    background: #dc2626;
+}
+
+.prodotto-principale {
+    background: rgba(59, 130, 245, 0.1);
+    border-left: 4px solid #3b82f6;
+    padding: 15px;
+    border-radius: 6px;
+    margin-bottom: 25px;
+}
+
+.accessorio-codice {
+    background: #3b82f6;
+    color: white;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 10px 12px;
+    border-radius: 4px;
+    display: inline-block;
+    margin-bottom: 10px;
+    letter-spacing: 1px;
+    word-break: break-all;
+}
+
+.accessorio-nome {
+    font-size: 15px;
+    font-weight: 600;
+    color: #e0e0e0;
+    margin: 8px 0;
+    line-height: 1.4;
+}
+
+.accessorio-brand {
+    font-size: 12px;
+    color: #94a3b8;
+    margin: 5px 0;
+}
+
+.accessorio-categoria {
+    font-size: 11px;
+    background: rgba(59, 130, 245, 0.2);
+    color: #93c5fd;
+    padding: 4px 8px;
+    border-radius: 3px;
+    display: inline-block;
+    margin: 8px 0;
+}
+
+.abbinamenti-section {
+    margin-bottom: 30px;
+}
+
+.abbinamenti-section h3 {
+    margin: 0 0 15px 0;
+    font-size: 18px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.section-ufficiali h3 {
+    color: #10b981;
+}
+
+.section-ufficiali h3::before {
+    content: "✅";
+    font-size: 20px;
+}
+
+.section-alternative h3 {
+    color: #f59e0b;
+}
+
+.section-alternative h3::before {
+    content: "🔹";
+    font-size: 20px;
+}
+
+.section-esclusi h3 {
+    color: #ef4444;
+}
+
+.section-esclusi h3::before {
+    content: "❌";
+    font-size: 20px;
+}
+
+.abbinamenti-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 15px;
+}
+
+.accessorio-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 16px;
+    transition: all 0.3s ease;
+}
+
+.accessorio-card:hover {
+    border-color: #3b82f6;
+    box-shadow: 0 0 15px rgba(59, 130, 245, 0.3);
+    transform: translateY(-2px);
+}
+
+.accessorio-card.escluso {
+    opacity: 0.6;
+    border-color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.accessorio-card.escluso .accessorio-codice {
+    background: #ef4444;
+}
+
+.accessorio-note {
+    font-size: 12px;
+    color: #cbd5e1;
+    margin: 8px 0;
+    font-style: italic;
+    line-height: 1.3;
+}
+
+.accessorio-vincolo {
+    font-size: 11px;
+    background: rgba(245, 158, 11, 0.2);
+    color: #fcd34d;
+    padding: 6px 8px;
+    border-radius: 3px;
+    margin: 8px 0;
+    border-left: 2px solid #f59e0b;
+}
+
+.accessorio-escluso-motivo {
+    font-size: 11px;
+    background: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+    padding: 6px 8px;
+    border-radius: 3px;
+    margin: 8px 0;
+    border-left: 2px solid #ef4444;
+}
+
+.accessorio-azioni {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.btn-aggiungi {
+    background: #10b981;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    flex: 1;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.btn-aggiungi:hover {
+    background: #059669;
+}
+
+.btn-aggiungi:disabled {
+    background: #6b7280;
+    cursor: not-allowed;
+}
+
+.accessorio-prezzo {
+    font-size: 13px;
+    color: #10b981;
+    font-weight: 600;
+    margin-top: 5px;
+}
+</style>
+
+<div class="modal-abbinamenti" id="modalAbbinamenti">
+    <div class="modal-abbinamenti-content">
+        <div class="modal-header">
+            <h2>Abbinamenti Prodotto</h2>
+            <button class="modal-close" onclick="chiudiModalAbbinamenti()">✕</button>
+        </div>
+        
+        <div class="prodotto-principale" id="prodottoPrincipale"></div>
+        <div class="abbinamenti-section section-ufficiali" id="sezioneUfficiali"></div>
+        <div class="abbinamenti-section section-alternative" id="sezioneAlternative"></div>
+        <div class="abbinamenti-section section-esclusi" id="sezioneEsclusi"></div>
+    </div>
+</div>
+
+<script>
+function mostraAbbinamenti(prodottoId) {
+    fetch(`/api/abbina/${prodottoId}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data.prodotto || !data.prodotto.codice) {
+                alert("Prodotto non trovato");
+                return;
+            }
+            popolaModalAbbinamenti(data);
+            document.getElementById('modalAbbinamenti').classList.add('show');
+        })
+        .catch(e => {
+            console.error("Errore:", e);
+            alert("Errore nel caricamento degli abbinamenti");
+        });
+}
+
+function chiudiModalAbbinamenti() {
+    document.getElementById('modalAbbinamenti').classList.remove('show');
+}
+
+function popolaModalAbbinamenti(data) {
+    const prod = data.prodotto;
+    const htmlProd = `
+        <div class="accessorio-codice">${prod.codice}</div>
+        <div class="accessorio-nome">${prod.nome}</div>
+        <div class="accessorio-brand">Collezione: ${prod.collezione}</div>
+        <div class="accessorio-categoria">Categoria: ${prod.categoria}</div>
+        <div class="accessorio-prezzo">💰 Cliente: €${prod.prezzo_cliente} | Riv: €${prod.prezzo_riv}</div>
+    `;
+    document.getElementById('prodottoPrincipale').innerHTML = htmlProd;
+    
+    if (data.ufficiali.length > 0) {
+        const html = `<h3>Abbinamenti Ufficiali</h3><div class="abbinamenti-grid">${data.ufficiali.map(acc => creaCardAccessorio(acc)).join('')}</div>`;
+        document.getElementById('sezioneUfficiali').innerHTML = html;
+    } else {
+        document.getElementById('sezioneUfficiali').innerHTML = '';
+    }
+    
+    if (data.alternative.length > 0) {
+        const html = `<h3>Abbinamenti Alternativi</h3><div class="abbinamenti-grid">${data.alternative.map(acc => creaCardAccessorio(acc)).join('')}</div>`;
+        document.getElementById('sezioneAlternative').innerHTML = html;
+    } else {
+        document.getElementById('sezioneAlternative').innerHTML = '';
+    }
+    
+    if (data.esclusi.length > 0) {
+        const html = `<h3>Non Compatibili</h3><div class="abbinamenti-grid">${data.esclusi.map(acc => creaCardAccessorio(acc, true)).join('')}</div>`;
+        document.getElementById('sezioneEsclusi').innerHTML = html;
+    } else {
+        document.getElementById('sezioneEsclusi').innerHTML = '';
+    }
+}
+
+function creaCardAccessorio(acc, escluso = false) {
+    const classeCard = escluso ? 'accessorio-card escluso' : 'accessorio-card';
+    const htmlVincolo = acc.vincolo_messaggio ? `<div class="accessorio-vincolo">⚠️ ${acc.vincolo_messaggio}</div>` : '';
+    const htmlMotivo = escluso ? `<div class="accessorio-escluso-motivo">❌ Non compatibile</div>` : '';
+    
+    return `
+        <div class="${classeCard}">
+            <div class="accessorio-codice">${acc.id}</div>
+            <div class="accessorio-nome">${acc.nome}</div>
+            <div class="accessorio-brand">${acc.brand}</div>
+            <div class="accessorio-categoria">${acc.categoria}</div>
+            ${acc.nota_prodotto ? `<div class="accessorio-note">${acc.nota_prodotto}</div>` : ''}
+            ${htmlVincolo}
+            ${htmlMotivo}
+            <div class="accessorio-azioni">
+                <button class="btn-aggiungi" onclick="aggiungiAccessorio('${acc.id}')" ${escluso ? 'disabled' : ''}>
+                    ${escluso ? 'Non disponibile' : '➕ Aggiungi'}
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function aggiungiAccessorio(accessorioId) {
+    console.log("Aggiunto accessorio:", accessorioId);
+    alert("Accessorio aggiunto al cantiere");
+}
+
+document.addEventListener('click', function(event) {
+    const modal = document.getElementById('modalAbbinamenti');
+    if (event.target === modal) {
+        chiudiModalAbbinamenti();
+    }
+});
+</script>
+
 </body>
 </html>''')
 
