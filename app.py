@@ -1021,7 +1021,7 @@ def get_listino(brand):
     # Cerca documenti Excel per questo brand
     c.execute("""SELECT d.content, d.filename FROM documents d
                  JOIN aziende a ON d.azienda_id = a.id
-                 WHERE a.nome = ? AND d.filename LIKE '%[EXCEL]%'
+                 WHERE a.nome = ? AND (d.filename LIKE '%.xlsx' OR d.filename LIKE '%.xls' OR d.filename LIKE '%[EXCEL]%')
                  ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
     row = c.fetchone()
     conn.close()
