@@ -5,10 +5,15 @@ ORACOLO COVOLO - SISTEMA COMPLETO V2
 + Pannello destra: Cantieri, Carrello, BI
 + Tutto il precedente invariato
 """
-import os, json, sqlite3, re, hashlib, secrets
+import os, json, sqlite3, re, hashlib, secrets, base64, io
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, session
 import httpx
+try:
+    import openpyxl
+    OPENPYXL_OK = True
+except ImportError:
+    OPENPYXL_OK = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -116,6 +121,26 @@ def init_db():
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 init_db()
+
+def dedup_brands_on_start():
+    """Unifica brand duplicati case-insensitive all'avvio"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
+    dups = c.fetchall()
+    for lower_name, ids_str, names_str in dups:
+        ids = [int(x) for x in ids_str.split(',')]
+        names = names_str.split(',')
+        canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
+        canonical_id = ids[names.index(canonical_name)]
+        for i, bid in enumerate(ids):
+            if bid != canonical_id:
+                c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
+                c.execute("DELETE FROM aziende WHERE id=?", (bid,))
+    conn.commit()
+    conn.close()
+
+dedup_brands_on_start()
 
 # ---------------------------------------------------------------------------
 # HELPERS AUTH
@@ -498,6 +523,12 @@ def add_azienda():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
+        # Controlla se esiste già (case-insensitive)
+        c.execute('SELECT id, nome FROM aziende WHERE LOWER(nome) = LOWER(?)', (nome,))
+        existing = c.fetchone()
+        if existing:
+            conn.close()
+            return jsonify({"ok": True, "nome": existing[1], "existed": True})
         c.execute('INSERT INTO aziende (nome) VALUES (?)', (nome,))
         conn.commit()
         conn.close()
@@ -505,6 +536,33 @@ def add_azienda():
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)}), 400
+
+@app.route('/api/sa/dedup-brands', methods=['POST'])
+def dedup_brands():
+    """Unifica brand duplicati case-insensitive — mantiene quello con più documenti"""
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
+    dups = c.fetchall()
+    merged = 0
+    for lower_name, ids_str, names_str in dups:
+        ids = [int(x) for x in ids_str.split(',')]
+        names = names_str.split(',')
+        # Tieni quello con il nome corretto (prima maiuscola) o il primo della BRANDS_LIST
+        canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
+        canonical_id = ids[names.index(canonical_name)]
+        for i, bid in enumerate(ids):
+            if bid != canonical_id:
+                # Sposta documenti al brand canonico
+                c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
+                c.execute("UPDATE cantiere_righe SET brand=? WHERE brand=?", (canonical_name, names[i]))
+                c.execute("DELETE FROM aziende WHERE id=?", (bid,))
+                merged += 1
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "merged": merged})
 
 @app.route('/api/set-admin-password', methods=['POST'])
 def set_admin_password():
@@ -587,18 +645,20 @@ def upload_document():
 
 @app.route('/api/list-documents', methods=['GET'])
 def list_documents():
-    brand = request.args.get('brand', '')
+    brand = request.args.get('brand', '').strip()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     if brand:
-        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility
+        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility, a.nome
                      FROM documents d JOIN aziende a ON d.azienda_id = a.id
-                     WHERE a.nome = ? ORDER BY d.upload_date DESC''', (brand,))
+                     WHERE LOWER(a.nome) = LOWER(?) ORDER BY d.upload_date DESC''', (brand,))
     else:
-        c.execute('SELECT id, filename, upload_date, visibility FROM documents ORDER BY upload_date DESC LIMIT 20')
+        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility, a.nome
+                     FROM documents d JOIN aziende a ON d.azienda_id = a.id
+                     ORDER BY a.nome, d.upload_date DESC LIMIT 100''')
     docs = c.fetchall()
     conn.close()
-    return jsonify({"documents": [{"id": d[0], "filename": d[1], "date": d[2], "visibility": d[3]} for d in docs]})
+    return jsonify({"documents": [{"id": d[0], "filename": d[1], "date": d[2], "visibility": d[3], "brand": d[4]} for d in docs]})
 
 @app.route('/api/delete-document/<int:doc_id>', methods=['DELETE'])
 def delete_document(doc_id):
@@ -737,10 +797,63 @@ def ask():
     access_code = data.get('access_code')
     if not question or not brands:
         return jsonify({"error": "Domanda e brand richiesti"}), 400
+
+    # 1. Cerca prima nel listino Excel dei brand selezionati
+    listino_context = ""
+    for brand in brands:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT d.content FROM documents d
+                     JOIN aziende a ON d.azienda_id = a.id
+                     WHERE LOWER(a.nome) = LOWER(?) AND d.filename LIKE '%[EXCEL]%'
+                     ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            try:
+                import base64 as b64mod, io as iomod
+                content = row[0]
+                if ',' in content: content = content.split(',',1)[1]
+                raw = b64mod.b64decode(content)
+                import openpyxl as oxl
+                wb = oxl.load_workbook(iomod.BytesIO(raw), data_only=True)
+                ws = wb.active
+                # Leggi tutte le righe prodotto
+                headers = None
+                prodotti_trovati = []
+                q_lower = question.lower()
+                for row_data in ws.iter_rows(values_only=True):
+                    row_str = [str(c).lower().strip() if c else '' for c in row_data]
+                    if headers is None:
+                        if 'codice' in ' '.join(row_str): headers = row_str
+                        continue
+                    if not any(row_data): continue
+                    riga_str = ' '.join([str(v).lower() if v else '' for v in row_data])
+                    # Match fuzzy: cerca parole della domanda nella riga
+                    parole = [p for p in q_lower.split() if len(p) > 3]
+                    if parole and any(p in riga_str for p in parole):
+                        vals = [str(v).strip() if v else '—' for v in row_data]
+                        if headers:
+                            prodotti_trovati.append(dict(zip(headers, vals)))
+                        else:
+                            prodotti_trovati.append({'riga': ' | '.join(vals[:6])})
+                if prodotti_trovati:
+                    listino_context += f"\n[LISTINO {brand.upper()} — FONTE EXCEL]\n"
+                    for p in prodotti_trovati[:5]:
+                        if 'codice' in p:
+                            listino_context += f"Codice: {p.get('codice','—')} | Nome: {p.get('nome prodotto', p.get('nome','—'))} | Prezzo cliente: €{p.get('prezzo cliente (€)', p.get('prezzo','—'))} | Prezzo riv.: €{p.get('prezzo rivenditore (€)', p.get('prezzo_rivenditore','—'))} | Disponibilità: {p.get('disponibilità', p.get('disponibilita','—'))} | Desc: {p.get('descrizione breve', p.get('descrizione','—'))}\n"
+                        else:
+                            listino_context += p.get('riga','') + '\n'
+            except Exception as e:
+                pass
+
+    # 2. Cerca nei documenti caricati
     doc_context = ""
     docs = _search_docs_internal(brands, question, access_code)
     if docs:
         doc_context = "\n".join(["[DOC: " + d[0] + "] " + d[1][:200] for d in docs])
+
+    # 3. Web solo come fallback
     web_context = ""
     images = []
     if use_web:
@@ -748,14 +861,312 @@ def ask():
         if web_result:
             web_context = "[WEB] " + web_result
         images = search_images(question, brands)
-    prompt = "Sei un esperto di arredo bagno per i brand: " + ", ".join(brands) + "\n\nDomanda: " + question
+
+    # Costruisci prompt con priorità: listino Excel > doc > web
+    prompt = "Sei un esperto commerciale di arredo bagno per i brand: " + ", ".join(brands) + "\n\nDomanda: " + question
+
+    if listino_context:
+        prompt += "\n\n═══ DATI DAL LISTINO UFFICIALE (fonte EXCEL — massima priorità) ═══\n" + listino_context
+        prompt += "IMPORTANTE: usa SEMPRE i prezzi e codici dal listino Excel sopra. Non inventare prezzi."
     if doc_context:
-        prompt += "\n\nDocumenti disponibili: " + doc_context
-    if web_context:
-        prompt += "\n\n" + web_context
-    prompt += "\n\nRispondi come esperto del settore, considerando i brand specifici. La risposta deve essere completa, coerente e non superare i 1500 caratteri."
+        prompt += "\n\nALTRI DOCUMENTI ARCHIVIO:\n" + doc_context
+    if web_context and not listino_context:
+        prompt += "\n\n[FONTE WEB — usa solo se non hai dati da listino]\n" + web_context
+
+    prompt += "\n\nREGOLE:\n- Prezzi da listino Excel = VERDE (affidabili)\n- Se il prezzo viene dal web, segnalalo come 'prezzo indicativo'\n- NON rimandare mai a siti esterni\n- Se trovi il prodotto nel listino, mostra: codice, nome, prezzo cliente, disponibilità\n- Risposta max 1200 caratteri, professionale"
+
     answer = deepseek_ask(prompt)
-    return jsonify({"answer": answer, "images": images})
+
+    # Indica se i dati vengono dal listino o dal web
+    fonte = "excel" if listino_context else ("doc" if doc_context else "web")
+    return jsonify({"answer": answer, "images": images, "fonte": fonte})
+
+@app.route('/api/cerca-prodotto', methods=['POST'])
+def cerca_prodotto():
+    """Ricerca fuzzy nel listino Excel — restituisce prodotti matching con fonte"""
+    data = request.get_json()
+    query = data.get('query', '').lower().strip()
+    brand = data.get('brand', '')
+    if not query or not brand:
+        return jsonify({"prodotti": [], "fonte": None})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT d.content, d.filename FROM documents d
+                 JOIN aziende a ON d.azienda_id = a.id
+                 WHERE LOWER(a.nome) = LOWER(?) AND d.filename LIKE '%[EXCEL]%'
+                 ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"prodotti": [], "fonte": None, "messaggio": "Nessun listino Excel caricato per " + brand})
+    try:
+        import base64 as b64m, io as iom
+        content = row[0]
+        if ',' in content: content = content.split(',',1)[1]
+        raw = b64m.b64decode(content)
+        import openpyxl as oxl2
+        wb = oxl2.load_workbook(iom.BytesIO(raw), data_only=True)
+        ws = wb.active
+        SINONIMI_HDR = {
+            'codice': ['codice','cod','code','sku'],
+            'nome': ['nome prodotto','nome','name','prodotto'],
+            'categoria': ['categoria','category'],
+            'collezione': ['collezione','collection','linea'],
+            'prezzo': ['prezzo cliente (€)','prezzo cliente','prezzo (€)','prezzo'],
+            'prezzo_rivenditore': ['prezzo rivenditore (€)','prezzo rivenditore','rivenditore'],
+            'disponibilita': ['disponibilità','disponibilita'],
+            'descrizione': ['descrizione breve','descrizione'],
+            'finiture': ['colori / finiture','finiture','colori'],
+        }
+        header_row = None
+        col_map = {}
+        prodotti = []
+        parole = [p for p in query.split() if len(p) > 2]
+        for row_data in ws.iter_rows(values_only=True):
+            if header_row is None:
+                row_str = [str(v).lower().strip() if v else '' for v in row_data]
+                found = {}
+                for campo, syns in SINONIMI_HDR.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s == cell or s in cell for s in syns):
+                            found[campo] = j; break
+                if len(found) >= 2:
+                    header_row = True
+                    col_map = found
+                continue
+            if not any(row_data): continue
+            def gv(campo, rd=row_data):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(rd): return ''
+                v = rd[idx]; return str(v).strip() if v is not None else ''
+            codice = gv('codice')
+            if not codice or codice.lower() == 'codice': continue
+            riga_str = ' '.join([str(v).lower() if v else '' for v in row_data])
+            score = sum(1 for p in parole if p in riga_str)
+            if score == 0: continue
+            def pp(raw):
+                if not raw: return None
+                try: return float(re.sub(r'[^\d.,]','',raw).replace(',','.'))
+                except: return None
+            prodotti.append({
+                'score': score,
+                'codice': codice,
+                'nome': gv('nome'),
+                'categoria': gv('categoria'),
+                'collezione': gv('collezione'),
+                'prezzo': pp(gv('prezzo')),
+                'prezzo_rivenditore': pp(gv('prezzo_rivenditore')),
+                'disponibilita': gv('disponibilita'),
+                'descrizione': gv('descrizione'),
+                'finiture': gv('finiture'),
+                'fonte': 'excel'
+            })
+        prodotti.sort(key=lambda x: -x['score'])
+        return jsonify({"prodotti": prodotti[:10], "fonte": row[1]})
+    except Exception as e:
+        return jsonify({"prodotti": [], "fonte": None, "errore": str(e)})
+
+@app.route('/api/listino/<brand>', methods=['GET'])
+def get_listino(brand):
+    """Restituisce i prodotti dal listino Excel caricato per un brand"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Cerca documenti Excel per questo brand
+    c.execute("""SELECT d.content, d.filename FROM documents d
+                 JOIN aziende a ON d.azienda_id = a.id
+                 WHERE a.nome = ? AND d.filename LIKE '%[EXCEL]%'
+                 ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": False, "prodotti": [], "fonte": None})
+    content_b64, filename = row
+    try:
+        import base64, io
+        if ',' in content_b64:
+            content_b64 = content_b64.split(',', 1)[1]
+        raw = base64.b64decode(content_b64)
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        ws = wb.active
+        # Trova header row
+        header_row = None
+        col_map = {}
+        SINONIMI = {
+            'codice': ['codice','cod','code','sku','art'],
+            'nome': ['nome prodotto','nome','name','prodotto','denominazione'],
+            'categoria': ['categoria','category','tipo'],
+            'collezione': ['collezione','collection','linea'],
+            'prezzo': ['prezzo cliente (€)','prezzo cliente','prezzo (€)','prezzo','price','costo','importo','listino'],
+            'prezzo_rivenditore': ['prezzo rivenditore (€)','prezzo rivenditore','rivenditore','prezzo riv','costo acquisto'],
+            'prezzo_scontato': ['prezzo scontato (€)','prezzo scontato','scontato','offerta'],
+            'disponibilita': ['disponibilità','disponibilita','stock','disponibile'],
+            'descrizione': ['descrizione breve','descrizione','description','dettaglio'],
+            'finiture': ['colori / finiture','finiture','colori','finitura'],
+        }
+        prodotti = []
+        header_row = None
+        col_map = {}
+        for i, row_data in enumerate(ws.iter_rows(values_only=True)):
+            if header_row is None:
+                row_str = [str(c).lower().strip() if c else '' for c in row_data]
+                found = {}
+                for campo, syns in SINONIMI.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s == cell or s in cell for s in syns):
+                            found[campo] = j
+                            break
+                if len(found) >= 2:
+                    header_row = i
+                    col_map = found
+                continue
+            if not any(row_data): continue
+            def getv(campo, rd=row_data):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(rd): return ''
+                v = rd[idx]
+                return str(v).strip() if v is not None else ''
+            codice = getv('codice')
+            if not codice or codice.lower() == 'codice': continue
+            def parse_price(raw):
+                if not raw: return None
+                try: return float(re.sub(r'[^\d.,]','',raw).replace(',','.'))
+                except: return None
+            prodotti.append({
+                'codice': codice,
+                'nome': getv('nome'),
+                'categoria': getv('categoria'),
+                'collezione': getv('collezione'),
+                'prezzo': parse_price(getv('prezzo')),
+                'prezzo_rivenditore': parse_price(getv('prezzo_rivenditore')),
+                'prezzo_scontato': parse_price(getv('prezzo_scontato')),
+                'disponibilita': getv('disponibilita'),
+                'descrizione': getv('descrizione'),
+                'finiture': getv('finiture'),
+                'fonte': 'excel'
+            })
+        return jsonify({"ok": True, "prodotti": prodotti, "fonte": filename})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "prodotti": []})
+
+# ---------------------------------------------------------------------------
+# API EXCEL INTELLIGENTE
+# ---------------------------------------------------------------------------
+
+@app.route('/api/parse-excel', methods=['POST'])
+def parse_excel():
+    """Legge un file Excel base64 e restituisce righe con codice/descrizione/prezzo"""
+    if not OPENPYXL_OK:
+        return jsonify({"error": "openpyxl non installato sul server"}), 500
+    data = request.get_json()
+    b64 = data.get('content', '')
+    # Rimuovi eventuale data-URI prefix
+    if ',' in b64:
+        b64 = b64.split(',', 1)[1]
+    try:
+        raw = base64.b64decode(b64)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        ws = wb.active
+        rows = []
+        header_row = None
+        col_map = {}  # nome_campo -> indice colonna (0-based)
+        SINONIMI = {
+            'codice': ['codice','cod','code','sku','art','articolo','ref'],
+            'descrizione': ['descrizione','desc','nome','prodotto','name','denominazione'],
+            'prezzo': ['prezzo','price','costo','cost','importo','€','euro','listino']
+        }
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if header_row is None:
+                # Cerca riga header
+                row_str = [str(c).lower().strip() if c else '' for c in row]
+                found = {}
+                for campo, syns in SINONIMI.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s in cell for s in syns):
+                            found[campo] = j
+                            break
+                if len(found) >= 2:
+                    header_row = i
+                    col_map = found
+                continue
+            if not any(row):
+                continue
+            def get(campo):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(row): return ''
+                v = row[idx]
+                return str(v).strip() if v is not None else ''
+            codice = get('codice')
+            descrizione = get('descrizione')
+            prezzo_raw = get('prezzo')
+            if not codice and not descrizione:
+                continue
+            # Pulisci prezzo
+            prezzo = None
+            if prezzo_raw:
+                try:
+                    prezzo = float(re.sub(r'[^\d.,]', '', prezzo_raw).replace(',', '.'))
+                except:
+                    pass
+            rows.append({'codice': codice, 'descrizione': descrizione, 'prezzo': prezzo, 'prezzo_src': 'excel' if prezzo is not None else None})
+            if len(rows) >= 200:
+                break
+        return jsonify({"ok": True, "righe": rows, "totale": len(rows)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/arricchisci-prodotto', methods=['POST'])
+def arricchisci_prodotto():
+    """Prende codice+descrizione+prezzo e genera descrizione commerciale sintetica via DeepSeek"""
+    data = request.get_json()
+    codice = data.get('codice', '')
+    descrizione = data.get('descrizione', '')
+    prezzo = data.get('prezzo')
+    brand = data.get('brand', '')
+    prezzo_str = f"€{prezzo}" if prezzo else "non specificato"
+
+    prompt = f"""Sei un esperto commerciale di arredo bagno e pavimentazioni di alto livello.
+
+Devi creare una descrizione commerciale SINTETICA (max 3 righe, circa 150 caratteri) di questo prodotto, da inserire in un'offerta/proposta per un cliente finale.
+
+Brand: {brand if brand else 'non specificato'}
+Codice: {codice if codice else 'non specificato'}
+Descrizione originale: {descrizione}
+Prezzo: {prezzo_str}
+
+La descrizione deve:
+- Essere convincente e professionale
+- Evidenziare il valore e la qualità
+- NON inventare caratteristiche tecniche specifiche non note
+- Essere massimo 150 caratteri
+- Non includere il prezzo nel testo
+
+Rispondi SOLO con la descrizione commerciale, nient'altro."""
+
+    risposta = deepseek_ask(prompt)
+    return jsonify({"ok": True, "descrizione_ai": risposta.strip()})
+
+@app.route('/api/cantieri/<int:cid>/righe-da-ai', methods=['POST'])
+def add_riga_da_ai(cid):
+    """Aggiunge una riga al cantiere proveniente dall'arricchimento AI/Excel"""
+    u = require_login(['superadmin', 'admin', 'commerciale'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    codice = data.get('codice', '')
+    descrizione = data.get('descrizione', '')
+    if codice:
+        descrizione = f"[{codice}] {descrizione}" if descrizione else codice
+    c.execute("INSERT INTO cantiere_righe (cantiere_id, brand, categoria, descrizione, note, importo) VALUES (?,?,?,?,?,?)",
+              (cid, data.get('brand',''), data.get('categoria',''), descrizione,
+               data.get('note',''), data.get('importo', 0) or 0))
+    rid = c.lastrowid
+    c.execute("UPDATE cantieri SET data_aggiornamento=? WHERE id=?", (datetime.now().isoformat(), cid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "id": rid})
 
 # ---------------------------------------------------------------------------
 # FRONTEND
@@ -846,6 +1257,48 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
 .form-row > * { flex: 1; }
 .drawer-footer { border-top: 1px solid rgba(59,130,245,0.3); padding: 12px 18px; display: flex; gap: 8px; flex-shrink: 0; background: rgba(15,23,46,0.95); }
+/* LISTINO DASHBOARD */
+.listino-panel { position: fixed; top: 0; left: 320px; right: 0; bottom: 0; background: rgba(10,15,35,0.97); z-index: 500; display: none; flex-direction: column; }
+.listino-panel.open { display: flex; }
+.listino-header { background: rgba(59,130,245,0.15); border-bottom: 1px solid rgba(59,130,245,0.3); padding: 12px 18px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.listino-brand-tag { background: rgba(59,130,245,0.3); border: 1px solid rgba(59,130,245,0.5); color: #93c5fd; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+.listino-search { flex: 1; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; padding: 8px 12px; font-size: 12px; }
+.listino-body { flex: 1; overflow-y: auto; padding: 12px 18px; }
+.filtri-bar { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.filtro-btn { padding: 4px 10px; font-size: 10px; border-radius: 20px; border: 1px solid rgba(59,130,245,0.3); background: transparent; color: #9ca3af; cursor: pointer; margin-bottom: 0; }
+.filtro-btn.active { background: rgba(59,130,245,0.4); color: white; border-color: #3b82f6; }
+.domande-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.domanda-chip { padding: 5px 10px; font-size: 10px; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; border-radius: 20px; cursor: pointer; margin-bottom: 0; }
+.domanda-chip:hover { background: rgba(16,185,129,0.3); }
+.prodotti-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.prodotto-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 8px; padding: 12px; cursor: pointer; transition: border-color 0.2s; }
+.prodotto-card:hover { border-color: rgba(59,130,245,0.6); }
+.prodotto-card.su-ordine { border-left: 3px solid #f59e0b; }
+.prodotto-card.disponibile { border-left: 3px solid #10b981; }
+.prodotto-codice { font-size: 9px; color: #6b7280; font-family: monospace; margin-bottom: 3px; }
+.prodotto-nome { font-size: 12px; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; }
+.prodotto-cat { font-size: 10px; color: #9ca3af; margin-bottom: 6px; }
+.prodotto-prezzo-excel { color: #10b981; font-weight: 700; font-size: 13px; }
+.prodotto-prezzo-web { color: #ef4444; font-weight: 700; font-size: 13px; }
+.prodotto-prezzo-sc { color: #f59e0b; font-size: 11px; text-decoration: line-through; margin-left: 4px; }
+.prodotto-disp { font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 10px; }
+.disp-ok { background: rgba(16,185,129,0.2); color: #10b981; }
+.disp-ord { background: rgba(245,158,11,0.2); color: #f59e0b; }
+.prodotto-actions { display: flex; gap: 4px; margin-top: 8px; }
+.prodotto-actions button { flex: 1; padding: 4px; font-size: 9px; margin-bottom: 0; }
+.doc-row { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; margin-bottom:4px; background:rgba(30,41,59,0.7); border:1px solid rgba(59,130,245,0.15); font-size:11px; }
+.doc-brand-tag { background:rgba(59,130,245,0.2); color:#93c5fd; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; white-space:nowrap; }
+.doc-tipo-excel { background:rgba(16,185,129,0.2); color:#10b981; padding:2px 6px; border-radius:10px; font-size:9px; font-weight:600; }
+.doc-tipo-doc { background:rgba(139,92,246,0.2); color:#a78bfa; padding:2px 6px; border-radius:10px; font-size:9px; font-weight:600; }
+/* EXCEL PANEL */
+.excel-row { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.15); border-radius: 6px; padding: 8px 10px; margin: 4px 0; font-size: 11px; }
+.excel-row-header { display: flex; align-items: center; gap: 8px; }
+.excel-codice { color: #9ca3af; font-size: 10px; font-family: monospace; }
+.excel-desc { flex: 1; color: #e0e0e0; font-size: 11px; }
+.prezzo-excel { color: #10b981; font-weight: 700; font-size: 12px; }
+.prezzo-web { color: #ef4444; font-weight: 700; font-size: 12px; }
+.excel-ai-desc { color: #93c5fd; font-size: 11px; margin-top: 4px; padding: 4px 6px; background: rgba(59,130,245,0.08); border-radius: 4px; border-left: 2px solid #3b82f6; }
+.excel-actions { display: flex; gap: 4px; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -874,8 +1327,21 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     <h2>Seleziona brand</h2>
     <button onclick="toggleDropdown()" style="width: 100%;">Seleziona Brand</button>
     <div id="dropdown" class="dropdown">
-      <input type="text" id="search" placeholder="Ricerca brand..." onkeyup="filterBrands()" style="width: 100%; margin-bottom: 6px;">
-      <div id="brands-list"></div>
+      <!-- TAB BAR -->
+      <div style="display:flex; gap:4px; margin-bottom:8px;">
+        <button id="tab-brand" onclick="switchTab('brand')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:#3b82f6;">Per nome</button>
+        <button id="tab-cat" onclick="switchTab('cat')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:rgba(59,130,245,0.3);">Per categoria</button>
+      </div>
+      <!-- TAB BRAND -->
+      <div id="tab-content-brand">
+        <input type="text" id="search" placeholder="Ricerca brand..." onkeyup="filterBrands()" style="width: 100%; margin-bottom: 6px;">
+        <div id="brands-list"></div>
+      </div>
+      <!-- TAB CATEGORIA -->
+      <div id="tab-content-cat" style="display:none;">
+        <input type="text" id="search-cat" placeholder="Es: rubinetteria, piastrelle, doccia..." onkeyup="filterPerCategoria()" style="width: 100%; margin-bottom: 6px;">
+        <div id="cat-results"></div>
+      </div>
     </div>
     <div style="margin: 8px 0;" id="selected"></div>
     <h2>Gruppi salvati</h2>
@@ -917,7 +1383,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       Upload Excel <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
     </label>
     <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
-    <button onclick="showDocuments()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
+    <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
   </div>
 
   <!-- CENTRO -->
@@ -927,11 +1393,70 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       <button class="btn-green" onclick="generateOfferta()">OFFERTA</button>
       <button class="btn-green" onclick="generateAnalisi()">ANALISI</button>
       <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
+      <button style="background:#8b5cf6;" onclick="apriListino()">📋 LISTINO</button>
     </div>
     <div class="chat-area" id="chat"></div>
     <div class="input-area">
-      <input type="text" id="question" placeholder="Domanda..." onkeypress="if(event.key==='Enter') ask()" style="flex: 1;">
+      <input type="text" id="question" placeholder="Domanda libera o cerca prodotto..." onkeypress="if(event.key==='Enter') ask()" oninput="cercaRapidaListino(this.value)" style="flex: 1;">
       <button onclick="ask()" style="width: 100px;">Invia</button>
+    </div>
+    <!-- RISULTATI RICERCA RAPIDA LISTINO -->
+    <div id="quick-search-results" style="display:none; background:rgba(15,23,46,0.98); border:1px solid rgba(59,130,245,0.3); border-radius:6px; margin-top:4px; max-height:280px; overflow-y:auto; z-index:100;">
+    </div>
+  </div>
+
+  <!-- PANNELLO LISTINO -->
+  <div class="listino-panel" id="listino-panel">
+    <div class="listino-header">
+      <span id="listino-brand-tag" class="listino-brand-tag">—</span>
+      <input type="text" id="listino-search" class="listino-search" placeholder="Cerca prodotto per nome, codice, collezione..." oninput="filtraListino()">
+      <!-- SELETTORE LISTINO -->
+      <div style="display:flex;gap:4px;flex-shrink:0;">
+        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;">👤 Cliente</button>
+        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.3);border-radius:4px;color:#f59e0b;">🏪 Rivenditore</button>
+      </div>
+      <button onclick="chiudiListino()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+    </div>
+
+    <!-- FILTRI LINEA + CATEGORIA + RICERCA -->
+    <div style="padding:8px 18px; background:rgba(15,23,46,0.8); border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0;">
+      <div id="filtri-linea" class="filtri-bar" style="margin-bottom:6px;"></div>
+      <div id="filtri-cat" class="filtri-bar" style="margin-bottom:6px;"></div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="text" id="listino-search" class="listino-search" style="flex:1;" placeholder="Cerca nome, codice..." oninput="filtraListino()">
+        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;white-space:nowrap;">👤 Cliente</button>
+        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.2);border-radius:4px;color:#f59e0b;white-space:nowrap;">🏪 Riv.</button>
+      </div>
+    </div>
+
+    <!-- DOMANDE RAPIDE AI -->
+    <div style="padding:6px 18px; border-bottom:1px solid rgba(59,130,245,0.1); flex-shrink:0;">
+      <div class="domande-bar" id="domande-bar"></div>
+    </div>
+
+    <!-- GRIGLIA PRODOTTI -->
+    <div class="listino-body">
+      <div id="listino-count" style="font-size:10px; color:#6b7280; margin-bottom:8px;"></div>
+      <div class="prodotti-grid" id="prodotti-grid"></div>
+    </div>
+  </div>
+
+  <!-- PANNELLO GESTIONE DOCUMENTI -->
+  <div id="gestisci-doc-panel" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:2000; align-items:center; justify-content:center;">
+    <div style="background:#0f172e; border:1px solid rgba(59,130,245,0.4); border-radius:12px; width:700px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column;">
+      <!-- Header -->
+      <div style="padding:16px 20px; border-bottom:1px solid rgba(59,130,245,0.2); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+        <div style="font-size:14px; font-weight:700; color:#60a5fa;">📁 Gestione Documenti</div>
+        <button onclick="chiudiGestisciDoc()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+      </div>
+      <!-- Filtro brand -->
+      <div style="padding:12px 20px; border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0; display:flex; gap:8px;">
+        <input type="text" id="filtro-doc-brand" placeholder="Filtra per brand (lascia vuoto per tutti)..." style="flex:1; font-size:11px;" oninput="filtraDocumenti()">
+        <button onclick="filtraDocumenti()" style="margin-bottom:0; padding:6px 12px; font-size:11px;">🔍 Cerca</button>
+        <button onclick="filtraDocumenti(true)" class="btn-gray" style="margin-bottom:0; padding:6px 12px; font-size:11px;">Tutti</button>
+      </div>
+      <!-- Lista documenti -->
+      <div id="doc-list-panel" style="flex:1; overflow-y:auto; padding:12px 20px;"></div>
     </div>
   </div>
 
@@ -966,6 +1491,11 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
               <option value="">-- Cliente --</option>
             </select>
             <button onclick="saAddUtente()" class="btn-green" style="width:100%;">Crea utente</button>
+          </div>
+          <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
+            <button onclick="dedupBrands()" class="btn-red" style="width:100%; font-size:10px;">🧹 Unifica brand duplicati</button>
+            <div id="dedup-result" style="font-size:10px; color:#10b981; margin-top:4px;"></div>
+          </div>
           </div>
         </div>
       </div>
@@ -1104,6 +1634,37 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       <div class="form-row">
         <input type="number" id="riga-importo" placeholder="Importo €" style="flex:1;">
         <button onclick="addRiga()" class="btn-green" style="flex:1; margin-bottom:0;">+ Aggiungi</button>
+      </div>
+    </div>
+    <!-- AGGIUNGI MANUALE / VOCE LIBERA -->
+    <div class="drawer-section">
+      <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleExcelPanel()">
+        ⚡ Importa da Excel / Voce libera
+        <span id="excel-panel-arrow" style="float:right; color:#9ca3af;">▼</span>
+      </div>
+      <div id="excel-panel" style="display:none;">
+        <!-- Upload Excel -->
+        <div style="margin-bottom:8px;">
+          <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:7px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
+            📊 Carica Excel prodotti
+            <input type="file" id="excel-listino" accept=".xlsx,.xls" style="display:none" onchange="caricaExcelListino(this)">
+          </label>
+          <div id="excel-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px;"></div>
+        </div>
+
+        <!-- Lista righe Excel -->
+        <div id="excel-righe-list" style="max-height:340px; overflow-y:auto;"></div>
+
+        <!-- Separatore -->
+        <div style="border-top:1px solid rgba(59,130,245,0.15); margin: 10px 0 8px 0;"></div>
+
+        <!-- Voce manuale libera -->
+        <div style="font-size:10px; color:#9ca3af; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Voce manuale (trasporto, manodopera, ecc.)</div>
+        <input type="text" id="voce-desc" placeholder="Descrizione voce..." style="width:100%; margin-bottom:6px;">
+        <div class="form-row">
+          <input type="number" id="voce-importo" placeholder="Importo €" style="flex:1;">
+          <button onclick="addVoceManuale()" class="btn-purple" style="flex:1; margin-bottom:0; font-size:11px;">+ Aggiungi</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1258,6 +1819,18 @@ function toggleModulo(cid, modulo, attivo) {
     .then(r => r.json()).then(d => { if (d.ok) loadSAModuli(); });
 }
 
+function dedupBrands() {
+  if (!confirm('Unificare tutti i brand duplicati (es. Gessi + GESSI → Gessi)? I documenti verranno spostati al brand corretto.')) return;
+  fetch('/api/sa/dedup-brands', { method:'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        document.getElementById('dedup-result').textContent = '✓ ' + d.merged + ' duplicati rimossi. Ricarica la pagina.';
+        setTimeout(() => location.reload(), 2000);
+      }
+    });
+}
+
 function saAddUtente() {
   const nome = document.getElementById('sa-u-nome').value.trim();
   const username = document.getElementById('sa-u-username').value.trim();
@@ -1304,7 +1877,51 @@ function openCantiere(id, nome, stato) {
   document.getElementById('drawer-nome').textContent = nome;
   document.getElementById('cantiere-stato').value = stato;
   document.getElementById('cantiere-drawer').classList.add('open');
+  precompilaBrandDrawer();
   loadRighe();
+}
+
+function precompilaBrandDrawer() {
+  if (!selected || selected.length === 0) return;
+  const inp = document.getElementById('riga-brand-input');
+  const val = document.getElementById('riga-brand-val');
+  if (selected.length === 1) {
+    if (inp) inp.value = selected[0];
+    if (val) val.value = selected[0];
+    aggiornaCampiExtra();
+  } else {
+    // Più brand: mostra quick-select buttons sopra il campo
+    let container = document.getElementById('brand-quick-select');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'brand-quick-select';
+      container.style.cssText = 'display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px;';
+      const brandRow = document.querySelector('.form-row');
+      if (brandRow) brandRow.parentNode.insertBefore(container, brandRow);
+    }
+    container.innerHTML = '<div style="font-size:10px;color:#9ca3af;width:100%;margin-bottom:2px;">Seleziona brand per questa riga:</div>' +
+      selected.map(b =>
+        '<button type="button" onclick="setBrandRiga(\'' + b.replace(/'/g,"\\'") + '\')" ' +
+        'style="padding:3px 8px;font-size:10px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);color:#93c5fd;border-radius:4px;cursor:pointer;margin-bottom:0;">' + b + '</button>'
+      ).join('');
+    // Pre-compila col primo
+    if (inp) inp.value = selected[0];
+    if (val) val.value = selected[0];
+    aggiornaCampiExtra();
+  }
+}
+
+function setBrandRiga(brand) {
+  const inp = document.getElementById('riga-brand-input');
+  const val = document.getElementById('riga-brand-val');
+  if (inp) inp.value = brand;
+  if (val) val.value = brand;
+  // Evidenzia bottone attivo
+  document.querySelectorAll('#brand-quick-select button').forEach(b => {
+    b.style.background = b.textContent === brand ? 'rgba(59,130,245,0.6)' : 'rgba(59,130,245,0.2)';
+    b.style.color = b.textContent === brand ? 'white' : '#93c5fd';
+  });
+  aggiornaCampiExtra();
 }
 
 function closeCantiere() {
@@ -1334,16 +1951,18 @@ function loadRighe() {
     righe.forEach(r => { totale += (r.importo || 0); });
     document.getElementById('righe-list').innerHTML = righe.length === 0
       ? '<div style="color:#6b7280; font-size:11px; text-align:center; padding:12px 0;">Nessun elemento aggiunto</div>'
-      : righe.map(r =>
-          '<div class="riga-card">' +
+      : righe.map(r => {
+          const desc = (r.descrizione || '').replace(/^Da Oracolo\s*[—-]\s*/i, '');
+          const cat = (r.categoria && r.categoria !== 'Da Oracolo') ? r.categoria : '';
+          return '<div class="riga-card">' +
           '<div class="riga-card-info">' +
           '<div class="riga-card-brand">' + (r.brand||'—') + '</div>' +
-          '<div class="riga-card-cat">' + (r.categoria||'') + (r.descrizione ? ' — ' + r.descrizione : '') + '</div>' +
+          '<div class="riga-card-cat">' + (cat ? cat + (desc ? ' — ' : '') : '') + desc + '</div>' +
           '</div>' +
           '<div class="riga-card-importo">' + (r.importo ? '€' + r.importo.toFixed(0) : '—') + '</div>' +
           '<button onclick="deleteRiga(' + r.id + ')" class="btn-red btn-sm" style="margin-bottom:0; padding:3px 7px;">✕</button>' +
-          '</div>'
-        ).join('');
+          '</div>';
+        }).join('');
     const totBar = document.getElementById('totale-bar');
     if (righe.length > 0) {
       totBar.style.display = 'flex';
@@ -1449,11 +2068,23 @@ function generaOffertaCantiere() {
     const righe = d.righe || [];
     if (righe.length === 0) { alert('Aggiungi prima delle righe al cantiere'); return; }
     const nome = document.getElementById('drawer-nome').textContent;
-    const riepilogo = righe.map(r => '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + (r.importo ? ' | €' + r.importo : '')).join('\n');
+    let totale = 0;
+    const riepilogo = righe.map(r => {
+      totale += (r.importo || 0);
+      const prezzo = r.importo ? ' | Prezzo: €' + r.importo.toFixed(2) : ' | Prezzo: da definire';
+      return '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + prezzo;
+    }).join('\n');
     const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
     if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
-    const domanda = 'Genera una proposta commerciale completa da presentare al cliente per il cantiere "' + nome + '" con i seguenti elementi:\n' + riepilogo + '\nIl documento deve essere professionale, orientato al cliente finale e convincente.';
-    // Chiudi drawer e mostra nella chat
+    const domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
+      'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
+      'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
+      'La proposta deve:\n' +
+      '1. Avere un testo introduttivo professionale e convincente\n' +
+      '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
+      '3. Mostrare il totale finale in modo chiaro\n' +
+      '4. Chiudersi con una call to action per il cliente\n' +
+      'Usa un tono elegante, orientato al valore e alla qualità.';
     closeCantiere();
     askDirect(domanda, brands);
   });
@@ -1476,7 +2107,7 @@ function askDirect(domanda, brands) {
       const query = encodeURIComponent(brands.join(' '));
       let html = '<div class="message oracolo-msg" id="' + msgId + '">';
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
-      html += '<strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
         html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
@@ -1543,6 +2174,144 @@ function biCancella() {
 // ---------------------------------------------------------------------------
 // BRANDS / DROPDOWN
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// MAPPA BRAND → CATEGORIE + FASCIA DI MERCATO
+// ---------------------------------------------------------------------------
+const BRAND_MAP = {
+  // LUXURY
+  'Antoniolupi':    { categorie: ['rubinetteria','lavabi','vasche','accessori bagno','specchi'], fascia: 'luxury' },
+  'Gessi':          { categorie: ['rubinetteria','doccia','vasche','accessori bagno','wellness'], fascia: 'luxury' },
+  'Duscholux':      { categorie: ['box doccia','piatti doccia'], fascia: 'luxury' },
+  'Kaldewei':       { categorie: ['vasche','piatti doccia'], fascia: 'luxury' },
+  'Glamm Fire':     { categorie: ['camini','fuoco'], fascia: 'luxury' },
+  'Tubes':          { categorie: ['radiatori','scaldasalviette'], fascia: 'luxury' },
+  'Vismara Vetro':  { categorie: ['box doccia','vetro','partizioni'], fascia: 'luxury' },
+  'Decor Walther':  { categorie: ['accessori bagno','specchi'], fascia: 'luxury' },
+  'Bisazza':        { categorie: ['mosaico','piastrelle'], fascia: 'luxury' },
+  'Cottodeste':     { categorie: ['piastrelle','pavimenti'], fascia: 'luxury' },
+  'Sunshower':      { categorie: ['wellness','doccia','sauna'], fascia: 'luxury' },
+  'Sunshower Wellness': { categorie: ['wellness','sauna'], fascia: 'luxury' },
+  'Trimline Fires': { categorie: ['camini','fuoco'], fascia: 'luxury' },
+  'Stuv':           { categorie: ['camini','stufe'], fascia: 'luxury' },
+  'Austroflamm':    { categorie: ['camini','stufe'], fascia: 'luxury' },
+  'Valdama':        { categorie: ['lavabi','vasche','sanitari'], fascia: 'luxury' },
+  'Milldue':        { categorie: ['mobili bagno','arredo bagno'], fascia: 'luxury' },
+  'Noorth':         { categorie: ['piastrelle','pavimenti'], fascia: 'luxury' },
+  // PREMIUM
+  'Duravit':        { categorie: ['sanitari','lavabi','vasche','mobili bagno','rubinetteria'], fascia: 'premium' },
+  'Cielo':          { categorie: ['sanitari','lavabi'], fascia: 'premium' },
+  'Cerasa':         { categorie: ['mobili bagno','specchi','sanitari'], fascia: 'premium' },
+  'Colombo':        { categorie: ['accessori bagno','rubinetteria'], fascia: 'premium' },
+  'Grupp Bardelli': { categorie: ['piastrelle','rivestimenti'], fascia: 'premium' },
+  'Gruppo Bardelli':{ categorie: ['piastrelle','rivestimenti'], fascia: 'premium' },
+  'Gruppo Geromin': { categorie: ['vasche','box doccia','idromassaggio'], fascia: 'premium' },
+  'FAP Ceramiche':  { categorie: ['piastrelle','rivestimenti','pavimenti'], fascia: 'premium' },
+  'Ariostea':       { categorie: ['piastrelle','grandi lastre','pavimenti'], fascia: 'premium' },
+  'Mirage':         { categorie: ['piastrelle','pavimenti'], fascia: 'premium' },
+  'FMG':            { categorie: ['piastrelle','pavimenti','grandi lastre'], fascia: 'premium' },
+  'Floorim':        { categorie: ['piastrelle','pavimenti'], fascia: 'premium' },
+  'Gigacer':        { categorie: ['piastrelle','grandi lastre'], fascia: 6 },
+  'Italgraniti':    { categorie: ['piastrelle','pavimenti'], fascia: 'premium' },
+  'Bauwerk':        { categorie: ['parquet','legno'], fascia: 'premium' },
+  'CP Parquet':     { categorie: ['parquet','legno'], fascia: 'premium' },
+  'Iniziativa Legno':{ categorie: ['parquet','legno'], fascia: 'premium' },
+  'Madegan':        { categorie: ['parquet','legno'], fascia: 'premium' },
+  'Gerflor':        { categorie: ['pavimento vinilico','pavimento tecnico'], fascia: 'premium' },
+  'Acquabella':     { categorie: ['piatti doccia','vasche','box doccia'], fascia: 'premium' },
+  'Gridiron':       { categorie: ['accessori bagno','portasalviette'], fascia: 'premium' },
+  'Wedi':           { categorie: ['impermeabilizzazione','sistemi doccia','edilizia'], fascia: 'premium' },
+  'Schluter Systems':{ categorie: ['profili','impermeabilizzazione','piastrelle'], fascia: 'premium' },
+  'Tresse':         { categorie: ['piastrelle','mosaico'], fascia: 'premium' },
+  'Tonalite':       { categorie: ['piastrelle','rivestimenti'], fascia: 'premium' },
+  'Sterneldesign':  { categorie: ['accessori bagno'], fascia: 'premium' },
+  // MID
+  'Altamarea':      { categorie: ['rubinetteria','doccia'], fascia: 'mid' },
+  'Anem':           { categorie: ['rubinetteria','doccia'], fascia: 'mid' },
+  'Aparici':        { categorie: ['piastrelle','rivestimenti'], fascia: 'mid' },
+  'Apavisa':        { categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Artesia':        { categorie: ['vasche','piatti doccia'], fascia: 'mid' },
+  'BGP':            { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Blue Design':    { categorie: ['mobili bagno'], fascia: 'mid' },
+  'Baufloor':       { categorie: ['pavimenti'], fascia: 'mid' },
+  'Caros':          { categorie: ['piastrelle'], fascia: 'mid' },
+  'Caesar':         { categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Casalgrande Padana':{ categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Cerasarda':      { categorie: ['piastrelle','rivestimenti'], fascia: 'mid' },
+  'CSA':            { categorie: ['rubinetteria'], fascia: 'mid' },
+  'Demm':           { categorie: ['accessori bagno'], fascia: 'mid' },
+  'DoorAmeda':      { categorie: ['porte','pareti'], fascia: 'mid' },
+  'Edimax Astor':   { categorie: ['piastrelle','mosaico'], fascia: 'mid' },
+  'Brera':          { categorie: ['sanitari','lavabi'], fascia: 'mid' },
+  'GOman':          { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Ier Hurne':      { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Inklostro Bianco':{ categorie: ['pitture','rivestimenti'], fascia: 'mid' },
+  'Iris':           { categorie: ['piastrelle','sanitari'], fascia: 'mid' },
+  'Linki':          { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Marca Corona':   { categorie: ['piastrelle','rivestimenti'], fascia: 'mid' },
+  'Murexin':        { categorie: ['impermeabilizzazione','massetti','posa'], fascia: 'mid' },
+  'Omegius':        { categorie: ['accessori bagno'], fascia: 'mid' },
+  "Piastrelle d Arredo":{ categorie: ['piastrelle'], fascia: 'mid' },
+  'Profiletec':     { categorie: ['profili','bordi'], fascia: 'mid' },
+  'SDR':            { categorie: ['sanitari'], fascia: 'mid' },
+  'Sichenia':       { categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Simas':          { categorie: ['sanitari','lavabi'], fascia: 'mid' },
+  'Remer':          { categorie: ['rubinetteria','accessori bagno'], fascia: 'mid' },
+};
+
+const FASCIA_LABEL = {
+  luxury:  { label: 'Luxury',  color: '#f59e0b' },
+  premium: { label: 'Premium', color: '#8b5cf6' },
+  mid:     { label: 'Mid',     color: '#3b82f6' },
+  entry:   { label: 'Entry',   color: '#6b7280' },
+};
+
+function switchTab(tab) {
+  const isBrand = tab === 'brand';
+  document.getElementById('tab-content-brand').style.display = isBrand ? '' : 'none';
+  document.getElementById('tab-content-cat').style.display = isBrand ? 'none' : '';
+  document.getElementById('tab-brand').style.background = isBrand ? '#3b82f6' : 'rgba(59,130,245,0.3)';
+  document.getElementById('tab-cat').style.background = isBrand ? 'rgba(59,130,245,0.3)' : '#3b82f6';
+  if (!isBrand) document.getElementById('search-cat').focus();
+}
+
+function filterPerCategoria() {
+  const sv = document.getElementById('search-cat').value.toLowerCase().trim();
+  const container = document.getElementById('cat-results');
+  if (!sv) { container.innerHTML = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Digita una categoria...</div>'; return; }
+
+  // Trova brand che matchano la categoria cercata
+  const risultati = { luxury: [], premium: [], mid: [], entry: [] };
+  Object.entries(BRAND_MAP).forEach(([brand, info]) => {
+    if (info.categorie && info.categorie.some(c => c.toLowerCase().includes(sv))) {
+      const fascia = info.fascia || 'mid';
+      if (risultati[fascia]) risultati[fascia].push(brand);
+    }
+  });
+
+  const ordine = ['luxury', 'premium', 'mid', 'entry'];
+  let html = '';
+  let totale = 0;
+  ordine.forEach(f => {
+    if (risultati[f].length === 0) return;
+    const fl = FASCIA_LABEL[f];
+    html += '<div style="font-size:9px;font-weight:700;color:' + fl.color + ';text-transform:uppercase;margin:6px 0 3px 0;letter-spacing:0.06em;">' + fl.label + '</div>';
+    risultati[f].forEach(brand => {
+      totale++;
+      const checked = new Set(selected).has(brand) ? 'checked' : '';
+      html += '<div class="brand-item cat-item" style="display:flex;align-items:center;gap:6px;">' +
+        '<input type="checkbox" value="' + brand + '" ' + checked + ' onchange="updateSelected()">' +
+        '<span style="flex:1">' + brand + '</span>' +
+        '<span style="font-size:9px;color:' + fl.color + ';font-weight:600;">' + fl.label + '</span>' +
+        '</div>';
+    });
+  });
+
+  if (totale === 0) {
+    html = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Nessun brand trovato per "' + sv + '"</div>';
+  }
+  container.innerHTML = html;
+}
+
 function loadBrands() {
   fetch('/api/get-brands').then(r => r.json()).then(d => {
     BRANDS = d.brands || [];
@@ -1553,8 +2322,16 @@ function loadBrands() {
 function toggleDropdown() {
   const dd = document.getElementById('dropdown');
   if (!dd) return;
-  if (dd.classList.contains('show')) { dd.classList.remove('show'); }
-  else { dd.classList.add('show'); filterBrands(); }
+  if (dd.classList.contains('show')) {
+    dd.classList.remove('show');
+  } else {
+    dd.classList.add('show');
+    // Costruisce la lista solo se è vuota
+    const brandsList = document.getElementById('brands-list');
+    if (brandsList && brandsList.querySelectorAll('.brand-item').length === 0) {
+      filterBrands();
+    }
+  }
 }
 
 function filterBrands() {
@@ -1562,9 +2339,24 @@ function filterBrands() {
   const brandsList = document.getElementById('brands-list');
   if (!search || !brandsList) return;
   const sv = search.value.toLowerCase();
-  const filtered = BRANDS.filter(b => b.toLowerCase().includes(sv));
-  brandsList.innerHTML = filtered.map(b =>
-    '<div class="brand-item"><input type="checkbox" value="' + b + '" onchange="updateSelected()">' + b + '</div>'
+
+  // Se la lista è già popolata, filtra per visibilità senza ricostruire il DOM
+  const existing = brandsList.querySelectorAll('.brand-item');
+  if (existing.length > 0) {
+    existing.forEach(item => {
+      const inp = item.querySelector('input');
+      const val = inp ? inp.value.toLowerCase() : '';
+      item.style.display = val.includes(sv) ? '' : 'none';
+    });
+    return;
+  }
+
+  // Prima costruzione — popola con stato checked corrente
+  const alreadySelected = new Set(selected);
+  brandsList.innerHTML = BRANDS.map(b =>
+    '<div class="brand-item"><input type="checkbox" value="' + b + '" ' +
+    (alreadySelected.has(b) ? 'checked' : '') +
+    ' onchange="updateSelected()">' + b + '</div>'
   ).join('');
 }
 
@@ -1572,6 +2364,17 @@ function updateSelected() {
   selected = [];
   document.querySelectorAll('.brand-item input:checked').forEach(cb => { selected.push(cb.value); });
   document.getElementById('selected').innerHTML = selected.map(b => '<span class="badge">' + b + ' x</span>').join('');
+  // Propaga brand selezionato in tutti i campi brand dell'app
+  if (selected.length > 0) {
+    const b = selected[0];
+    // Upload documenti
+    const uploadInp = document.getElementById('upload-brand-input');
+    const uploadVal = document.getElementById('upload-brand-val');
+    if (uploadInp) uploadInp.value = b;
+    if (uploadVal) uploadVal.value = b;
+  }
+  // Se drawer aperto, aggiorna quick-select
+  if (cantiereAttivo) precompilaBrandDrawer();
 }
 
 function toggleWeb() {
@@ -1661,22 +2464,75 @@ function doUpload(input, tipo) {
   reader.readAsDataURL(file);
 }
 
-function showDocuments() {
-  const brand = prompt('Per quale brand?');
-  if (!brand) return;
-  fetch('/api/list-documents?brand=' + encodeURIComponent(brand)).then(r => r.json()).then(d => {
-    if (!d.documents || d.documents.length === 0) { alert('Nessun documento per ' + brand); return; }
-    const list = d.documents.map(doc => doc.id + ' | ' + doc.filename + ' | ' + (doc.date||'')).join('\n');
-    const idStr = prompt('Documenti:\n' + list + '\n\nID da eliminare:');
-    if (!idStr) return;
-    const docId = parseInt(idStr);
-    if (isNaN(docId)) { alert('ID non valido'); return; }
-    if (!confirm('Eliminare documento ID ' + docId + '?')) return;
-    fetch('/api/delete-document/' + docId, { method:'DELETE' }).then(r => r.json()).then(d => {
-      if (d.ok) alert('Eliminato!');
-      else alert('Errore: ' + d.error);
+function apriGestisciDoc() {
+  document.getElementById('gestisci-doc-panel').style.display = 'flex';
+  document.getElementById('filtro-doc-brand').value = selected.length > 0 ? selected[0] : '';
+  filtraDocumenti();
+}
+
+function chiudiGestisciDoc() {
+  document.getElementById('gestisci-doc-panel').style.display = 'none';
+}
+
+function filtraDocumenti(tutti) {
+  const brand = tutti ? '' : document.getElementById('filtro-doc-brand').value.trim();
+  const url = brand ? '/api/list-documents?brand=' + encodeURIComponent(brand) : '/api/list-documents';
+  const container = document.getElementById('doc-list-panel');
+  container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Caricamento...</div>';
+
+  fetch(url).then(r => r.json()).then(d => {
+    const docs = d.documents || [];
+    if (docs.length === 0) {
+      container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Nessun documento trovato' + (brand ? ' per "' + brand + '"' : '') + '</div>';
+      return;
+    }
+    // Raggruppa per brand
+    const grouped = {};
+    docs.forEach(doc => {
+      const b = doc.brand || '—';
+      if (!grouped[b]) grouped[b] = [];
+      grouped[b].push(doc);
     });
+
+    let html = '';
+    Object.entries(grouped).sort().forEach(([b, bdocs]) => {
+      html += '<div style="font-size:10px;font-weight:700;color:#60a5fa;text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 6px 0;">' + b + ' <span style="color:#6b7280;font-weight:400;">(' + bdocs.length + ')</span></div>';
+      bdocs.forEach(doc => {
+        const isExcel = doc.filename.includes('[EXCEL]');
+        const tipoHtml = isExcel
+          ? '<span class="doc-tipo-excel">📊 Excel</span>'
+          : '<span class="doc-tipo-doc">📄 Doc</span>';
+        const dataStr = doc.date ? doc.date.substring(0, 16).replace('T', ' ') : '—';
+        const visHtml = doc.visibility === 'private'
+          ? '<span style="font-size:9px;color:#f59e0b;">🔒 Privato</span>'
+          : '<span style="font-size:9px;color:#6b7280;">🌐 Pubblico</span>';
+        const nomeFile = doc.filename.replace(' [EXCEL]', '');
+        html += '<div class="doc-row" id="docrow-' + doc.id + '">' +
+          tipoHtml +
+          '<div style="flex:1;min-width:0;">' +
+          '<div style="font-weight:600;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + nomeFile + '</div>' +
+          '<div style="color:#6b7280;font-size:10px;">' + dataStr + ' · ' + visHtml + '</div>' +
+          '</div>' +
+          '<button onclick="eliminaDocumento(' + doc.id + ',\'' + b.replace(/'/g,"\\'") + '\')" class="btn-red btn-sm" style="margin-bottom:0;white-space:nowrap;">✕ Elimina</button>' +
+          '</div>';
+      });
+    });
+    container.innerHTML = html;
   });
+}
+
+function eliminaDocumento(id, brand) {
+  if (!confirm('Eliminare questo documento di ' + brand + '?')) return;
+  fetch('/api/delete-document/' + id, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        const row = document.getElementById('docrow-' + id);
+        if (row) { row.style.opacity = '0.3'; row.style.pointerEvents = 'none'; setTimeout(() => row.remove(), 600); }
+      } else {
+        alert('Errore: ' + (d.error || 'sconosciuto'));
+      }
+    });
 }
 
 function generateOfferta() {
@@ -1745,7 +2601,7 @@ function ask() {
       const msgId = 'msg_' + Date.now();
       let html = '<div class="message oracolo-msg" id="' + msgId + '">';
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
-      html += '<strong style="color:#60a5fa">Oracolo:</strong><div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
       const query = encodeURIComponent(selected.join(' ') + ' ' + q);
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
@@ -1760,8 +2616,27 @@ function ask() {
       } else {
         html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
       }
+      // --- BOTTONE AGGIUNGI AL CARRELLO ---
+      const safeBrand = (selected[0] || '').replace(/'/g, "\\'");
+      html += '<div style="margin-top:10px; border-top:1px solid rgba(16,185,129,0.2); padding-top:8px;">';
+      html += '<button id="btn-carrello-' + msgId + '" onclick="apriFormCarrello(\'' + msgId + '\',\'' + safeBrand + '\')" ' +
+        'style="background:rgba(16,185,129,0.2); border:1px solid rgba(16,185,129,0.5); color:#10b981; padding:5px 12px; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer; margin-bottom:0;">✓ Aggiungi al carrello</button>';
+      html += '</div>';
+      // --- FORM CARRELLO (hidden) — desc verrà riempita da AI dopo apertura ---
+      html += '<div id="form-carrello-' + msgId + '" style="display:none; margin-top:8px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:10px;">';
+      html += '<div style="font-size:10px; color:#10b981; font-weight:700; text-transform:uppercase; margin-bottom:8px;">Aggiungi al carrello</div>';
+      html += '<input type="text" id="fc-codice-' + msgId + '" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:6px; font-size:11px;">';
+      html += '<textarea id="fc-desc-' + msgId + '" rows="2" placeholder="Sintesi in caricamento..." style="width:100%; margin-bottom:6px; font-size:11px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:6px; padding:6px; resize:vertical;"></textarea>';
+      html += '<div style="display:flex; gap:6px;">';
+      html += '<input type="number" id="fc-prezzo-' + msgId + '" placeholder="Prezzo €" style="flex:1; font-size:11px;">';
+      html += '<button onclick="confermaDaChat(\'' + msgId + '\',\'' + safeBrand + '\')" class="btn-green" style="flex:1; margin-bottom:0; font-size:11px;">✓ Conferma</button>';
+      html += '<button onclick="document.getElementById(\'form-carrello-' + msgId + '\').style.display=\'none\'" class="btn-gray" style="flex:none; margin-bottom:0; font-size:11px;">✕</button>';
+      html += '</div></div>';
       html += '</div>';
       chat.innerHTML += html;
+      // Salva testo grezzo sul DOM per uso successivo
+      const msgEl = document.getElementById(msgId);
+      if (msgEl) msgEl.dataset.rawAnswer = d.answer || '';
       chat.scrollTop = chat.scrollHeight;
     })
     .catch(e => {
@@ -1769,6 +2644,564 @@ function ask() {
       if (loading) loading.remove();
       chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>';
     });
+}
+
+// ---------------------------------------------------------------------------
+// AGGIUNGI DA CHAT AL CARRELLO
+// ---------------------------------------------------------------------------
+function apriFormCarrello(msgId, brand) {
+  if (!cantiereAttivo) {
+    alert('Apri prima un cantiere dal pannello destra');
+    return;
+  }
+  const form = document.getElementById('form-carrello-' + msgId);
+  if (!form) return;
+  const isOpen = form.style.display !== 'none';
+  form.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) {
+    // Se la textarea è ancora vuota, chiedi sintesi AI
+    const ta = document.getElementById('fc-desc-' + msgId);
+    if (ta && !ta.value.trim()) {
+      const msgEl = document.getElementById(msgId);
+      const rawAnswer = msgEl ? msgEl.dataset.rawAnswer || '' : '';
+      ta.value = 'Sintesi in caricamento...';
+      fetch('/api/arricchisci-prodotto', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ descrizione: rawAnswer, brand: brand })
+      })
+      .then(r => r.json())
+      .then(d => { if (d.ok) ta.value = d.descrizione_ai; else ta.value = rawAnswer.substring(0, 200); })
+      .catch(() => { ta.value = rawAnswer.substring(0, 200); });
+    }
+  }
+}
+
+function confermaDaChat(msgId, brand) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const codice = document.getElementById('fc-codice-' + msgId).value.trim();
+  const descEl = document.getElementById('fc-desc-' + msgId);
+  const prezzoEl = document.getElementById('fc-prezzo-' + msgId);
+  const desc = descEl ? descEl.value.trim() : '';
+  const prezzo = parseFloat(prezzoEl ? prezzoEl.value : '') || 0;
+  if (!desc) { alert('La descrizione è vuota'); return; }
+  const descrizione = codice ? '[' + codice + '] ' + desc : desc;
+  // Brand = sempre quello selezionato nella sidebar
+  const brandEffettivo = (selected && selected.length > 0) ? selected[0] : brand;
+
+  // Disabilita subito il bottone per evitare doppio click
+  const form = document.getElementById('form-carrello-' + msgId);
+  const confirmBtn = form ? form.querySelector('.btn-green') : null;
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '⏳'; }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: brandEffettivo, categoria: '', descrizione: descrizione, importo: prezzo })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      if (form) {
+        form.innerHTML = '<div style="color:#10b981; font-size:11px; font-weight:600; padding:4px 0;">✓ Aggiunto al carrello!</div>';
+        setTimeout(() => { form.style.display = 'none'; }, 2000);
+      }
+      // Disabilita anche il bottone esterno
+      const outerBtn = document.getElementById('btn-carrello-' + msgId);
+      if (outerBtn) { outerBtn.textContent = '✓ Aggiunto'; outerBtn.disabled = true; outerBtn.style.opacity = '0.5'; }
+      loadRighe();
+    } else {
+      if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '✓ Conferma'; }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// EXCEL INTELLIGENTE
+// ---------------------------------------------------------------------------
+let excelRighe = [];  // righe caricate dall'Excel
+
+function toggleExcelPanel() {
+  const panel = document.getElementById('excel-panel');
+  const arrow = document.getElementById('excel-panel-arrow');
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  arrow.textContent = open ? '▼' : '▲';
+}
+
+function caricaExcelListino(input) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('excel-status').textContent = 'Lettura Excel...';
+  document.getElementById('excel-status').style.color = '#9ca3af';
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    fetch('/api/parse-excel', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: e.target.result})
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        excelRighe = d.righe;
+        document.getElementById('excel-status').textContent = '✓ ' + d.totale + ' prodotti trovati';
+        document.getElementById('excel-status').style.color = '#10b981';
+        renderExcelRighe();
+      } else {
+        document.getElementById('excel-status').textContent = 'Errore: ' + d.error;
+        document.getElementById('excel-status').style.color = '#ef4444';
+      }
+    })
+    .catch(err => {
+      document.getElementById('excel-status').textContent = 'Errore: ' + err;
+      document.getElementById('excel-status').style.color = '#ef4444';
+    });
+  };
+  reader.readAsDataURL(file);
+  input.value = '';
+}
+
+function renderExcelRighe() {
+  const container = document.getElementById('excel-righe-list');
+  if (!excelRighe.length) { container.innerHTML = ''; return; }
+
+  // Campo ricerca
+  let html = '<input type="text" id="excel-search" placeholder="Filtra prodotti..." ' +
+    'oninput="renderExcelRigheFiltered()" style="width:100%; margin-bottom:8px; font-size:11px;">';
+  html += '<div id="excel-righe-inner"></div>';
+  container.innerHTML = html;
+  renderExcelRigheFiltered();
+}
+
+function renderExcelRigheFiltered() {
+  const searchEl = document.getElementById('excel-search');
+  const sv = searchEl ? searchEl.value.toLowerCase() : '';
+  const filtered = sv
+    ? excelRighe.filter(r => (r.codice + ' ' + r.descrizione).toLowerCase().includes(sv))
+    : excelRighe;
+
+  const inner = document.getElementById('excel-righe-inner');
+  if (!inner) return;
+
+  inner.innerHTML = filtered.slice(0, 50).map((r, i) => {
+    const idx = excelRighe.indexOf(r);
+    const prezzoHtml = r.prezzo !== null && r.prezzo !== undefined
+      ? '<span class="' + (r.prezzo_src === 'excel' ? 'prezzo-excel' : 'prezzo-web') + '">€' +
+        parseFloat(r.prezzo).toFixed(2) + (r.prezzo_src !== 'excel' ? ' ⚠web' : '') + '</span>'
+      : '<span style="color:#6b7280; font-size:10px;">prezzo mancante</span>';
+
+    const aiDesc = r.descrizione_ai
+      ? '<div class="excel-ai-desc">' + r.descrizione_ai + '</div>'
+      : '';
+
+    return '<div class="excel-row" id="excel-row-' + idx + '">' +
+      '<div class="excel-row-header">' +
+      '<span class="excel-codice">' + (r.codice || '—') + '</span>' +
+      '<span class="excel-desc">' + (r.descrizione || '—') + '</span>' +
+      prezzoHtml +
+      '</div>' +
+      aiDesc +
+      '<div class="excel-actions">' +
+      '<button onclick="arricchisciRiga(' + idx + ')" class="btn-sm" style="background:rgba(59,130,245,0.3);color:#93c5fd;margin-bottom:0;">✨ Arricchisci</button>' +
+      '<input type="number" id="prezzo-edit-' + idx + '" placeholder="Modifica €" value="' + (r.prezzo !== null ? r.prezzo : '') + '" ' +
+        'style="width:90px; font-size:10px; padding:3px 6px; flex:none;" ' +
+        'onchange="aggiornaPrezzo(' + idx + ')">' +
+      '<button onclick="aggiungiAlCarrello(' + idx + ')" class="btn-sm btn-green" style="margin-bottom:0;">✓ Carrello</button>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+
+  if (filtered.length > 50) {
+    inner.innerHTML += '<div style="font-size:10px; color:#9ca3af; text-align:center; padding:6px;">Mostrati 50 di ' + filtered.length + ' — usa il filtro per trovare</div>';
+  }
+}
+
+function aggiornaPrezzo(idx) {
+  const input = document.getElementById('prezzo-edit-' + idx);
+  if (!input) return;
+  const val = parseFloat(input.value);
+  if (!isNaN(val)) {
+    excelRighe[idx].prezzo = val;
+    excelRighe[idx].prezzo_src = 'excel';  // manuale = trattato come excel (verde)
+    renderExcelRigheFiltered();
+  }
+}
+
+function arricchisciRiga(idx) {
+  const r = excelRighe[idx];
+  const btn = document.querySelector('#excel-row-' + idx + ' button');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+
+  fetch('/api/arricchisci-prodotto', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: r.codice,
+      descrizione: r.descrizione,
+      prezzo: r.prezzo,
+      brand: selected.length === 1 ? selected[0] : (selected[0] || '')
+    })
+  })
+  .then(res => res.json())
+  .then(d => {
+    if (d.ok) {
+      excelRighe[idx].descrizione_ai = d.descrizione_ai;
+      renderExcelRigheFiltered();
+    }
+  })
+  .catch(() => { if (btn) { btn.textContent = '✨ Arricchisci'; btn.disabled = false; } });
+}
+
+function aggiungiAlCarrello(idx) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const r = excelRighe[idx];
+  const descrizione = r.descrizione_ai || r.descrizione || '';
+  const importo = r.prezzo || 0;
+  const brand = selected.length === 1 ? selected[0] : (selected[0] || '');
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe-da-ai', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      brand: brand,
+      categoria: '',
+      codice: r.codice,
+      descrizione: descrizione,
+      importo: importo
+    })
+  })
+  .then(res => res.json())
+  .then(d => {
+    if (d.ok) {
+      // Feedback visivo sul bottone
+      const btns = document.querySelectorAll('#excel-row-' + idx + ' button');
+      const addBtn = btns[btns.length - 1];
+      if (addBtn) { addBtn.textContent = '✓ Aggiunto!'; addBtn.style.background = '#10b981'; setTimeout(() => { addBtn.textContent = '✓ Carrello'; addBtn.style.background = ''; }, 2000); }
+      loadRighe();
+    }
+  });
+}
+
+function addVoceManuale() {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const desc = document.getElementById('voce-desc').value.trim();
+  const importo = parseFloat(document.getElementById('voce-importo').value) || 0;
+  if (!desc) { alert('Inserisci una descrizione'); return; }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({brand: '', categoria: 'Voce manuale', descrizione: desc, importo: importo})
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      document.getElementById('voce-desc').value = '';
+      document.getElementById('voce-importo').value = '';
+      loadRighe();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// RICERCA RAPIDA LISTINO DALLA CHAT
+// ---------------------------------------------------------------------------
+let cercaRapidaTimer = null;
+
+function cercaRapidaListino(val) {
+  const qsr = document.getElementById('quick-search-results');
+  clearTimeout(cercaRapidaTimer);
+  if (!val || val.length < 3 || !selected.length) {
+    qsr.style.display = 'none';
+    return;
+  }
+  cercaRapidaTimer = setTimeout(() => {
+    fetch('/api/cerca-prodotto', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ query: val, brand: selected[0] })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (!d.prodotti || d.prodotti.length === 0) {
+        qsr.style.display = 'none';
+        return;
+      }
+      const listinoTipoAttuale = listinoTipo || 'cliente';
+      let html = '<div style="padding:6px 10px; font-size:9px; color:#6b7280; border-bottom:1px solid rgba(59,130,245,0.15);">📄 Trovato nel listino Excel — clicca per aggiungere al carrello</div>';
+      d.prodotti.forEach((p, idx) => {
+        const prezzo = listinoTipoAttuale === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : p.prezzo;
+        const prezzoRiv = p.prezzo_rivenditore;
+        const prezzoLabel = prezzo ? '<span style="color:#10b981;font-weight:700;">€' + parseFloat(prezzo).toFixed(0) + '</span>' + (prezzoRiv && listinoTipoAttuale === 'cliente' ? '<span style="color:#f59e0b;font-size:9px;margin-left:4px;">riv.€' + parseFloat(prezzoRiv).toFixed(0) + '</span>' : '') : '<span style="color:#6b7280;">—</span>';
+        const disp = (p.disponibilita||'').toLowerCase().includes('ordine') ? '⏳' : '✓';
+        const dispColor = (p.disponibilita||'').toLowerCase().includes('ordine') ? '#f59e0b' : '#10b981';
+        html += '<div style="padding:8px 10px; border-bottom:1px solid rgba(59,130,245,0.1); display:flex; align-items:center; gap:8px; cursor:pointer;" ' +
+          'onmouseover="this.style.background=\'rgba(59,130,245,0.1)\'" onmouseout="this.style.background=\'\'">' +
+          '<div style="flex:1;">' +
+          '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (p.nome||p.codice) + '</div>' +
+          '<div style="font-size:9px; color:#9ca3af;">' + (p.codice||'') + (p.collezione ? ' · ' + p.collezione : '') + ' <span style="color:' + dispColor + ';">' + disp + '</span></div>' +
+          '</div>' +
+          '<div style="text-align:right;">' + prezzoLabel + '</div>' +
+          '<button onclick="aggiungiDaRicercaRapida(' + idx + ',this)" class="btn-green btn-sm" style="margin-bottom:0;white-space:nowrap;">+ Carrello</button>' +
+          '<button onclick="usaDescrizioneRapida(' + idx + ')" class="btn-sm" style="background:rgba(59,130,245,0.3);color:#93c5fd;margin-bottom:0;">AI ✨</button>' +
+          '</div>';
+      });
+      // Salva risultati per uso nei bottoni
+      window._qsResults = d.prodotti;
+      qsr.innerHTML = html;
+      qsr.style.display = 'block';
+    });
+  }, 350);
+}
+
+function aggiungiDaRicercaRapida(idx, btn) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const p = window._qsResults[idx];
+  if (!p) return;
+  const listinoTipoAttuale = listinoTipo || 'cliente';
+  const importo = listinoTipoAttuale === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
+  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: selected[0] || '', categoria: p.categoria||'', descrizione, importo })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      if (btn) { btn.textContent = '✓'; btn.style.background = '#10b981'; }
+      loadRighe();
+      setTimeout(() => { document.getElementById('quick-search-results').style.display = 'none'; }, 1000);
+    }
+  });
+}
+
+function usaDescrizioneRapida(idx) {
+  const p = window._qsResults[idx];
+  if (!p) return;
+  document.getElementById('question').value = 'Descrivi commercialmente: ' + (p.nome||p.codice) + ' [' + (p.codice||'') + '] — ' + (p.descrizione||'');
+  document.getElementById('quick-search-results').style.display = 'none';
+  ask();
+}
+
+// Chiudi risultati rapidi se clicco fuori
+document.addEventListener('click', function(e) {
+  const qsr = document.getElementById('quick-search-results');
+  const q = document.getElementById('question');
+  if (qsr && q && !qsr.contains(e.target) && e.target !== q) {
+    qsr.style.display = 'none';
+  }
+});
+
+// ---------------------------------------------------------------------------
+// LISTINO DASHBOARD — flusso 1-click
+// ---------------------------------------------------------------------------
+let listinoData = [];
+let listinoBrand = '';
+let filtroLinea = 'tutti';
+let filtroCategoria = 'tutti';
+let listinoTipo = 'cliente';
+
+function setListinoTipo(tipo) {
+  listinoTipo = tipo;
+  document.getElementById('btn-listino-cliente').style.background = tipo === 'cliente' ? '#3b82f6' : 'rgba(59,130,245,0.2)';
+  document.getElementById('btn-listino-riv').style.background = tipo === 'rivenditore' ? '#f59e0b' : 'rgba(245,158,11,0.2)';
+  document.getElementById('btn-listino-riv').style.color = tipo === 'rivenditore' ? 'white' : '#f59e0b';
+  filtraListino();
+}
+
+// Apre listino automaticamente quando brand selezionato ha un listino caricato
+function apriListino() {
+  if (!selected || selected.length === 0) { alert('Seleziona prima un brand'); return; }
+  listinoBrand = selected[0];
+  filtroLinea = 'tutti';
+  filtroCategoria = 'tutti';
+  document.getElementById('listino-brand-tag').textContent = listinoBrand;
+  document.getElementById('listino-panel').classList.add('open');
+  document.getElementById('listino-search').value = '';
+  caricaListino();
+}
+
+function chiudiListino() {
+  document.getElementById('listino-panel').classList.remove('open');
+}
+
+function caricaListino() {
+  document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Caricamento prodotti...</div>';
+  fetch('/api/listino/' + encodeURIComponent(listinoBrand))
+    .then(r => r.json())
+    .then(d => {
+      listinoData = d.prodotti || [];
+      costruisciFiltriLinea();
+      costruisciFiltriCat();
+      costruisciDomande();
+      filtraListino();
+      const n = listinoData.length;
+      const fonte = d.fonte
+        ? '<span style="color:#10b981;">📄 ' + n + ' prodotti da listino</span>'
+        : '<span style="color:#ef4444;">⚠ Nessun listino caricato per ' + listinoBrand + ' — carica un Excel prima</span>';
+      document.getElementById('listino-count').innerHTML = fonte;
+    });
+}
+
+function costruisciFiltriLinea() {
+  const linee = [...new Set(listinoData.map(p => p.collezione).filter(Boolean))].sort();
+  let html = '<button class="filtro-btn active" onclick="setFiltroLinea(\'tutti\',this)">Tutte le linee</button>';
+  linee.forEach(l => {
+    const n = listinoData.filter(p => p.collezione === l).length;
+    html += '<button class="filtro-btn" onclick="setFiltroLinea(\'' + l.replace(/'/g,"\\'") + '\',this)">' + l + ' <span style="opacity:0.6;">(' + n + ')</span></button>';
+  });
+  document.getElementById('filtri-linea').innerHTML = html;
+}
+
+function costruisciFiltriCat() {
+  const cats = [...new Set(listinoData.map(p => p.categoria).filter(Boolean))].sort();
+  let html = '<button class="filtro-btn active" onclick="setFiltroCategoria(\'tutti\',this)">Tutte le cat.</button>';
+  cats.forEach(c => {
+    html += '<button class="filtro-btn" onclick="setFiltroCategoria(\'' + c.replace(/'/g,"\\'") + '\',this)">' + c + '</button>';
+  });
+  document.getElementById('filtri-cat').innerHTML = html;
+}
+
+function costruisciDomande() {
+  const domande = [
+    'Quali prodotti abbinare per un bagno moderno?',
+    'Cosa è disponibile subito?',
+    'Prodotti entry level sotto €400',
+    'Soluzioni premium per progetto di lusso',
+    'Cosa abbinare a ' + listinoBrand + ' per doccia?',
+    'Differenze tra le collezioni',
+    'Novità e best seller'
+  ];
+  document.getElementById('domande-bar').innerHTML = domande.map(d =>
+    '<button class="domanda-chip" onclick="faiDomandaListino(\'' + d.replace(/'/g,"\\'") + '\')">' + d + '</button>'
+  ).join('');
+}
+
+function setFiltroLinea(val, btn) {
+  filtroLinea = val;
+  document.querySelectorAll('#filtri-linea .filtro-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  filtraListino();
+}
+
+function setFiltroCategoria(val, btn) {
+  filtroCategoria = val;
+  document.querySelectorAll('#filtri-cat .filtro-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  filtraListino();
+}
+
+function filtraListino() {
+  const sv = (document.getElementById('listino-search') ? document.getElementById('listino-search').value : '').toLowerCase();
+  let prodotti = listinoData;
+  if (filtroLinea !== 'tutti') prodotti = prodotti.filter(p => p.collezione === filtroLinea);
+  if (filtroCategoria !== 'tutti') prodotti = prodotti.filter(p => p.categoria === filtroCategoria);
+  if (sv) prodotti = prodotti.filter(p =>
+    (p.nome||'').toLowerCase().includes(sv) ||
+    (p.codice||'').toLowerCase().includes(sv) ||
+    (p.descrizione||'').toLowerCase().includes(sv)
+  );
+
+  if (prodotti.length === 0) {
+    document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Nessun prodotto trovato</div>';
+    return;
+  }
+
+  document.getElementById('prodotti-grid').innerHTML = prodotti.map(p => {
+    const idx = listinoData.indexOf(p);
+    const dispClass = (p.disponibilita||'').toLowerCase().includes('ordine') ? 'su-ordine' : 'disponibile';
+    const dispBadge = (p.disponibilita||'').toLowerCase().includes('ordine') ? 'disp-ord' : 'disp-ok';
+    const dispLabel = (p.disponibilita||'').toLowerCase().includes('ordine') ? '⏳ Su ordine' : '✓ Disponibile';
+
+    // Prezzo principale + secondario
+    const pCliente = p.prezzo;
+    const pRiv = p.prezzo_rivenditore;
+    const pUsato = listinoTipo === 'rivenditore' && pRiv ? pRiv : pCliente;
+    const pSecondario = listinoTipo === 'rivenditore' ? pCliente : pRiv;
+    const clsPrezzo = p.fonte === 'excel' ? 'prodotto-prezzo-excel' : 'prodotto-prezzo-web';
+    const iconWeb = p.fonte !== 'excel' ? ' ⚠' : '';
+
+    let prezzoHtml = pUsato
+      ? '<span class="' + clsPrezzo + '">€' + parseFloat(pUsato).toFixed(0) + iconWeb + '</span>'
+      : '<span style="color:#6b7280;font-size:10px;">—</span>';
+    if (pSecondario) {
+      const lbl = listinoTipo === 'cliente' ? 'riv.' : 'cl.';
+      const clr = listinoTipo === 'cliente' ? '#f59e0b' : '#9ca3af';
+      prezzoHtml += '<span style="font-size:9px;color:' + clr + ';margin-left:6px;">' + lbl + ' €' + parseFloat(pSecondario).toFixed(0) + '</span>';
+    }
+
+    return '<div class="prodotto-card ' + dispClass + '" id="pcard-' + idx + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px;">' +
+      '<span class="prodotto-codice">' + (p.codice||'—') + '</span>' +
+      '<span class="prodotto-disp ' + dispBadge + '">' + dispLabel + '</span>' +
+      '</div>' +
+      '<div class="prodotto-nome">' + (p.nome||'—') + '</div>' +
+      '<div class="prodotto-cat">' + [p.collezione, p.categoria].filter(Boolean).join(' · ') + '</div>' +
+      (p.descrizione ? '<div style="font-size:10px;color:#9ca3af;margin:3px 0;line-height:1.3;">' + p.descrizione + '</div>' : '') +
+      (p.finiture ? '<div style="font-size:9px;color:#6b7280;">🎨 ' + p.finiture + '</div>' : '') +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">' +
+      '<div>' + prezzoHtml + '</div>' +
+      '</div>' +
+      '<div class="prodotto-actions" style="margin-top:8px;">' +
+      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'abbinamenti\')" class="btn-sm" style="background:rgba(59,130,245,0.2);color:#93c5fd;flex:1;">🔗 Abbina</button>' +
+      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
+      '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+function chiediAIprodotto(idx, tipo) {
+  const p = listinoData[idx];
+  if (!p) return;
+  let domanda = '';
+  if (tipo === 'abbinamenti') domanda = 'Cosa abbinare al prodotto ' + (p.nome||p.codice) + ' di ' + listinoBrand + '? Suggerisci prodotti complementari dello stesso brand o di altri brand che trattiamo.';
+  if (tipo === 'descrizione') domanda = 'Crea una descrizione commerciale breve (max 120 caratteri) per: ' + (p.nome||p.codice) + ' — ' + (p.descrizione||'') + '. Prezzo: €' + (p.prezzo||'da definire') + '. Brand: ' + listinoBrand;
+  chiudiListino();
+  document.getElementById('question').value = domanda;
+  ask();
+}
+
+function faiDomandaListino(domanda) {
+  chiudiListino();
+  document.getElementById('question').value = domanda;
+  ask();
+}
+
+function aggiungiDaListino(idx) {
+  if (!cantiereAttivo) {
+    if (confirm('Nessun cantiere aperto. Vuoi aprire il pannello cantieri?')) {
+      chiudiListino();
+      document.getElementById('mod-cantieri') && toggleModule('cantieri-body');
+    }
+    return;
+  }
+  const p = listinoData[idx];
+  if (!p) return;
+  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
+  const importo = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
+
+  const btn = document.getElementById('addbtn-' + idx);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: listinoBrand, categoria: p.categoria||'', descrizione, importo })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      if (btn) { btn.textContent = '✓ Aggiunto'; btn.style.background = '#10b981'; }
+      const card = document.getElementById('pcard-' + idx);
+      if (card) card.style.opacity = '0.6';
+      loadRighe();
+    } else {
+      if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
+    }
+  });
 }
 
 // Controlla se già loggato
