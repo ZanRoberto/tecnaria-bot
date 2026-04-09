@@ -1327,6 +1327,83 @@ def load_accessories_from_excel_lazy(file_content, brand, conn, c):
     except Exception as e:
         return False, f"❌ Errore: {str(e)}", 0
 
+@app.route('/api/carica-abbinamenti-excel/<brand>', methods=['POST'])
+def carica_abbinamenti_excel(brand):
+    """Carica abbinamenti direttamente da Excel nel DB (SENZA lazy loading)"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Cerca file abbinamenti per questo brand
+        c.execute("""SELECT content, filename FROM documents d
+                     JOIN aziende a ON d.azienda_id = a.id
+                     WHERE LOWER(a.nome) = LOWER(?)
+                     AND (d.filename LIKE '%ABBINAMENTI%' OR d.filename LIKE '%abbinamenti%')
+                     ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+        
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": f"File abbinamenti non trovato per {brand}"}), 404
+        
+        content_b64, filename = row
+        
+        # Decodifica Excel
+        if ',' in content_b64:
+            content_b64 = content_b64.split(',', 1)[1]
+        raw = base64.b64decode(content_b64)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        
+        if "ABBINAMENTI" not in wb.sheetnames:
+            conn.close()
+            return jsonify({"ok": False, "error": "Foglio ABBINAMENTI non trovato"}), 400
+        
+        ws = wb["ABBINAMENTI"]
+        count = 0
+        errors = []
+        
+        for i, row_data in enumerate(ws.iter_rows(values_only=True)):
+            if i == 0:  # Skip header
+                continue
+            
+            if not any(row_data):  # Skip empty
+                continue
+            
+            try:
+                prodotto = row_data[0]
+                acc_id = row_data[1]
+                acc_nome = row_data[2] if len(row_data) > 2 else ""
+                brand_acc = row_data[3] if len(row_data) > 3 else brand
+                categoria = row_data[4] if len(row_data) > 4 else ""
+                tipo = row_data[5] if len(row_data) > 5 else "ufficiale"
+                priority = int(row_data[6]) if len(row_data) > 6 and row_data[6] else 99
+                note = row_data[7] if len(row_data) > 7 else ""
+                
+                c.execute("""INSERT OR REPLACE INTO product_accessories 
+                            (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio, 
+                             categoria_accessorio, tipo_relazione, priority, note, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         (prodotto, acc_id, acc_nome, brand_acc, categoria, tipo, priority, note, datetime.now().isoformat()))
+                count += 1
+            except Exception as e:
+                errors.append(f"Riga {i+1}: {str(e)}")
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "ok": True,
+            "message": f"✅ Caricati {count} abbinamenti",
+            "brand": brand,
+            "filename": filename,
+            "count": count,
+            "errors": errors if errors else None
+        })
+    
+    except Exception as e:
+        conn.close()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route('/api/load-brand-accessories/<brand>', methods=['GET'])
 def load_brand_accessories(brand):
     """Carica SOLO i file Excel del brand selezionato"""
@@ -1924,6 +2001,12 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
           </label>
           <div id="excel-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px;"></div>
         </div>
+
+        <!-- BOTTONE CARICA ABBINAMENTI -->
+        <button onclick="caricaAbbinamenti()" style="width:100%; background:#10b981; color:white; padding:8px; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; margin-bottom:8px;">
+          🔗 CARICA ABBINAMENTI
+        </button>
+        <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px; text-align:center;"></div>
 
         <!-- Lista righe Excel -->
         <div id="excel-righe-list" style="max-height:340px; overflow-y:auto;"></div>
@@ -3148,6 +3231,34 @@ function toggleExcelPanel() {
   arrow.textContent = open ? '▼' : '▲';
 }
 
+function caricaAbbinamenti() {
+  const status = document.getElementById('abbinamenti-status');
+  status.textContent = '⏳ Caricamento...';
+  status.style.color = '#9ca3af';
+  
+  // Prendi il brand (default Gessi)
+  const brand = 'Gessi';
+  
+  fetch('/api/carica-abbinamenti-excel/' + encodeURIComponent(brand), {
+    method: 'POST'
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      status.textContent = '✅ ' + d.message;
+      status.style.color = '#10b981';
+    } else {
+      status.textContent = '❌ ' + (d.error || 'Errore');
+      status.style.color = '#ef4444';
+    }
+    setTimeout(() => { status.textContent = ''; }, 4000);
+  })
+  .catch(e => {
+    status.textContent = '❌ ' + e.message;
+    status.style.color = '#ef4444';
+  });
+}
+
 function caricaExcelListino(input) {
   const file = input.files[0];
   if (!file) return;
@@ -3565,7 +3676,7 @@ function filtraListino() {
       '<div>' + prezzoHtml + '</div>' +
       '</div>' +
       '<div class="prodotto-actions" style="margin-top:8px;">' +
-      '<button onclick="event.stopPropagation();mostraAbbinamenti(\'' + (p.codice||'') + '\')" class="btn-sm" style="background:rgba(16,185,129,0.2);color:#10b981;flex:1;">📋 Abbina</button>' +
+      '<button onclick="event.stopPropagation();mostraAbbinamenti(\'' + (p.codice||'') + '\')" class="btn-sm" id="abbina-btn-' + idx + '" style="flex:1; background:rgba(107,114,128,0.3);color:#d1d5db;cursor:not-allowed;">📋 Abbina</button>' +
       '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
       '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
       '</div></div>';
@@ -3623,7 +3734,41 @@ function aggiungiDaListino(idx) {
     } else {
       if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
     }
+    
+    // Controlla abbinamenti e colora il bottone
+    verificaAbbinamenti(idx, p.codice);
   });
+}
+
+function verificaAbbinamenti(idx, codice) {
+  if (!codice) return;
+  
+  fetch('/api/abbina/' + encodeURIComponent(codice))
+    .then(r => r.json())
+    .then(d => {
+      const btn = document.getElementById('abbina-btn-' + idx);
+      if (!btn) return;
+      
+      const hasAbbinamenti = (d.ufficiali && d.ufficiali.length > 0) || 
+                             (d.alternative && d.alternative.length > 0);
+      
+      if (hasAbbinamenti) {
+        // VERDE - ha abbinamenti
+        btn.style.background = 'rgba(16,185,129,0.3)';
+        btn.style.color = '#10b981';
+        btn.style.cursor = 'pointer';
+        btn.disabled = false;
+      } else {
+        // GRIGIO - no abbinamenti
+        btn.style.background = 'rgba(107,114,128,0.3)';
+        btn.style.color = '#d1d5db';
+        btn.style.cursor = 'not-allowed';
+        btn.disabled = true;
+      }
+    })
+    .catch(() => {
+      // Se errore, rimane grigio
+    });
 }
 
 // Controlla se già loggato
