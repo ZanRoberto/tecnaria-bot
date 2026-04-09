@@ -1334,16 +1334,16 @@ def load_brand_accessories(brand):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Cerca i file Excel del brand
+        # Cerca i file Excel del brand (con parola chiave abbinamenti)
         c.execute("""
             SELECT d.content, d.filename 
             FROM documents d
             JOIN aziende a ON d.azienda_id = a.id
-            WHERE LOWER(a.nome) LIKE ? 
+            WHERE LOWER(a.nome) = LOWER(?)
             AND (d.filename LIKE '%ABBINAMENTI%' OR d.filename LIKE '%abbinamenti%')
             ORDER BY d.upload_date DESC
             LIMIT 1
-        """, (f'%{brand.lower()}%',))
+        """, (brand,))
         
         row = c.fetchone()
         
