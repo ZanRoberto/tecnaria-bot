@@ -1378,6 +1378,48 @@ def load_brand_accessories(brand):
                 "message": msg,
                 "brand": brand
             }), 400
+
+@app.route('/api/abbina/<codice_prodotto>', methods=['GET'])
+def get_abbinamenti_prodotto(codice_prodotto):
+    """Restituisce accessori ufficiali + alternativi per un codice prodotto"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Cerca accessori per questo prodotto
+    c.execute("""SELECT accessorio_id, accessorio_nome, brand_accessorio, tipo_relazione, priority, note
+                 FROM product_accessories
+                 WHERE prodotto_padre = ?
+                 ORDER BY tipo_relazione DESC, priority ASC""", (codice_prodotto,))
+    
+    rows = c.fetchall()
+    conn.close()
+    
+    ufficiali = []
+    alternative = []
+    esclusi = []
+    
+    for row in rows:
+        acc = {
+            'id': row[0],
+            'nome': row[1],
+            'brand': row[2],
+            'note': row[4] if row[4] else ''
+        }
+        if row[3] == 'ufficiale':
+            ufficiali.append(acc)
+        elif row[3] == 'alternativa':
+            alternative.append(acc)
+        elif row[3] == 'escluso':
+            esclusi.append(acc)
+    
+    return jsonify({
+        "ok": True,
+        "codice_prodotto": codice_prodotto,
+        "ufficiali": ufficiali,
+        "alternative": alternative,
+        "esclusi": esclusi,
+        "count": len(ufficiali) + len(alternative)
+    })
             
     except Exception as e:
         return jsonify({
