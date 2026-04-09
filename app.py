@@ -1378,6 +1378,12 @@ def load_brand_accessories(brand):
                 "message": msg,
                 "brand": brand
             }), 400
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "brand": brand
+        }), 500
 
 @app.route('/api/abbina/<codice_prodotto>', methods=['GET'])
 def get_abbinamenti_prodotto(codice_prodotto):
