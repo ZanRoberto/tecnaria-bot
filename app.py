@@ -3681,6 +3681,12 @@ function filtraListino() {
       '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
       '</div></div>';
   }).join('');
+  
+  // Controlla abbinamenti per TUTTI i prodotti visibili
+  prodotti.forEach((p, i) => {
+    const idx = listinoData.indexOf(p);
+    setTimeout(() => verificaAbbinamenti(idx, p.codice), 100 * i);
+  });
 }
 
 function chiediAIprodotto(idx, tipo) {
