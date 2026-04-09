@@ -3213,6 +3213,361 @@ fetch('/api/me').then(r => r.json()).then(d => {
   }
 });
 </script>
+
+<!-- ============================================================================
+     MODAL ABBINAMENTI — HTML/CSS/JavaScript
+     ============================================================================ -->
+
+<style>
+.modal-abbinamenti {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 10000;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    box-sizing: border-box;
+}
+
+.modal-abbinamenti.show {
+    display: flex;
+}
+
+.modal-abbinamenti-content {
+    background: #0f172a;
+    border: 2px solid #3b82f6;
+    border-radius: 12px;
+    width: 100%;
+    max-width: 1000px;
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 30px;
+    color: #e0e0e0;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 25px;
+    border-bottom: 2px solid #1e40af;
+    padding-bottom: 15px;
+}
+
+.modal-header h2 {
+    margin: 0;
+    color: #60a5fa;
+    font-size: 24px;
+    font-weight: bold;
+}
+
+.modal-close {
+    background: #ef4444;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    cursor: pointer;
+    font-size: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-close:hover {
+    background: #dc2626;
+}
+
+.prodotto-principale {
+    background: rgba(59, 130, 245, 0.1);
+    border-left: 4px solid #3b82f6;
+    padding: 15px;
+    border-radius: 6px;
+    margin-bottom: 25px;
+}
+
+.accessorio-codice {
+    background: #3b82f6;
+    color: white;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 10px 12px;
+    border-radius: 4px;
+    display: inline-block;
+    margin-bottom: 10px;
+    letter-spacing: 1px;
+    word-break: break-all;
+}
+
+.accessorio-nome {
+    font-size: 15px;
+    font-weight: 600;
+    color: #e0e0e0;
+    margin: 8px 0;
+    line-height: 1.4;
+}
+
+.accessorio-brand {
+    font-size: 12px;
+    color: #94a3b8;
+    margin: 5px 0;
+}
+
+.accessorio-categoria {
+    font-size: 11px;
+    background: rgba(59, 130, 245, 0.2);
+    color: #93c5fd;
+    padding: 4px 8px;
+    border-radius: 3px;
+    display: inline-block;
+    margin: 8px 0;
+}
+
+.abbinamenti-section {
+    margin-bottom: 30px;
+}
+
+.abbinamenti-section h3 {
+    margin: 0 0 15px 0;
+    font-size: 18px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.section-ufficiali h3 {
+    color: #10b981;
+}
+
+.section-ufficiali h3::before {
+    content: "✅";
+    font-size: 20px;
+}
+
+.section-alternative h3 {
+    color: #f59e0b;
+}
+
+.section-alternative h3::before {
+    content: "🔹";
+    font-size: 20px;
+}
+
+.section-esclusi h3 {
+    color: #ef4444;
+}
+
+.section-esclusi h3::before {
+    content: "❌";
+    font-size: 20px;
+}
+
+.abbinamenti-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 15px;
+}
+
+.accessorio-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 16px;
+    transition: all 0.3s ease;
+}
+
+.accessorio-card:hover {
+    border-color: #3b82f6;
+    box-shadow: 0 0 15px rgba(59, 130, 245, 0.3);
+    transform: translateY(-2px);
+}
+
+.accessorio-card.escluso {
+    opacity: 0.6;
+    border-color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.accessorio-card.escluso .accessorio-codice {
+    background: #ef4444;
+}
+
+.accessorio-note {
+    font-size: 12px;
+    color: #cbd5e1;
+    margin: 8px 0;
+    font-style: italic;
+    line-height: 1.3;
+}
+
+.accessorio-vincolo {
+    font-size: 11px;
+    background: rgba(245, 158, 11, 0.2);
+    color: #fcd34d;
+    padding: 6px 8px;
+    border-radius: 3px;
+    margin: 8px 0;
+    border-left: 2px solid #f59e0b;
+}
+
+.accessorio-escluso-motivo {
+    font-size: 11px;
+    background: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+    padding: 6px 8px;
+    border-radius: 3px;
+    margin: 8px 0;
+    border-left: 2px solid #ef4444;
+}
+
+.accessorio-azioni {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.btn-aggiungi {
+    background: #10b981;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    flex: 1;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.btn-aggiungi:hover {
+    background: #059669;
+}
+
+.btn-aggiungi:disabled {
+    background: #6b7280;
+    cursor: not-allowed;
+}
+
+.accessorio-prezzo {
+    font-size: 13px;
+    color: #10b981;
+    font-weight: 600;
+    margin-top: 5px;
+}
+</style>
+
+<div class="modal-abbinamenti" id="modalAbbinamenti">
+    <div class="modal-abbinamenti-content">
+        <div class="modal-header">
+            <h2>Abbinamenti Prodotto</h2>
+            <button class="modal-close" onclick="chiudiModalAbbinamenti()">✕</button>
+        </div>
+        
+        <div class="prodotto-principale" id="prodottoPrincipale"></div>
+        <div class="abbinamenti-section section-ufficiali" id="sezioneUfficiali"></div>
+        <div class="abbinamenti-section section-alternative" id="sezioneAlternative"></div>
+        <div class="abbinamenti-section section-esclusi" id="sezioneEsclusi"></div>
+    </div>
+</div>
+
+<script>
+function mostraAbbinamenti(prodottoId) {
+    fetch(`/api/abbina/${prodottoId}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data.prodotto || !data.prodotto.codice) {
+                alert("Prodotto non trovato");
+                return;
+            }
+            popolaModalAbbinamenti(data);
+            document.getElementById('modalAbbinamenti').classList.add('show');
+        })
+        .catch(e => {
+            console.error("Errore:", e);
+            alert("Errore nel caricamento degli abbinamenti");
+        });
+}
+
+function chiudiModalAbbinamenti() {
+    document.getElementById('modalAbbinamenti').classList.remove('show');
+}
+
+function popolaModalAbbinamenti(data) {
+    const prod = data.prodotto;
+    const htmlProd = `
+        <div class="accessorio-codice">${prod.codice}</div>
+        <div class="accessorio-nome">${prod.nome}</div>
+        <div class="accessorio-brand">Collezione: ${prod.collezione}</div>
+        <div class="accessorio-categoria">Categoria: ${prod.categoria}</div>
+        <div class="accessorio-prezzo">💰 Cliente: €${prod.prezzo_cliente} | Riv: €${prod.prezzo_riv}</div>
+    `;
+    document.getElementById('prodottoPrincipale').innerHTML = htmlProd;
+    
+    if (data.ufficiali.length > 0) {
+        const html = `<h3>Abbinamenti Ufficiali</h3><div class="abbinamenti-grid">${data.ufficiali.map(acc => creaCardAccessorio(acc)).join('')}</div>`;
+        document.getElementById('sezioneUfficiali').innerHTML = html;
+    } else {
+        document.getElementById('sezioneUfficiali').innerHTML = '';
+    }
+    
+    if (data.alternative.length > 0) {
+        const html = `<h3>Abbinamenti Alternativi</h3><div class="abbinamenti-grid">${data.alternative.map(acc => creaCardAccessorio(acc)).join('')}</div>`;
+        document.getElementById('sezioneAlternative').innerHTML = html;
+    } else {
+        document.getElementById('sezioneAlternative').innerHTML = '';
+    }
+    
+    if (data.esclusi.length > 0) {
+        const html = `<h3>Non Compatibili</h3><div class="abbinamenti-grid">${data.esclusi.map(acc => creaCardAccessorio(acc, true)).join('')}</div>`;
+        document.getElementById('sezioneEsclusi').innerHTML = html;
+    } else {
+        document.getElementById('sezioneEsclusi').innerHTML = '';
+    }
+}
+
+function creaCardAccessorio(acc, escluso = false) {
+    const classeCard = escluso ? 'accessorio-card escluso' : 'accessorio-card';
+    const htmlVincolo = acc.vincolo_messaggio ? `<div class="accessorio-vincolo">⚠️ ${acc.vincolo_messaggio}</div>` : '';
+    const htmlMotivo = escluso ? `<div class="accessorio-escluso-motivo">❌ Non compatibile</div>` : '';
+    
+    return `
+        <div class="${classeCard}">
+            <div class="accessorio-codice">${acc.id}</div>
+            <div class="accessorio-nome">${acc.nome}</div>
+            <div class="accessorio-brand">${acc.brand}</div>
+            <div class="accessorio-categoria">${acc.categoria}</div>
+            ${acc.nota_prodotto ? `<div class="accessorio-note">${acc.nota_prodotto}</div>` : ''}
+            ${htmlVincolo}
+            ${htmlMotivo}
+            <div class="accessorio-azioni">
+                <button class="btn-aggiungi" onclick="aggiungiAccessorio('${acc.id}')" ${escluso ? 'disabled' : ''}>
+                    ${escluso ? 'Non disponibile' : '➕ Aggiungi'}
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function aggiungiAccessorio(accessorioId) {
+    console.log("Aggiunto accessorio:", accessorioId);
+    alert("Accessorio aggiunto al cantiere");
+}
+
+document.addEventListener('click', function(event) {
+    const modal = document.getElementById('modalAbbinamenti');
+    if (event.target === modal) {
+        chiudiModalAbbinamenti();
+    }
+});
+</script>
+
 </body>
 </html>''')
 
