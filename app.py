@@ -526,17 +526,24 @@ function selectBrand(brand) {
   
   document.getElementById('brand-search').value = '';
   filterBrands();
+  updateSelectedBrands();
+  
+  // Mostra loading
+  document.getElementById('prodotti-grid').innerHTML = '<div style="color: #6b7280; grid-column: 1/-1; text-align: center; padding: 20px;">⏳ Caricamento prodotti...</div>';
   
   // Carica listino
   fetch('/api/listino/' + encodeURIComponent(brand))
     .then(r => r.json())
     .then(d => {
-      if (d.ok && d.prodotti) {
+      if (d.ok && d.prodotti && d.prodotti.length > 0) {
         showProdotti(d.prodotti, brand);
+      } else {
+        document.getElementById('prodotti-grid').innerHTML = '<div style="color: #ef4444; grid-column: 1/-1; text-align: center; padding: 20px;">❌ Nessun prodotto trovato per ' + brand + '</div>';
       }
+    })
+    .catch(e => {
+      document.getElementById('prodotti-grid').innerHTML = '<div style="color: #ef4444; grid-column: 1/-1; text-align: center; padding: 20px;">❌ Errore: ' + e + '</div>';
     });
-  
-  updateSelectedBrands();
 }
 
 function updateSelectedBrands() {
