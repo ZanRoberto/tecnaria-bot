@@ -1021,7 +1021,7 @@ def get_listino(brand):
     # Cerca documenti Excel per questo brand
     c.execute("""SELECT d.content, d.filename FROM documents d
                  JOIN aziende a ON d.azienda_id = a.id
-                 WHERE a.nome = ? AND (d.filename LIKE '%.xlsx' OR d.filename LIKE '%.xls' OR d.filename LIKE '%[EXCEL]%')
+                 WHERE a.nome = ? AND d.filename LIKE '%[EXCEL]%'
                  ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
     row = c.fetchone()
     conn.close()
@@ -1799,6 +1799,19 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       </div>
     </div>
 
+    <!-- ACCESSORI CONSIGLIATI -->
+    <div class="drawer-section" id="accessori-section" style="display:none;">
+      <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleAccessoriSection()">
+        🔗 Accessori Consigliati
+        <span id="accessori-arrow" style="float:right; color:#9ca3af;">▼</span>
+      </div>
+      <div id="accessori-panel" style="display:block;">
+        <div id="accessori-ufficiali"></div>
+        <div id="accessori-alternative"></div>
+        <div id="accessori-esclusi"></div>
+      </div>
+    </div>
+
     <!-- AGGIUNGI RIGA -->
     <div class="drawer-section">
       <div class="drawer-section-title">Aggiungi elemento</div>
@@ -2117,8 +2130,102 @@ function saAddUtente() {
 }
 
 // ---------------------------------------------------------------------------
-// CANTIERI
+// ACCESSORI CONSIGLIATI
 // ---------------------------------------------------------------------------
+function toggleAccessoriSection() {
+  const panel = document.getElementById('accessori-panel');
+  const arrow = document.getElementById('accessori-arrow');
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  arrow.textContent = open ? '▼' : '▲';
+}
+
+function caricaAccessoriProdotto(prodottoId, brand) {
+  if (!prodottoId) return;
+  
+  fetch('/api/abbina/' + encodeURIComponent(prodottoId))
+    .then(r => r.json())
+    .then(d => {
+      if (d.ufficiali && (d.ufficiali.length > 0 || d.alternative.length > 0 || d.esclusi.length > 0)) {
+        document.getElementById('accessori-section').style.display = 'block';
+        renderAccessoriHtml(d.ufficiali, d.alternative, d.esclusi);
+      }
+    })
+    .catch(e => console.error('Errore accessori:', e));
+}
+
+function renderAccessoriHtml(ufficiali, alternative, esclusi) {
+  let html = '';
+
+  if (ufficiali && ufficiali.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#10b981; margin-bottom:6px;">✅ Abbinamenti Ufficiali</div>';
+    ufficiali.forEach(acc => {
+      html += '<div style="background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
+        '<div style="flex:1;">' +
+        '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '</div>' +
+        '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm btn-green" style="margin-bottom:0; white-space:nowrap;">✓ Aggiungi</button>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (alternative && alternative.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#f59e0b; margin-bottom:6px;">🔹 Alternative</div>';
+    alternative.forEach(acc => {
+      html += '<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
+        '<div style="flex:1;">' +
+        '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '</div>' +
+        '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm" style="background:rgba(245,158,11,0.2); color:#f59e0b; margin-bottom:0; white-space:nowrap;">+ Aggiungi</button>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (esclusi && esclusi.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#ef4444; margin-bottom:6px;">❌ Non Compatibili</div>';
+    esclusi.forEach(acc => {
+      html += '<div style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:8px; margin-bottom:4px; opacity:0.6;">' +
+        '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '<div style="font-size:9px; color:#fca5a5; margin-top:3px;">⚠️ Non compatibile con il prodotto principale</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  document.getElementById('accessori-ufficiali').innerHTML = html;
+}
+
+function aggiungiAccessorioAlCantiere(accessorioId, nome, brand) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const descrizione = '[' + accessorioId + '] ' + nome;
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: brand, categoria: 'Accessorio', descrizione: descrizione, importo: 0 })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadRighe();
+      const msg = document.createElement('div');
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 16px;border-radius:6px;font-size:12px;z-index:9999;';
+      msg.textContent = '✓ ' + nome + ' aggiunto!';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 2000);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// CANTIERI (fine accessori)
 function loadCantieri() {
   if (!document.getElementById('mod-cantieri') || document.getElementById('mod-cantieri').style.display === 'none') return;
   fetch('/api/cantieri').then(r => r.json()).then(d => {
@@ -3469,6 +3576,9 @@ function aggiungiDaListino(idx) {
       const card = document.getElementById('pcard-' + idx);
       if (card) card.style.opacity = '0.6';
       loadRighe();
+      // Carica accessori consigliati
+      const prodottoId = p.codice || '';
+      if (prodottoId) caricaAccessoriProdotto(prodottoId, listinoBrand);
     } else {
       if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
     }
