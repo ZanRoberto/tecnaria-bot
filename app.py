@@ -449,6 +449,16 @@ input::placeholder { color: #6b7280; }
     <input type="text" id="new-cantiere" placeholder="Nome cantiere...">
     <button onclick="addCantiere()" class="btn-green" style="width: 100%;">+ Nuovo</button>
     <div id="cantieri-list" style="max-height: 200px; overflow-y: auto;"></div>
+
+    <h2 style="margin-top: 16px;">Upload Excel</h2>
+    <select id="upload-brand" style="width: 100%; margin-bottom: 6px;">
+      <option value="">-- Seleziona brand --</option>
+    </select>
+    <label style="display: block; width: 100%; background: #8b5cf6; color: white; padding: 8px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 11px; text-align: center; margin-bottom: 6px;">
+      📊 Carica Excel
+      <input type="file" id="file-excel" accept=".xlsx,.xls" style="display: none;" onchange="uploadExcel()">
+    </label>
+    <div id="upload-status" style="font-size: 10px; color: #9ca3af;"></div>
   </div>
 
   <!-- MAIN -->
@@ -508,6 +518,11 @@ function loadBrands() {
   fetch('/api/get-brands').then(r => r.json()).then(d => {
     BRANDS = d.brands || [];
     filterBrands();
+    
+    // Popola il select per upload
+    const sel = document.getElementById('upload-brand');
+    sel.innerHTML = '<option value="">-- Seleziona brand --</option>' +
+      BRANDS.map(b => '<option value="' + b + '">' + b + '</option>').join('');
   });
 }
 
@@ -666,6 +681,39 @@ function addRigaManuale() {
     document.getElementById('prezzo-input').value = '';
     loadCantiere();
   });
+}
+
+function uploadExcel() {
+  const brand = document.getElementById('upload-brand').value;
+  const file = document.getElementById('file-excel').files[0];
+  
+  if (!brand) { alert('Seleziona un brand'); return; }
+  if (!file) return;
+  
+  document.getElementById('upload-status').textContent = '⏳ Caricamento...';
+  
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    fetch('/api/upload-document', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        filename: file.name,
+        content: e.target.result,
+        brand: brand
+      })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        document.getElementById('upload-status').textContent = '✅ ' + file.name + ' caricato!';
+        document.getElementById('file-excel').value = '';
+      } else {
+        document.getElementById('upload-status').textContent = '❌ Errore: ' + (d.error || 'sconosciuto');
+      }
+    });
+  };
+  reader.readAsDataURL(file);
 }
 
 // Check login
