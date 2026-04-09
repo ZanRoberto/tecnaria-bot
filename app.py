@@ -3146,7 +3146,7 @@ function filtraListino() {
       '<div>' + prezzoHtml + '</div>' +
       '</div>' +
       '<div class="prodotto-actions" style="margin-top:8px;">' +
-      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'abbinamenti\')" class="btn-sm" style="background:rgba(59,130,245,0.2);color:#93c5fd;flex:1;">🔗 Abbina</button>' +
+      '<button onclick="event.stopPropagation();mostraAbbinamenti(\'' + (p.codice||'') + '\')" class="btn-sm" style="background:rgba(16,185,129,0.2);color:#10b981;flex:1;">📋 Abbina</button>' +
       '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
       '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
       '</div></div>';
