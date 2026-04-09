@@ -1925,28 +1925,57 @@ function selectBrand(inputId, listId, valId, brand) {
   closeAutocomplete(listId);
   if (inputId === 'riga-brand-input') aggiornaCampiExtra();
   
-  // LAZY LOADING ABBINAMENTI quando seleziona il brand principale
+  // LAZY LOADING ABBINAMENTI E LISTINO quando seleziona il brand principale
   if (inputId === 'brand-input') {
-    console.log('Caricando accessori per:', brand);
+    console.log('Caricando accessori e listino per:', brand);
     const statusEl = document.getElementById('brand-loading-status');
     if (statusEl) statusEl.textContent = '⏳ Caricamento ' + brand + '...';
     
+    // 1. Carica abbinamenti
     fetch('/api/load-brand-accessories/' + encodeURIComponent(brand))
       .then(r => r.json())
       .then(data => {
         if (data.ok) {
-          console.log('✅', data.message);
-          if (statusEl) statusEl.textContent = '✅ ' + data.message;
+          console.log('✅ Abbinamenti:', data.message);
         } else {
-          console.error('❌', data.message);
-          if (statusEl) statusEl.textContent = '❌ ' + data.message;
+          console.error('❌ Abbinamenti:', data.message);
         }
       })
-      .catch(e => {
-        console.error('Errore:', e);
-        if (statusEl) statusEl.textContent = '❌ Errore nel caricamento';
-      });
+      .catch(e => console.error('Errore abbinamenti:', e));
+    
+    // 2. Carica listino
+    caricaListinoBrand(brand);
   }
+}
+
+function caricaListinoBrand(brand) {
+  console.log('Caricando listino per:', brand);
+  
+  fetch('/api/listino/' + encodeURIComponent(brand))
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok && data.prodotti) {
+        console.log('✅ Listino:', data.prodotti.length, 'prodotti');
+        
+        window.listinoData = data.prodotti || [];
+        window.listinoBrand = brand;
+        window.listinoTipo = data.tipo || 'cliente';
+        
+        const statusEl = document.getElementById('brand-loading-status');
+        if (statusEl) {
+          statusEl.textContent = '✅ ' + brand + ': ' + data.prodotti.length + ' prodotti caricati';
+        }
+        
+        if (window.renderListino) {
+          renderListino(window.listinoData);
+        }
+      } else {
+        console.error('❌ Listino non trovato');
+      }
+    })
+    .catch(e => {
+      console.error('Errore listino:', e);
+    });
 }
 
 function closeAutocomplete(listId) {
