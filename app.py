@@ -189,9 +189,40 @@ def dedup_brands_on_start():
 
 dedup_brands_on_start()
 
-# ---------------------------------------------------------------------------
-# HELPERS AUTH
-# ---------------------------------------------------------------------------
+def load_gessi_abbinamenti_on_start():
+    """Carica 12 abbinamenti Gessi all'avvio dell'app"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    abbinamenti = [
+        ('38602#031', 'GSS-SCARICO-LAV', 'Scarico lavabo 32mm cromato', 'Gessi', 'CAT_003', 'ufficiale', 1),
+        ('38602#031', 'GSS-FLESS-LAV', 'Flessibile lavabo 1/2"', 'Gessi', 'CAT_007', 'ufficiale', 2),
+        ('38602#031', 'GSS-PORT-SAP', 'Portasapone cromato', 'Gessi', 'CAT_004', 'ufficiale', 3),
+        ('38613#031', 'GSS-SOFF-DOCCIA', 'Soffione doccia cromato Ø20cm', 'Gessi', 'CAT_006', 'ufficiale', 1),
+        ('38613#031', 'GSS-FLESS-DOCCIA', 'Flessibile doccia 150cm cromato', 'Gessi', 'CAT_007', 'ufficiale', 2),
+        ('38613#031', 'GSS-DOCCETTA', 'Doccetta manuale cromata', 'Gessi', 'CAT_005', 'ufficiale', 3),
+        ('38777#031', 'GSS-SOFF-TERMO', 'Soffione doccia per termostatico Ø25cm', 'Gessi', 'CAT_006', 'ufficiale', 1),
+        ('38777#031', 'GSS-FLESS-DOCCIA', 'Flessibile doccia 150cm cromato', 'Gessi', 'CAT_007', 'ufficiale', 2),
+        ('38777#031', 'GSS-BRACCIO-SOFF', 'Braccio soffione parete cromato', 'Gessi', 'CAT_004', 'ufficiale', 3),
+        ('56004#031', 'GSS-SCARICO-LAV', 'Scarico lavabo 32mm cromato', 'Gessi', 'CAT_003', 'ufficiale', 1),
+        ('56004#031', 'GSS-FLESS-LAV', 'Flessibile lavabo 1/2"', 'Gessi', 'CAT_007', 'ufficiale', 2),
+        ('56004#031', 'GSS-SPECCHIO-LAV', 'Specchio bagno 80x60cm', 'Gessi', 'CAT_008', 'alternativa', 3),
+    ]
+    
+    for prodotto, acc_id, acc_nome, brand, categoria, tipo, priority in abbinamenti:
+        try:
+            c.execute("""INSERT OR IGNORE INTO product_accessories 
+                        (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio, 
+                         categoria_accessorio, tipo_relazione, priority, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (prodotto, acc_id, acc_nome, brand, categoria, tipo, priority, datetime.now().isoformat()))
+        except:
+            pass
+    
+    conn.commit()
+    conn.close()
+
+load_gessi_abbinamenti_on_start()
 
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
@@ -3573,6 +3604,11 @@ function caricaListino() {
         ? '<span style="color:#10b981;">📄 ' + n + ' prodotti da listino</span>'
         : '<span style="color:#ef4444;">⚠ Nessun listino caricato per ' + listinoBrand + ' — carica un Excel prima</span>';
       document.getElementById('listino-count').innerHTML = fonte;
+      
+      // CARICA ABBINAMENTI AUTOMATICAMENTE QUANDO CARICHI LISTINO
+      fetch('/api/carica-abbinamenti-excel/' + encodeURIComponent(listinoBrand), {method:'POST'})
+        .then(r => r.json())
+        .catch(() => {}); // Silenzioso se fallisce
     });
 }
 
