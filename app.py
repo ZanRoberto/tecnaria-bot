@@ -1426,13 +1426,6 @@ def get_abbinamenti_prodotto(codice_prodotto):
         "esclusi": esclusi,
         "count": len(ufficiali) + len(alternative)
     })
-            
-    except Exception as e:
-        return jsonify({
-            "ok": False,
-            "error": str(e),
-            "brand": brand
-        }), 500
 
 # ---------------------------------------------------------------------------
 # FRONTEND
