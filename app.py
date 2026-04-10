@@ -1052,10 +1052,10 @@ def get_listino(brand):
     """Restituisce i prodotti dal listino Excel caricato per un brand"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Cerca documenti Excel per questo brand
+    # Cerca documenti Excel per questo brand (case-insensitive)
     c.execute("""SELECT d.content, d.filename FROM documents d
                  JOIN aziende a ON d.azienda_id = a.id
-                 WHERE a.nome = ? AND (d.filename LIKE '%.xlsx' OR d.filename LIKE '%.xls' OR d.filename LIKE '%[EXCEL]%')
+                 WHERE LOWER(a.nome) = LOWER(?) AND (LOWER(d.filename) LIKE '%.xlsx' OR LOWER(d.filename) LIKE '%.xls' OR LOWER(d.filename) LIKE '%excel%')
                  ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
     row = c.fetchone()
     conn.close()
