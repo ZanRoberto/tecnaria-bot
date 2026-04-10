@@ -1504,6 +1504,23 @@ def get_abbinamenti_prodotto(codice_prodotto):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
+    # Cerca il prodotto nel listino
+    c.execute("""SELECT codice, nome, collezione, categoria, prezzo FROM products 
+                 WHERE codice = ? LIMIT 1""", (codice_prodotto,))
+    prodotto_row = c.fetchone()
+    
+    if not prodotto_row:
+        conn.close()
+        return jsonify({"ok": False, "error": "Prodotto non trovato"}), 404
+    
+    prodotto = {
+        'codice': prodotto_row[0],
+        'nome': prodotto_row[1],
+        'collezione': prodotto_row[2],
+        'categoria': prodotto_row[3],
+        'prezzo': prodotto_row[4]
+    }
+    
     # Cerca accessori per questo prodotto
     c.execute("""SELECT accessorio_id, accessorio_nome, brand_accessorio, tipo_relazione, priority, note
                  FROM product_accessories
@@ -1519,10 +1536,12 @@ def get_abbinamenti_prodotto(codice_prodotto):
     
     for row in rows:
         acc = {
-            'id': row[0],
+            'accessorio_id': row[0],
             'nome': row[1],
             'brand': row[2],
-            'note': row[4] if row[4] else ''
+            'tipo': row[3],
+            'priority': row[4],
+            'note': row[5] if row[5] else ''
         }
         if row[3] == 'ufficiale':
             ufficiali.append(acc)
@@ -1533,7 +1552,7 @@ def get_abbinamenti_prodotto(codice_prodotto):
     
     return jsonify({
         "ok": True,
-        "codice_prodotto": codice_prodotto,
+        "prodotto": prodotto,
         "ufficiali": ufficiali,
         "alternative": alternative,
         "esclusi": esclusi,
