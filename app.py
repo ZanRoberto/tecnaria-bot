@@ -2001,14 +2001,6 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       </div>
     </div>
 
-    <!-- BOTTONE CARICA ABBINAMENTI - SEMPRE VISIBILE -->
-    <div style="padding:12px 18px; background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.3); border-radius:6px; margin-bottom:12px;">
-      <button onclick="caricaAbbinamenti()" style="width:100%; background:#10b981; color:white; padding:10px; border:none; border-radius:6px; cursor:pointer; font-weight:700; font-size:12px; margin-bottom:0;">
-        🔗 CARICA ABBINAMENTI
-      </button>
-      <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:6px; text-align:center;"></div>
-    </div>
-
     <!-- AGGIUNGI RIGA -->
     <div class="drawer-section">
       <div class="drawer-section-title">Aggiungi elemento</div>
@@ -3891,43 +3883,79 @@ function verificaAbbinamenti(idx, codice) {
 }
 
 function apriModalAbbinamenti(codice, data) {
-  // Apre modal con lista abbinamenti selezionabili
+  // Leggi le righe dal server
+  if (!cantiereAttivo) {
+    alert('Apri prima un cantiere');
+    return;
+  }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe')
+    .then(r => r.json())
+    .then(righeData => {
+      const righeGiaAggiunte = new Set();
+      
+      // Estrai i codici GSS già aggiunti
+      if (righeData.righe) {
+        righeData.righe.forEach(r => {
+          const desc = r.descrizione || '';
+          const match = desc.match(/\[(GSS-[^\]]+)\]/);
+          if (match) {
+            righeGiaAggiunte.add(match[1]);
+          }
+        });
+      }
+
+      mostraModalAbbinamenti(codice, data, righeGiaAggiunte);
+    })
+    .catch(e => {
+      console.error('Errore lettura righe:', e);
+      mostraModalAbbinamenti(codice, data, new Set());
+    });
+}
+
+function mostraModalAbbinamenti(codice, data, righeGiaAggiunte) {
   const html = `
     <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;">
       <div style="background:#0f172a;border:2px solid #3b82f6;border-radius:12px;width:100%;max-width:600px;max-height:80vh;overflow-y:auto;padding:30px;">
         
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;border-bottom:2px solid #1e40af;padding-bottom:15px;">
-          <h2 style="margin:0;color:#60a5fa;font-size:20px;font-weight:bold;">Abbinamenti per ${codice}</h2>
+          <h2 style="margin:0;color:#60a5fa;font-size:18px;font-weight:bold;">Abbinamenti: ${codice}</h2>
           <button onclick="this.closest('[style*=fixed]').remove()" style="background:#ef4444;color:white;border:none;border-radius:50%;width:40px;height:40px;cursor:pointer;font-size:20px;">✕</button>
         </div>
         
         <div style="margin-bottom:20px;">
-          <div style="font-size:12px;color:#60a5fa;font-weight:bold;margin-bottom:10px;text-transform:uppercase;">✓ Abbinamenti Ufficiali</div>
-          ${(data.ufficiali || []).map(acc => `
-            <div style="background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);border-radius:6px;padding:10px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;" onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}','${acc.nome}','${codice}')">
-              <input type="checkbox" style="margin-right:10px;">
+          <div style="font-size:12px;color:#60a5fa;font-weight:bold;margin-bottom:12px;text-transform:uppercase;">✓ Abbinamenti Ufficiali</div>
+          ${(data.ufficiali || []).map(acc => {
+            const isChecked = righeGiaAggiunte.has(acc.accessorio_id);
+            return `
+            <div style="background:rgba(16,185,129,${isChecked ? '0.25' : '0.1'});border:2px solid rgba(16,185,129,${isChecked ? '0.8' : '0.3'});border-radius:6px;padding:12px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;" onclick="toggleAccessorio('${acc.accessorio_id}', '${acc.nome}', '${codice}')">
+              <input type="checkbox" ${isChecked ? 'checked' : ''} style="margin-right:10px;width:18px;height:18px;cursor:pointer;" onchange="event.stopPropagation();">
               <div style="flex:1;">
                 <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
                 <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
               </div>
-              <div style="background:#10b981;color:white;padding:3px 8px;border-radius:3px;font-size:10px;font-weight:600;">Seleziona</div>
+              <div style="background:${isChecked ? '#10b981' : '#6b7280'};color:white;padding:4px 10px;border-radius:3px;font-size:10px;font-weight:600;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</div>
             </div>
-          `).join('')}
+            `;
+          }).join('')}
         </div>
         
         ${(data.alternative && data.alternative.length > 0) ? `
         <div>
-          <div style="font-size:12px;color:#f59e0b;font-weight:bold;margin-bottom:10px;text-transform:uppercase;">★ Abbinamenti Alternativi</div>
-          ${data.alternative.map(acc => `
-            <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:10px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;" onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}','${acc.nome}','${codice}')">
-              <input type="checkbox" style="margin-right:10px;">
+          <div style="font-size:12px;color:#f59e0b;font-weight:bold;margin-bottom:12px;text-transform:uppercase;">★ Abbinamenti Alternativi</div>
+          ${data.alternative.map(acc => {
+            const isChecked = righeGiaAggiunte.has(acc.accessorio_id);
+            return `
+            <div style="background:rgba(245,158,11,${isChecked ? '0.25' : '0.1'});border:2px solid rgba(245,158,11,${isChecked ? '0.8' : '0.3'});border-radius:6px;padding:12px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;" onclick="toggleAccessorio('${acc.accessorio_id}', '${acc.nome}', '${codice}')">
+              <input type="checkbox" ${isChecked ? 'checked' : ''} style="margin-right:10px;width:18px;height:18px;cursor:pointer;" onchange="event.stopPropagation();">
               <div style="flex:1;">
                 <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
                 <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
               </div>
-              <div style="background:#f59e0b;color:white;padding:3px 8px;border-radius:3px;font-size:10px;font-weight:600;">Seleziona</div>
+              <div style="background:${isChecked ? '#f59e0b' : '#6b7280'};color:white;padding:4px 10px;border-radius:3px;font-size:10px;font-weight:600;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</div>
             </div>
-          `).join('')}
+            `;
+          }).join('')}
         </div>
         ` : ''}
         
@@ -3940,9 +3968,67 @@ function apriModalAbbinamenti(codice, data) {
   document.body.appendChild(container);
 }
 
+function toggleAccessorio(accId, accNome, codice) {
+  const modal = document.querySelector('[style*="position:fixed"]');
+  const checkbox = modal.querySelector(`input[type="checkbox"][${accId}]`) || 
+                   Array.from(modal.querySelectorAll('input[type="checkbox"]')).find(cb => 
+                     cb.parentElement.parentElement.textContent.includes(accId));
+  
+  if (!checkbox) return;
+  
+  if (!checkbox.checked) {
+    // AGGIUNGI
+    checkbox.checked = true;
+    aggiungiAccessorioAlCantiere(accId, accNome, codice);
+  } else {
+    // TOLGO
+    checkbox.checked = false;
+    rimuoviAccessorioAlCantiere(accId);
+  }
+}
+
+function rimuoviAccessorioAlCantiere(accId) {
+  // Trova la riga nel carrello con questo accessorio e la rimuove
+  const righeDiv = document.getElementById('righe-list');
+  if (!righeDiv) return;
+  
+  const items = righeDiv.querySelectorAll('[data-descrizione]');
+  items.forEach(item => {
+    const desc = item.getAttribute('data-descrizione');
+    if (desc && desc.includes(accId)) {
+      // Clicca il bottone elimina
+      const deleteBtn = item.querySelector('button[onclick*="eliminaRiga"]');
+      if (deleteBtn) deleteBtn.click();
+    }
+  });
+}
+
 function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
+  // Se non c'è cantiere aperto, crea uno automatico
   if (!cantiereAttivo) {
-    alert('Apri prima un cantiere');
+    const nomeCantiere = prompt('Nome cantiere:', 'Offerta Gessi');
+    if (!nomeCantiere) return;
+    
+    // Crea cantiere
+    fetch('/api/cantieri', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        nome: nomeCantiere,
+        cliente: 'Offerta rapida',
+        indirizzo: '',
+        note: 'Creato automaticamente'
+      })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        cantiereAttivo = d.cantiere_id;
+        loadCantieri();
+        // Ora aggiungi l'accessorio
+        aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice);
+      }
+    });
     return;
   }
   
@@ -3964,12 +4050,15 @@ function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
       document.querySelector('[style*="position:fixed"]')?.remove();
       // Feedback
       const msg = document.createElement('div');
-      msg.innerHTML = '✓ ' + accNome + ' aggiunto!';
-      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;';
+      msg.innerHTML = '✓ ' + accNome + ' aggiunto al carrello!';
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;font-weight:600;';
       document.body.appendChild(msg);
       setTimeout(() => msg.remove(), 2000);
+    } else {
+      alert('Errore: ' + (d.error || 'Non aggiunto'));
     }
-  });
+  })
+  .catch(e => alert('Errore connessione: ' + e.message));
 }
 
 // Controlla se già loggato
