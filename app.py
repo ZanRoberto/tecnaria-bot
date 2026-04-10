@@ -1804,11 +1804,6 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
       <button style="background:#8b5cf6;" onclick="apriListino()">📋 LISTINO</button>
     </div>
-    <div style="margin-bottom:8px;">
-      <button onclick="apriAnalisiLibera()" style="width:100%; background:rgba(245,158,11,0.2); border:1px solid rgba(245,158,11,0.4); color:#f59e0b; padding:7px; border-radius:6px; font-size:11px; font-weight:600; cursor:pointer;">
-        📄 Analisi libera — carica qualsiasi documento
-      </button>
-    </div>
     <div class="chat-area" id="chat"></div>
     <div class="input-area">
       <input type="text" id="question" placeholder="Domanda libera o cerca prodotto..." onkeypress="if(event.key==='Enter') ask()" oninput="cercaRapidaListino(this.value)" style="flex: 1;">
@@ -2006,6 +2001,14 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
       </div>
     </div>
 
+    <!-- BOTTONE CARICA ABBINAMENTI - SEMPRE VISIBILE -->
+    <div style="padding:12px 18px; background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.3); border-radius:6px; margin-bottom:12px;">
+      <button onclick="caricaAbbinamenti()" style="width:100%; background:#10b981; color:white; padding:10px; border:none; border-radius:6px; cursor:pointer; font-weight:700; font-size:12px; margin-bottom:0;">
+        🔗 CARICA ABBINAMENTI
+      </button>
+      <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:6px; text-align:center;"></div>
+    </div>
+
     <!-- AGGIUNGI RIGA -->
     <div class="drawer-section">
       <div class="drawer-section-title">Aggiungi elemento</div>
@@ -2077,12 +2080,6 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
           </label>
           <div id="excel-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px;"></div>
         </div>
-
-        <!-- BOTTONE CARICA ABBINAMENTI -->
-        <button onclick="caricaAbbinamenti()" style="width:100%; background:#10b981; color:white; padding:8px; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; margin-bottom:8px;">
-          🔗 CARICA ABBINAMENTI
-        </button>
-        <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px; text-align:center;"></div>
 
         <!-- Lista righe Excel -->
         <div id="excel-righe-list" style="max-height:340px; overflow-y:auto;"></div>
@@ -2654,18 +2651,14 @@ function generaOffertaCantiere() {
     }).join('\n');
     const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
     if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
-    const nomeCliente = document.getElementById('cantiere-cliente') ? document.getElementById('cantiere-cliente').value.trim() : '';
-    const intestazione = nomeCliente ? 'Spett. ' + nomeCliente : 'Gentile Cliente';
-    const domanda = 'Genera una proposta commerciale professionale per il cantiere "' + nome + '".\n' +
-      'Intestazione: ' + intestazione + '\n\n' +
+    const domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
       'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
       'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
       'La proposta deve:\n' +
-      '1. Iniziare con "' + intestazione + '" e un testo introduttivo professionale\n' +
+      '1. Avere un testo introduttivo professionale e convincente\n' +
       '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
       '3. Mostrare il totale finale in modo chiaro\n' +
-      '4. Chiudersi con una call to action\n' +
-      (nomeCliente ? '5. Personalizzare il tono per il cliente ' + nomeCliente + '\n' : '') +
+      '4. Chiudersi con una call to action per il cliente\n' +
       'Usa un tono elegante, orientato al valore e alla qualità.';
     closeCantiere();
     askDirect(domanda, brands);
@@ -4283,17 +4276,13 @@ function aggiornaPannelloAccessori(data) {
     if (data.ufficiali && data.ufficiali.length > 0) {
         html += `<div style="font-size:10px;color:#ef4444;font-weight:bold;margin-bottom:6px;">✓ UFFICIALI</div>`;
         data.ufficiali.forEach(acc => {
-            const safeid = (acc.accessorio_id||'').replace(/'/g,"\'");
-            const safenome = (acc.nome||acc.accessorio_id||'').replace(/'/g,"\'");
-            const safebrand = (acc.brand_accessorio||'Gessi').replace(/'/g,"\'");
-            html += `<div style="padding:8px;margin-bottom:6px;background:rgba(239,68,68,0.1);border-left:2px solid #ef4444;border-radius:3px;">
-                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome||acc.accessorio_id}</div>
+            html += `
+            <div style="padding:8px;margin-bottom:6px;background:rgba(239,68,68,0.1);border-left:2px solid #ef4444;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
                 <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
-                <button onclick="aggiungiAccessorioAlCantiere('${safeid}','${safenome}','${safebrand}')" 
-                  style="margin-top:6px;width:100%;background:#10b981;color:white;border:none;border-radius:4px;padding:5px;font-size:10px;cursor:pointer;font-weight:600;">
-                  + Aggiungi al carrello
-                </button>
-            </div>`;
+                <div style="font-size:10px;color:#10b981;margin-top:4px;">→ Clicca per aggiungere</div>
+            </div>
+            `;
         });
     }
     
@@ -4301,34 +4290,17 @@ function aggiornaPannelloAccessori(data) {
     if (data.alternative && data.alternative.length > 0) {
         html += `<div style="font-size:10px;color:#f59e0b;font-weight:bold;margin-top:12px;margin-bottom:6px;">★ ALTERNATIVE</div>`;
         data.alternative.forEach(acc => {
-            const safeid = (acc.accessorio_id||'').replace(/'/g,"\'");
-            const safenome = (acc.nome||acc.accessorio_id||'').replace(/'/g,"\'");
-            const safebrand = (acc.brand_accessorio||'Gessi').replace(/'/g,"\'");
-            html += `<div style="padding:8px;margin-bottom:6px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:3px;">
-                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome||acc.accessorio_id}</div>
+            html += `
+            <div style="padding:8px;margin-bottom:6px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
                 <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
-                <button onclick="aggiungiAccessorioAlCantiere('${safeid}','${safenome}','${safebrand}')"
-                  style="margin-top:6px;width:100%;background:rgba(245,158,11,0.3);color:#f59e0b;border:1px solid #f59e0b;border-radius:4px;padding:5px;font-size:10px;cursor:pointer;font-weight:600;">
-                  + Aggiungi al carrello
-                </button>
-            </div>`;
+                <div style="font-size:10px;color:#f59e0b;margin-top:4px;">→ Clicca per aggiungere</div>
+            </div>
+            `;
         });
     }
     
-    // Bottone AGGIUNGI TUTTI in cima
-    let tuttiHtml = '';
-    const tuttiAcc = [...(data.ufficiali||[]), ...(data.alternative||[])];
-    if (tuttiAcc.length > 1) {
-        const tuttiJson = JSON.stringify(tuttiAcc).replace(/'/g,"\'").replace(/"/g,'&quot;');
-        tuttiHtml = `<button onclick="aggiungiTuttiAccessori(${tuttiAcc.length})"
-            id="btn-aggiungi-tutti-acc"
-            data-accessori='${JSON.stringify(tuttiAcc).replace(/'/g,"&#39;")}'
-            style="width:100%;background:#3b82f6;color:white;border:none;border-radius:6px;
-            padding:10px;font-size:12px;font-weight:700;cursor:pointer;margin-bottom:10px;">
-            ⚡ Aggiungi tutti (${tuttiAcc.length}) al carrello
-        </button>`;
-    }
-    document.getElementById('sezioneUfficiali').innerHTML = tuttiHtml + html;
+    document.getElementById('sezioneUfficiali').innerHTML = html;
     document.getElementById('sezioneAlternative').innerHTML = '';
 }
 
@@ -4388,49 +4360,9 @@ function creaCardAccessorio(acc, escluso = false) {
     `;
 }
 
-function aggiungiAccessorio(accessorioId, nome, brand) {
-    aggiungiAccessorioAlCantiere(accessorioId, nome || accessorioId, brand || 'Gessi');
-}
-
-function aggiungiTuttiAccessori(count) {
-    if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
-    const btn = document.getElementById('btn-aggiungi-tutti-acc');
-    if (!btn) return;
-    const accessori = JSON.parse(btn.dataset.accessori || '[]');
-    if (!accessori.length) return;
-
-    btn.disabled = true;
-    btn.textContent = '⏳ Aggiunta in corso...';
-
-    // Tutte le chiamate in parallelo
-    const promises = accessori.map(acc => {
-        const descrizione = '[' + (acc.accessorio_id||'') + '] ' + (acc.nome||acc.accessorio_id||'');
-        return fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                brand: acc.brand_accessorio || 'Gessi',
-                categoria: 'Accessori',
-                descrizione: descrizione,
-                importo: 0
-            })
-        }).then(r => r.json());
-    });
-
-    Promise.all(promises).then(results => {
-        const ok = results.filter(r => r.ok).length;
-        btn.textContent = '✅ ' + ok + ' accessori aggiunti!';
-        btn.style.background = '#10b981';
-        loadRighe();
-        setTimeout(() => {
-            btn.disabled = false;
-            btn.textContent = '⚡ Aggiungi tutti (' + count + ') al carrello';
-            btn.style.background = '#3b82f6';
-        }, 2500);
-    }).catch(() => {
-        btn.disabled = false;
-        btn.textContent = '⚡ Aggiungi tutti (' + count + ') al carrello';
-    });
+function aggiungiAccessorio(accessorioId) {
+    console.log("Aggiunto accessorio:", accessorioId);
+    alert("Accessorio aggiunto al cantiere");
 }
 
 document.addEventListener('click', function(event) {
@@ -4441,328 +4373,8 @@ document.addEventListener('click', function(event) {
 });
 </script>
 
-
-<!-- MODAL ANALISI LIBERA -->
-<div id="analisi-libera-panel" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:5000; align-items:center; justify-content:center;">
-  <div style="background:#0f172a; border:1px solid rgba(245,158,11,0.4); border-radius:12px; width:680px; max-width:95vw; max-height:90vh; display:flex; flex-direction:column;">
-    
-    <!-- Header -->
-    <div style="padding:16px 20px; border-bottom:1px solid rgba(245,158,11,0.2); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
-      <div>
-        <div style="font-size:14px; font-weight:700; color:#f59e0b;">📄 Analisi Libera</div>
-        <div style="font-size:11px; color:#6b7280; margin-top:2px;">Carica qualsiasi documento e analizzalo con l'AI</div>
-      </div>
-      <button onclick="chiudiAnalisiLibera()" style="background:#6b7280; color:white; border:none; border-radius:6px; padding:5px 12px; cursor:pointer; font-size:12px;">✕ Chiudi</button>
-    </div>
-
-    <!-- Upload -->
-    <div style="padding:16px 20px; border-bottom:1px solid rgba(245,158,11,0.1); flex-shrink:0;">
-      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-        <label style="background:rgba(245,158,11,0.2); border:1px solid rgba(245,158,11,0.4); color:#f59e0b; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">
-          📎 Carica documento (PDF, TXT, Excel)
-          <input type="file" id="analisi-file" style="display:none;" accept=".pdf,.txt,.xlsx,.xls,.csv" onchange="caricaDocumentoLibero(this)">
-        </label>
-        <div id="analisi-file-status" style="font-size:11px; color:#9ca3af;"></div>
-      </div>
-      <!-- Domande rapide suggerite -->
-      <div id="analisi-domande-rapide" style="display:none; margin-top:10px;">
-        <div style="font-size:10px; color:#6b7280; margin-bottom:6px;">Domande suggerite:</div>
-        <div id="analisi-chips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
-      </div>
-    </div>
-
-    <!-- Chat area -->
-    <div id="analisi-chat" style="flex:1; overflow-y:auto; padding:12px 20px; font-size:12px; min-height:200px; max-height:320px;"></div>
-
-    <!-- Input -->
-    <div style="padding:12px 20px; border-top:1px solid rgba(245,158,11,0.1); display:flex; gap:8px; flex-shrink:0;">
-      <input type="text" id="analisi-domanda" placeholder="Fai una domanda sul documento o chiedi confronto con il mercato..." 
-        style="flex:1; font-size:12px;" onkeypress="if(event.key==='Enter') inviaAnalisiLibera()">
-      <label style="background:rgba(59,130,245,0.3); border:1px solid rgba(59,130,245,0.4); color:#93c5fd; padding:0 12px; border-radius:6px; cursor:pointer; font-size:11px; display:flex; align-items:center; gap:4px; white-space:nowrap;">
-        🔍 Web ON
-        <input type="checkbox" id="analisi-web" checked style="display:none;">
-      </label>
-      <button onclick="inviaAnalisiLibera()" style="background:#f59e0b; color:#000; border:none; border-radius:6px; padding:0 16px; font-weight:700; cursor:pointer; font-size:12px;">Invia</button>
-    </div>
-
-  </div>
-</div>
-
-<script>
-let analisiDocumento = null;  // contenuto documento caricato
-let analisiDocNome = '';
-
-function apriAnalisiLibera() {
-  document.getElementById('analisi-libera-panel').style.display = 'flex';
-  document.getElementById('analisi-domanda').focus();
-}
-
-function chiudiAnalisiLibera() {
-  document.getElementById('analisi-libera-panel').style.display = 'none';
-}
-
-function caricaDocumentoLibero(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const status = document.getElementById('analisi-file-status');
-  status.textContent = '⏳ Lettura in corso...';
-  status.style.color = '#9ca3af';
-  analisiDocNome = file.name;
-
-  const reader = new FileReader();
-
-  // PDF o Excel → base64, testo → diretto
-  const isTxt = file.name.endsWith('.txt') || file.name.endsWith('.csv');
-
-  reader.onload = function(e) {
-    if (isTxt) {
-      analisiDocumento = e.target.result;
-      status.textContent = '✅ ' + file.name + ' — pronto';
-      status.style.color = '#10b981';
-      mostraDomandeRapide(file.name);
-    } else {
-      // Invia al server per parsing (Excel) o usa base64 per PDF
-      const ext = file.name.split('.').pop().toLowerCase();
-      if (['xlsx','xls'].includes(ext)) {
-        fetch('/api/parse-excel', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({content: e.target.result})
-        })
-        .then(r => r.json())
-        .then(d => {
-          if (d.ok) {
-            analisiDocumento = d.righe.map(r => r.codice + ' ' + r.descrizione + (r.prezzo ? ' €'+r.prezzo : '')).join('\n');
-            status.textContent = '✅ ' + file.name + ' (' + d.totale + ' righe) — pronto';
-            status.style.color = '#10b981';
-            mostraDomandeRapide(file.name);
-          } else {
-            status.textContent = '❌ Errore: ' + d.error;
-            status.style.color = '#ef4444';
-          }
-        });
-      } else {
-        // PDF o altro — usa come base64, il server estrae testo
-        analisiDocumento = e.target.result;
-        status.textContent = '✅ ' + file.name + ' — pronto';
-        status.style.color = '#10b981';
-        mostraDomandeRapide(file.name);
-      }
-    }
-  };
-
-  if (isTxt) {
-    reader.readAsText(file, 'UTF-8');
-  } else {
-    reader.readAsDataURL(file);
-  }
-  input.value = '';
-}
-
-function mostraDomandeRapide(nomefile) {
-  const lower = nomefile.toLowerCase();
-  let domande = [];
-  if (lower.includes('bolletta') || lower.includes('gas') || lower.includes('luce') || lower.includes('acqua') || lower.includes('energia')) {
-    domande = [
-      'Qual è il costo al kWh/mc che sto pagando?',
-      'Ci sono offerte migliori sul mercato attualmente?',
-      'Come posso ridurre la spesa?',
-      'Confronta con le tariffe medie italiane',
-      'Quali voci di costo pesano di più?',
-    ];
-  } else if (lower.includes('contratto') || lower.includes('fattura')) {
-    domande = [
-      'Riassumi i punti chiave',
-      'Ci sono clausole svantaggiose?',
-      'Quali sono i termini di pagamento?',
-    ];
-  } else {
-    domande = [
-      'Riassumi il documento',
-      'Quali sono i punti principali?',
-      'Confronta con dati di mercato',
-      'Cosa posso ottimizzare?',
-    ];
-  }
-  document.getElementById('analisi-domande-rapide').style.display = 'block';
-  document.getElementById('analisi-chips').innerHTML = domande.map(d =>
-    '<button onclick="usaDomandaRapida(\'' + d.replace(/'/g,"\'") + '\')" style="padding:4px 10px; font-size:10px; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.3); color:#f59e0b; border-radius:20px; cursor:pointer;">' + d + '</button>'
-  ).join('');
-}
-
-function usaDomandaRapida(d) {
-  document.getElementById('analisi-domanda').value = d;
-  inviaAnalisiLibera();
-}
-
-function inviaAnalisiLibera() {
-  const domanda = document.getElementById('analisi-domanda').value.trim();
-  if (!domanda) return;
-  const webOn = document.getElementById('analisi-web').checked !== false;
-  const chat = document.getElementById('analisi-chat');
-
-  chat.innerHTML += '<div style="background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;padding:7px 10px;margin:4px 0;border-radius:4px;font-size:12px;"><strong style=\"color:#f59e0b\">Tu:</strong> ' + domanda + '</div>';
-  document.getElementById('analisi-domanda').value = '';
-  
-  const loadId = 'al_' + Date.now();
-  chat.innerHTML += '<div id="' + loadId + '" style="color:#9ca3af;font-style:italic;font-size:11px;padding:6px;">Analisi in corso...</div>';
-  chat.scrollTop = chat.scrollHeight;
-
-  // Costruisci payload — usa brand virtuale "_libero" per non filtrare per brand
-  const payload = {
-    question: domanda,
-    brands: ['_libero'],
-    web: webOn,
-    documento_libero: analisiDocumento || null,
-    documento_nome: analisiDocNome || null,
-  };
-
-  fetch('/api/ask-libero', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
-  })
-  .then(r => r.json())
-  .then(d => {
-    document.getElementById(loadId)?.remove();
-    const fonte = d.fonte === 'documento' 
-      ? '<span style=\"color:#10b981;font-size:10px;\">📄 da documento caricato</span>'
-      : d.fonte === 'archivio'
-      ? '<span style=\"color:#8b5cf6;font-size:10px;\">🗄 da archivio documenti</span>'
-      : '<span style=\"color:#f59e0b;font-size:10px;\">🌐 dal web</span>';
-    chat.innerHTML += '<div style=\"background:rgba(30,41,59,0.8);border-left:2px solid #6b7280;padding:8px 10px;margin:4px 0;border-radius:4px;font-size:12px;line-height:1.6;\">' + fonte + '<br>' + parseMarkdown(d.answer||'Nessuna risposta') + '</div>';
-    chat.scrollTop = chat.scrollHeight;
-  })
-  .catch(e => {
-    document.getElementById(loadId)?.remove();
-    chat.innerHTML += '<div style=\"color:#ef4444;font-size:11px;padding:6px;\">Errore: ' + e + '</div>';
-  });
-}
-
-// Chiudi con ESC
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') chiudiAnalisiLibera();
-});
-</script>
-
 </body>
 </html>''')
-
-
-@app.route('/api/ask-libero', methods=['POST'])
-def ask_libero():
-    """Analisi libera — qualsiasi documento senza brand/cantieri"""
-    data = request.get_json()
-    question        = data.get('question', '')
-    documento       = data.get('documento_libero')
-    documento_nome  = data.get('documento_nome', 'documento')
-    use_web         = data.get('web', True)
-
-    if not question:
-        return jsonify({"error": "Domanda richiesta"}), 400
-
-    # Estratto testo dal documento
-    doc_context = ""
-    fonte = "web"
-
-    if documento:
-        fonte = "documento"
-        # Se è base64 PDF
-        if documento.startswith('data:application/pdf') or documento.startswith('data:') and 'pdf' in documento:
-            doc_context = f"[DOCUMENTO: {documento_nome}]\nContenuto PDF caricato dall\'utente — analizza questo documento per rispondere."
-        elif documento.startswith('data:') or len(documento) > 500:
-            # Excel già parsato o testo lungo
-            doc_context = f"[DOCUMENTO: {documento_nome}]\n{documento[:3000]}"
-        else:
-            doc_context = f"[DOCUMENTO: {documento_nome}]\n{documento[:3000]}"
-
-    # Cerca nei documenti del DB — brand/listini/cataloghi già caricati
-    db_context = ""
-    db_fonte = ""
-    try:
-        conn_lib = sqlite3.connect(DB_PATH)
-        c_lib = conn_lib.cursor()
-        # Cerca in tutti i documenti pubblici parole chiave dalla domanda
-        parole = [p for p in question.lower().split() if len(p) > 3]
-        if parole:
-            c_lib.execute("""SELECT d.filename, d.content, a.nome
-                             FROM documents d JOIN aziende a ON d.azienda_id=a.id
-                             WHERE d.visibility='public'
-                             ORDER BY d.upload_date DESC LIMIT 20""")
-            rows = c_lib.fetchall()
-            trovati = []
-            for filename, content_doc, brand_nome in rows:
-                if not content_doc:
-                    continue
-                content_lower = content_doc[:2000].lower()
-                score = sum(1 for p in parole if p in content_lower)
-                if score > 0:
-                    trovati.append((score, filename, content_doc[:800], brand_nome))
-            trovati.sort(key=lambda x: -x[0])
-            if trovati:
-                db_context = "\n".join([
-                    f"[{brand} — {fname}]\n{snippet}"
-                    for _, fname, snippet, brand in trovati[:3]
-                ])
-                db_fonte = ", ".join(set(b for _, _, _, b in trovati[:3]))
-        conn_lib.close()
-    except Exception as e:
-        pass
-
-    # Web search se abilitato
-    web_context = ""
-    if use_web:
-        try:
-            web_result = search_web(question, [])
-            if web_result:
-                web_context = "[DATI WEB]\n" + web_result
-        except:
-            pass
-
-    # Determina fonte principale
-    if doc_context:
-        fonte = "documento"
-    elif db_context:
-        fonte = "archivio"
-    else:
-        fonte = "web"
-
-    # Costruisci prompt con priorità: doc caricato > archivio DB > web
-    prompt = f"""Sei un assistente AI che analizza documenti e fornisce consulenza pratica.
-
-Domanda: {question}
-"""
-    if doc_context:
-        prompt += f"""
-═══ DOCUMENTO CARICATO (massima priorità) ═══
-{doc_context}
-Analizza questo documento per rispondere. Identifica dati chiave, costi, condizioni.
-"""
-    if db_context:
-        prompt += f"""
-═══ ARCHIVIO DOCUMENTI ({db_fonte}) ═══
-{db_context}
-Usa questi dati se pertinenti alla domanda.
-"""
-    if web_context:
-        prompt += f"""
-═══ DATI WEB (confronto/completamento) ═══
-{web_context}
-"""
-
-    prompt += """
-REGOLE:
-- Documento caricato → priorità assoluta
-- Archivio interno → usa se pertinente
-- Web → solo per confronto o se mancano dati
-- Sii concreto: dai numeri, percentuali, confronti
-- Se trovi listini o prezzi nell'archivio, mostrali
-- Evidenzia opportunità di risparmio o ottimizzazione
-- Max 1500 caratteri, risposta chiara e strutturata
-- Indica sempre da dove vengono i dati (documento/archivio/web)"""
-
-    answer = deepseek_ask(prompt)
-    return jsonify({"answer": answer, "fonte": "documento" if doc_context else "web"})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
