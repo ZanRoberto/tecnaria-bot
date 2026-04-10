@@ -105,6 +105,23 @@ def init_db():
     )''')
     
     # TABELLE LAZY LOADING ABBINAMENTI
+    c.execute('''CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        codice TEXT UNIQUE NOT NULL,
+        nome TEXT,
+        collezione TEXT,
+        categoria TEXT,
+        prezzo REAL,
+        prezzo_rivenditore REAL,
+        prezzo_scontato REAL,
+        disponibilita TEXT,
+        descrizione TEXT,
+        finiture TEXT,
+        fonte TEXT,
+        brand TEXT,
+        created_at TEXT
+    )''')
+    
     c.execute('''CREATE TABLE IF NOT EXISTS categories_accessori (
         id INTEGER PRIMARY KEY,
         categoria_id TEXT UNIQUE NOT NULL,
@@ -190,42 +207,8 @@ def dedup_brands_on_start():
 dedup_brands_on_start()
 
 def load_gessi_abbinamenti_on_start():
-    """Carica 12 abbinamenti Gessi all'avvio dell'app - SEMPRE"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Pulisci gli abbinamenti vecchi per Gessi
-    c.execute("DELETE FROM product_accessories WHERE brand_accessorio='Gessi'")
-    conn.commit()
-    
-    abbinamenti = [
-        ('38602#031', 'GSS-SCARICO-LAV', 'Scarico lavabo 32mm cromato', 'Gessi', 'CAT_003', 'ufficiale', 1),
-        ('38602#031', 'GSS-FLESS-LAV', 'Flessibile lavabo 1/2"', 'Gessi', 'CAT_007', 'ufficiale', 2),
-        ('38602#031', 'GSS-PORT-SAP', 'Portasapone cromato', 'Gessi', 'CAT_004', 'ufficiale', 3),
-        ('38613#031', 'GSS-SOFF-DOCCIA', 'Soffione doccia cromato Ø20cm', 'Gessi', 'CAT_006', 'ufficiale', 1),
-        ('38613#031', 'GSS-FLESS-DOCCIA', 'Flessibile doccia 150cm cromato', 'Gessi', 'CAT_007', 'ufficiale', 2),
-        ('38613#031', 'GSS-DOCCETTA', 'Doccetta manuale cromata', 'Gessi', 'CAT_005', 'ufficiale', 3),
-        ('38777#031', 'GSS-SOFF-TERMO', 'Soffione doccia per termostatico Ø25cm', 'Gessi', 'CAT_006', 'ufficiale', 1),
-        ('38777#031', 'GSS-FLESS-DOCCIA', 'Flessibile doccia 150cm cromato', 'Gessi', 'CAT_007', 'ufficiale', 2),
-        ('38777#031', 'GSS-BRACCIO-SOFF', 'Braccio soffione parete cromato', 'Gessi', 'CAT_004', 'ufficiale', 3),
-        ('56004#031', 'GSS-SCARICO-LAV', 'Scarico lavabo 32mm cromato', 'Gessi', 'CAT_003', 'ufficiale', 1),
-        ('56004#031', 'GSS-FLESS-LAV', 'Flessibile lavabo 1/2"', 'Gessi', 'CAT_007', 'ufficiale', 2),
-        ('56004#031', 'GSS-SPECCHIO-LAV', 'Specchio bagno 80x60cm', 'Gessi', 'CAT_008', 'alternativa', 3),
-    ]
-    
-    for prodotto, acc_id, acc_nome, brand, categoria, tipo, priority in abbinamenti:
-        try:
-            c.execute("""INSERT INTO product_accessories 
-                        (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio, 
-                         categoria_accessorio, tipo_relazione, priority, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                     (prodotto, acc_id, acc_nome, brand, categoria, tipo, priority, datetime.now().isoformat()))
-        except Exception as e:
-            print(f"Errore caricamento abbinamento: {e}")
-    
-    conn.commit()
-    conn.close()
-    print("✅ ABBINAMENTI GESSI CARICATI")
+    """Placeholder — abbinamenti caricheranno da Excel quando l'utente clicca il bottone"""
+    pass
 
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
@@ -1113,7 +1096,8 @@ def get_listino(brand):
                 if not raw: return None
                 try: return float(re.sub(r'[^\d.,]','',raw).replace(',','.'))
                 except: return None
-            prodotti.append({
+            
+            prod_dict = {
                 'codice': codice,
                 'nome': getv('nome'),
                 'categoria': getv('categoria'),
@@ -1125,7 +1109,24 @@ def get_listino(brand):
                 'descrizione': getv('descrizione'),
                 'finiture': getv('finiture'),
                 'fonte': 'excel'
-            })
+            }
+            prodotti.append(prod_dict)
+            
+            # SALVA SUBITO IN DB products
+            try:
+                c = conn.cursor()
+                c.execute("""INSERT OR REPLACE INTO products 
+                            (codice, nome, collezione, categoria, prezzo, prezzo_rivenditore, 
+                             prezzo_scontato, disponibilita, descrizione, finiture, fonte, brand, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         (codice, prod_dict['nome'], prod_dict['collezione'], prod_dict['categoria'],
+                          prod_dict['prezzo'], prod_dict['prezzo_rivenditore'], prod_dict['prezzo_scontato'],
+                          prod_dict['disponibilita'], prod_dict['descrizione'], prod_dict['finiture'],
+                          'excel', brand, datetime.now().isoformat()))
+                conn.commit()
+            except Exception as e:
+                print(f"[DB] Errore salvataggio prodotto {codice}: {e}")
+        
         return jsonify({"ok": True, "prodotti": prodotti, "fonte": filename})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "prodotti": []})
