@@ -1364,13 +1364,12 @@ def load_accessories_from_excel_lazy(file_content, brand, conn, c):
 
 @app.route('/api/carica-abbinamenti-excel/<brand>', methods=['POST'])
 def carica_abbinamenti_excel(brand):
-    """Carica abbinamenti direttamente da Excel nel DB"""
+    """Carica abbinamenti da file Excel nel DB"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
     try:
-        # Cerca file abbinamenti per questo brand
-        # Prova prima col nome esatto, poi col generico
+        # Cerca file abbinamenti per questo brand nel DB documents
         c.execute("""SELECT content, filename FROM documents d
                      JOIN aziende a ON d.azienda_id = a.id
                      WHERE LOWER(a.nome) = LOWER(?)
@@ -1379,28 +1378,19 @@ def carica_abbinamenti_excel(brand):
         
         row = c.fetchone()
         if not row:
-            # Se non trova niente, restituisci errore
             conn.close()
-            return jsonify({"ok": False, "error": f"File abbinamenti non trovato per {brand}. Carica il file Gessi_Abbinamenti_REALI.xlsx"}), 404
+            return jsonify({"ok": False, "error": f"File abbinamenti non trovato per {brand}"}), 404
         
         content_b64, filename = row
         
         # Decodifica Excel
-        try:
-            if ',' in content_b64:
-                content_b64 = content_b64.split(',', 1)[1]
-            raw = base64.b64decode(content_b64)
-        except:
-            conn.close()
-            return jsonify({"ok": False, "error": "Errore decodifica file"}), 400
+        if ',' in content_b64:
+            content_b64 = content_b64.split(',', 1)[1]
         
-        try:
-            wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
-        except:
-            conn.close()
-            return jsonify({"ok": False, "error": "File non è un Excel valido"}), 400
+        raw = base64.b64decode(content_b64)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
         
-        # Trova il nome del foglio (potrebbe essere "ABBINAMENTI" o altro)
+        # Trova foglio abbinamenti
         sheet_name = None
         for sn in wb.sheetnames:
             if 'abbina' in sn.lower():
@@ -1409,40 +1399,43 @@ def carica_abbinamenti_excel(brand):
         
         if not sheet_name:
             conn.close()
-            return jsonify({"ok": False, "error": f"Foglio abbinamenti non trovato. Sheet disponibili: {wb.sheetnames}"}), 400
+            return jsonify({"ok": False, "error": f"Foglio 'ABBINAMENTI' non trovato"}), 400
         
         ws = wb[sheet_name]
-        count = 0
-        errors = []
         
-        for i, row_data in enumerate(ws.iter_rows(values_only=True)):
+        # Pulisci vecchi abbinamenti per questo brand
+        c.execute("DELETE FROM product_accessories WHERE brand_accessorio=?", (brand,))
+        conn.commit()
+        
+        count = 0
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
             if i == 0:  # Skip header
                 continue
             
-            if not any(row_data):  # Skip empty
+            if not row or not row[0]:  # Skip empty
+                continue
+            
+            prodotto = str(row[0]).strip() if row[0] else None
+            acc_id = str(row[1]).strip() if row[1] else None
+            acc_nome = str(row[2]).strip() if row[2] else ""
+            brand_acc = str(row[3]).strip() if row[3] else brand
+            categoria = str(row[4]).strip() if row[4] else ""
+            tipo = str(row[5]).strip() if row[5] else "ufficiale"
+            priority = int(row[6]) if row[6] else 99
+            note = str(row[7]).strip() if row[7] else ""
+            
+            if not prodotto or not acc_id:
                 continue
             
             try:
-                prodotto = row_data[0]
-                acc_id = row_data[1]
-                acc_nome = row_data[2] if len(row_data) > 2 else ""
-                brand_acc = row_data[3] if len(row_data) > 3 else brand
-                categoria = row_data[4] if len(row_data) > 4 else ""
-                tipo = row_data[5] if len(row_data) > 5 else "ufficiale"
-                priority = int(row_data[6]) if len(row_data) > 6 and row_data[6] else 99
-                note = row_data[7] if len(row_data) > 7 else ""
-                
-                if not prodotto or not acc_id:
-                    continue
-                
-                c.execute("""INSERT OR REPLACE INTO product_accessories 
+                c.execute("""INSERT INTO product_accessories 
                             (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio, 
                              categoria_accessorio, tipo_relazione, priority, note, created_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                          (prodotto, acc_id, acc_nome, brand_acc, categoria, tipo, priority, note, datetime.now().isoformat()))
                 count += 1
             except Exception as e:
-                errors.append(f"Riga {i+1}: {str(e)}")
+                print(f"Errore riga {i}: {e}")
         
         conn.commit()
         conn.close()
@@ -1455,8 +1448,7 @@ def carica_abbinamenti_excel(brand):
             "message": f"✅ Caricati {count} abbinamenti",
             "brand": brand,
             "filename": filename,
-            "count": count,
-            "errors": errors if errors else None
+            "count": count
         })
     
     except Exception as e:
