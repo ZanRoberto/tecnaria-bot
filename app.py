@@ -1519,24 +1519,22 @@ def get_abbinamenti_prodotto(codice_prodotto):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Cerca il prodotto nel listino
+    # Cerca il prodotto (opzionale — gli abbinamenti si vedono comunque)
     c.execute("""SELECT codice, nome, collezione, categoria, prezzo FROM products 
                  WHERE codice = ? LIMIT 1""", (codice_prodotto,))
     prodotto_row = c.fetchone()
     
-    if not prodotto_row:
-        conn.close()
-        return jsonify({"ok": False, "error": "Prodotto non trovato"}), 404
+    prodotto = None
+    if prodotto_row:
+        prodotto = {
+            'codice': prodotto_row[0],
+            'nome': prodotto_row[1],
+            'collezione': prodotto_row[2],
+            'categoria': prodotto_row[3],
+            'prezzo': prodotto_row[4]
+        }
     
-    prodotto = {
-        'codice': prodotto_row[0],
-        'nome': prodotto_row[1],
-        'collezione': prodotto_row[2],
-        'categoria': prodotto_row[3],
-        'prezzo': prodotto_row[4]
-    }
-    
-    # Cerca accessori per questo prodotto
+    # Cerca accessori per questo prodotto (SEMPRE, anche se prodotto non in DB)
     c.execute("""SELECT accessorio_id, accessorio_nome, brand_accessorio, tipo_relazione, priority, note
                  FROM product_accessories
                  WHERE prodotto_padre = ?
@@ -1558,6 +1556,25 @@ def get_abbinamenti_prodotto(codice_prodotto):
             'priority': row[4],
             'note': row[5] if row[5] else ''
         }
+        if row[3] == 'ufficiale':
+            ufficiali.append(acc)
+        elif row[3] == 'alternativa':
+            alternative.append(acc)
+        elif row[3] == 'escluso':
+            esclusi.append(acc)
+    
+    # Se non ci sono abbinamenti, ritorna 404
+    if len(ufficiali) == 0 and len(alternative) == 0:
+        return jsonify({"ok": False, "error": "Nessun abbinamento trovato"}), 404
+    
+    return jsonify({
+        "ok": True,
+        "prodotto": prodotto,
+        "ufficiali": ufficiali,
+        "alternative": alternative,
+        "esclusi": esclusi,
+        "count": len(ufficiali) + len(alternative)
+    })
         if row[3] == 'ufficiale':
             ufficiali.append(acc)
         elif row[3] == 'alternativa':
