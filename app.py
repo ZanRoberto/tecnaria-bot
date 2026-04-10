@@ -3969,21 +3969,34 @@ function mostraModalAbbinamenti(codice, data, righeGiaAggiunte) {
 }
 
 function toggleAccessorio(accId, accNome, codice) {
+  // Trova il checkbox corrispondente
   const modal = document.querySelector('[style*="position:fixed"]');
-  const checkbox = modal.querySelector(`input[type="checkbox"][${accId}]`) || 
-                   Array.from(modal.querySelectorAll('input[type="checkbox"]')).find(cb => 
-                     cb.parentElement.parentElement.textContent.includes(accId));
+  if (!modal) return;
   
-  if (!checkbox) return;
+  const checkboxes = modal.querySelectorAll('input[type="checkbox"]');
+  let checkbox = null;
   
-  if (!checkbox.checked) {
-    // AGGIUNGI
+  for (let cb of checkboxes) {
+    const parent = cb.closest('div[onclick*="toggleAccessorio"]');
+    if (parent && parent.textContent.includes(accId)) {
+      checkbox = cb;
+      break;
+    }
+  }
+  
+  if (!checkbox) {
+    console.error('Checkbox non trovato per:', accId);
+    return;
+  }
+  
+  if (checkbox.checked) {
+    // Già spuntato → TOLGO
+    rimuoviAccessorioAlCantiere(accId);
+    checkbox.checked = false;
+  } else {
+    // Non spuntato → AGGIUNGO
     checkbox.checked = true;
     aggiungiAccessorioAlCantiere(accId, accNome, codice);
-  } else {
-    // TOLGO
-    checkbox.checked = false;
-    rimuoviAccessorioAlCantiere(accId);
   }
 }
 
@@ -4046,11 +4059,21 @@ function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
   .then(d => {
     if (d.ok) {
       loadRighe();
-      // Chiudi modal
-      document.querySelector('[style*="position:fixed"]')?.remove();
+      // NON chiudere il modal - rimane aperto e si aggiorna
+      // Riapri il modal aggiornato con i checkbox corretti
+      setTimeout(() => {
+        document.querySelector('[style*="position:fixed"]')?.remove();
+        // Ricarica il modal con i dati aggiornati
+        fetch('/api/abbina/' + encodeURIComponent(prodottoCodeice))
+          .then(r => r.json())
+          .then(d => {
+            if (d.ok) apriModalAbbinamenti(prodottoCodeice, d);
+          });
+      }, 300);
+      
       // Feedback
       const msg = document.createElement('div');
-      msg.innerHTML = '✓ ' + accNome + ' aggiunto al carrello!';
+      msg.innerHTML = '✓ ' + accNome + ' aggiunto!';
       msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;font-weight:600;';
       document.body.appendChild(msg);
       setTimeout(() => msg.remove(), 2000);
