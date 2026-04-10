@@ -1365,36 +1365,54 @@ def load_accessories_from_excel_lazy(file_content, brand, conn, c):
 
 @app.route('/api/carica-abbinamenti-excel/<brand>', methods=['POST'])
 def carica_abbinamenti_excel(brand):
-    """Carica abbinamenti direttamente da Excel nel DB (SENZA lazy loading)"""
+    """Carica abbinamenti direttamente da Excel nel DB"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
     try:
         # Cerca file abbinamenti per questo brand
+        # Prova prima col nome esatto, poi col generico
         c.execute("""SELECT content, filename FROM documents d
                      JOIN aziende a ON d.azienda_id = a.id
                      WHERE LOWER(a.nome) = LOWER(?)
-                     AND (d.filename LIKE '%ABBINAMENTI%' OR d.filename LIKE '%abbinamenti%')
+                     AND (LOWER(d.filename) LIKE '%abbinamenti%' OR LOWER(d.filename) LIKE '%abbina%')
                      ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
         
         row = c.fetchone()
         if not row:
+            # Se non trova niente, restituisci errore
             conn.close()
-            return jsonify({"ok": False, "error": f"File abbinamenti non trovato per {brand}"}), 404
+            return jsonify({"ok": False, "error": f"File abbinamenti non trovato per {brand}. Carica il file Gessi_Abbinamenti_REALI.xlsx"}), 404
         
         content_b64, filename = row
         
         # Decodifica Excel
-        if ',' in content_b64:
-            content_b64 = content_b64.split(',', 1)[1]
-        raw = base64.b64decode(content_b64)
-        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
-        
-        if "ABBINAMENTI" not in wb.sheetnames:
+        try:
+            if ',' in content_b64:
+                content_b64 = content_b64.split(',', 1)[1]
+            raw = base64.b64decode(content_b64)
+        except:
             conn.close()
-            return jsonify({"ok": False, "error": "Foglio ABBINAMENTI non trovato"}), 400
+            return jsonify({"ok": False, "error": "Errore decodifica file"}), 400
         
-        ws = wb["ABBINAMENTI"]
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        except:
+            conn.close()
+            return jsonify({"ok": False, "error": "File non è un Excel valido"}), 400
+        
+        # Trova il nome del foglio (potrebbe essere "ABBINAMENTI" o altro)
+        sheet_name = None
+        for sn in wb.sheetnames:
+            if 'abbina' in sn.lower():
+                sheet_name = sn
+                break
+        
+        if not sheet_name:
+            conn.close()
+            return jsonify({"ok": False, "error": f"Foglio abbinamenti non trovato. Sheet disponibili: {wb.sheetnames}"}), 400
+        
+        ws = wb[sheet_name]
         count = 0
         errors = []
         
@@ -1415,6 +1433,9 @@ def carica_abbinamenti_excel(brand):
                 priority = int(row_data[6]) if len(row_data) > 6 and row_data[6] else 99
                 note = row_data[7] if len(row_data) > 7 else ""
                 
+                if not prodotto or not acc_id:
+                    continue
+                
                 c.execute("""INSERT OR REPLACE INTO product_accessories 
                             (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio, 
                              categoria_accessorio, tipo_relazione, priority, note, created_at)
@@ -1426,6 +1447,9 @@ def carica_abbinamenti_excel(brand):
         
         conn.commit()
         conn.close()
+        
+        if count == 0:
+            return jsonify({"ok": False, "error": "Nessun abbinamento trovato nel file"}), 400
         
         return jsonify({
             "ok": True,
