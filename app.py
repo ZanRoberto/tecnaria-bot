@@ -2392,26 +2392,7 @@ function renderAccessoriHtml(ufficiali, alternative, esclusi) {
   document.getElementById('accessori-ufficiali').innerHTML = html;
 }
 
-function aggiungiAccessorioAlCantiere(accessorioId, nome, brand) {
-  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
-  const descrizione = '[' + accessorioId + '] ' + nome;
-  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ brand: brand, categoria: 'Accessorio', descrizione: descrizione, importo: 0 })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      loadRighe();
-      const msg = document.createElement('div');
-      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 16px;border-radius:6px;font-size:12px;z-index:9999;';
-      msg.textContent = '✓ ' + nome + ' aggiunto!';
-      document.body.appendChild(msg);
-      setTimeout(() => msg.remove(), 2000);
-    }
-  });
-}
+// CARICAMENTO ACCESSORI - vedi mostraModalAbbinamenti() sotto
 
 // ---------------------------------------------------------------------------
 // CANTIERI (fine accessori)
@@ -3928,13 +3909,15 @@ function mostraModalAbbinamenti(codice, data, righeGiaAggiunte) {
           ${(data.ufficiali || []).map(acc => {
             const isChecked = righeGiaAggiunte.has(acc.accessorio_id);
             return `
-            <div style="background:rgba(16,185,129,${isChecked ? '0.25' : '0.1'});border:2px solid rgba(16,185,129,${isChecked ? '0.8' : '0.3'});border-radius:6px;padding:12px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;" onclick="toggleAccessorio('${acc.accessorio_id}', '${acc.nome}', '${codice}')">
-              <input type="checkbox" ${isChecked ? 'checked' : ''} style="margin-right:10px;width:18px;height:18px;cursor:pointer;" onchange="event.stopPropagation();">
-              <div style="flex:1;">
-                <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
-                <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
+            <div style="background:rgba(16,185,129,${isChecked ? '0.25' : '0.1'});border:2px solid rgba(16,185,129,${isChecked ? '0.8' : '0.3'});border-radius:6px;padding:12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+              <div style="flex:1;display:flex;align-items:center;">
+                <input type="checkbox" ${isChecked ? 'checked' : ''} disabled style="margin-right:10px;width:18px;height:18px;">
+                <div>
+                  <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
+                  <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
+                </div>
               </div>
-              <div style="background:${isChecked ? '#10b981' : '#6b7280'};color:white;padding:4px 10px;border-radius:3px;font-size:10px;font-weight:600;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</div>
+              <button onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}', '${acc.nome}', '${codice}')" style="background:${isChecked ? '#10b981' : '#3b82f6'};color:white;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:600;margin-left:10px;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</button>
             </div>
             `;
           }).join('')}
@@ -3946,13 +3929,15 @@ function mostraModalAbbinamenti(codice, data, righeGiaAggiunte) {
           ${data.alternative.map(acc => {
             const isChecked = righeGiaAggiunte.has(acc.accessorio_id);
             return `
-            <div style="background:rgba(245,158,11,${isChecked ? '0.25' : '0.1'});border:2px solid rgba(245,158,11,${isChecked ? '0.8' : '0.3'});border-radius:6px;padding:12px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;" onclick="toggleAccessorio('${acc.accessorio_id}', '${acc.nome}', '${codice}')">
-              <input type="checkbox" ${isChecked ? 'checked' : ''} style="margin-right:10px;width:18px;height:18px;cursor:pointer;" onchange="event.stopPropagation();">
-              <div style="flex:1;">
-                <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
-                <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
+            <div style="background:rgba(245,158,11,${isChecked ? '0.25' : '0.1'});border:2px solid rgba(245,158,11,${isChecked ? '0.8' : '0.3'});border-radius:6px;padding:12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+              <div style="flex:1;display:flex;align-items:center;">
+                <input type="checkbox" ${isChecked ? 'checked' : ''} disabled style="margin-right:10px;width:18px;height:18px;">
+                <div>
+                  <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
+                  <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
+                </div>
               </div>
-              <div style="background:${isChecked ? '#f59e0b' : '#6b7280'};color:white;padding:4px 10px;border-radius:3px;font-size:10px;font-weight:600;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</div>
+              <button onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}', '${acc.nome}', '${codice}')" style="background:${isChecked ? '#f59e0b' : '#3b82f6'};color:white;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:600;margin-left:10px;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</button>
             </div>
             `;
           }).join('')}
@@ -3966,38 +3951,6 @@ function mostraModalAbbinamenti(codice, data, righeGiaAggiunte) {
   const container = document.createElement('div');
   container.innerHTML = html;
   document.body.appendChild(container);
-}
-
-function toggleAccessorio(accId, accNome, codice) {
-  // Trova il checkbox corrispondente
-  const modal = document.querySelector('[style*="position:fixed"]');
-  if (!modal) return;
-  
-  const checkboxes = modal.querySelectorAll('input[type="checkbox"]');
-  let checkbox = null;
-  
-  for (let cb of checkboxes) {
-    const parent = cb.closest('div[onclick*="toggleAccessorio"]');
-    if (parent && parent.textContent.includes(accId)) {
-      checkbox = cb;
-      break;
-    }
-  }
-  
-  if (!checkbox) {
-    console.error('Checkbox non trovato per:', accId);
-    return;
-  }
-  
-  if (checkbox.checked) {
-    // Già spuntato → TOLGO
-    rimuoviAccessorioAlCantiere(accId);
-    checkbox.checked = false;
-  } else {
-    // Non spuntato → AGGIUNGO
-    checkbox.checked = true;
-    aggiungiAccessorioAlCantiere(accId, accNome, codice);
-  }
 }
 
 function rimuoviAccessorioAlCantiere(accId) {
@@ -4017,6 +3970,8 @@ function rimuoviAccessorioAlCantiere(accId) {
 }
 
 function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
+  console.log('🔵 Aggiungi accessorio:', {accId, accNome, prodottoCodeice, cantiereAttivo});
+  
   // Se non c'è cantiere aperto, crea uno automatico
   if (!cantiereAttivo) {
     const nomeCantiere = prompt('Nome cantiere:', 'Offerta Gessi');
@@ -4035,6 +3990,7 @@ function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
     })
     .then(r => r.json())
     .then(d => {
+      console.log('✅ Cantiere creato:', d);
       if (d.ok) {
         cantiereAttivo = d.cantiere_id;
         loadCantieri();
@@ -4045,19 +4001,28 @@ function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
     return;
   }
   
+  const payload = {
+    brand: 'Gessi',
+    categoria: 'Accessori',
+    descrizione: `[${accId}] ${accNome}`,
+    importo: 0
+  };
+  
+  console.log('📤 POST /api/cantieri/' + cantiereAttivo + '/righe:', payload);
+  
   fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      brand: 'Gessi',
-      categoria: 'Accessori',
-      descrizione: `[${accId}] ${accNome}`,
-      importo: 0
-    })
+    body: JSON.stringify(payload)
   })
-  .then(r => r.json())
+  .then(r => {
+    console.log('📥 Risposta status:', r.status);
+    return r.json();
+  })
   .then(d => {
+    console.log('📦 Risposta JSON:', d);
     if (d.ok) {
+      console.log('✅ Accessorio aggiunto - carico righe');
       loadRighe();
       // NON chiudere il modal - rimane aperto e si aggiorna
       // Riapri il modal aggiornato con i checkbox corretti
@@ -4078,10 +4043,14 @@ function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
       document.body.appendChild(msg);
       setTimeout(() => msg.remove(), 2000);
     } else {
+      console.error('❌ Errore:', d.error);
       alert('Errore: ' + (d.error || 'Non aggiunto'));
     }
   })
-  .catch(e => alert('Errore connessione: ' + e.message));
+  .catch(e => {
+    console.error('❌ Eccezione:', e);
+    alert('Errore connessione: ' + e.message);
+  });
 }
 
 // Controlla se già loggato
