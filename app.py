@@ -3917,7 +3917,7 @@ function mostraModalAbbinamenti(codice, data, righeGiaAggiunte) {
                   <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
                 </div>
               </div>
-              <button onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}', '${acc.nome}', '${codice}')" style="background:${isChecked ? '#10b981' : '#3b82f6'};color:white;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:600;margin-left:10px;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</button>
+              <button data-accid="${acc.accessorio_id}" onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}', '${acc.nome}', '${codice}')" style="background:${isChecked ? '#10b981' : '#3b82f6'};color:white;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:600;margin-left:10px;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</button>
             </div>
             `;
           }).join('')}
@@ -3937,7 +3937,7 @@ function mostraModalAbbinamenti(codice, data, righeGiaAggiunte) {
                   <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
                 </div>
               </div>
-              <button onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}', '${acc.nome}', '${codice}')" style="background:${isChecked ? '#f59e0b' : '#3b82f6'};color:white;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:600;margin-left:10px;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</button>
+              <button data-accid="${acc.accessorio_id}" onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}', '${acc.nome}', '${codice}')" style="background:${isChecked ? '#f59e0b' : '#3b82f6'};color:white;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:600;margin-left:10px;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</button>
             </div>
             `;
           }).join('')}
@@ -4024,17 +4024,20 @@ function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
     if (d.ok) {
       console.log('✅ Accessorio aggiunto - carico righe');
       loadRighe();
-      // NON chiudere il modal - rimane aperto e si aggiorna
-      // Riapri il modal aggiornato con i checkbox corretti
-      setTimeout(() => {
-        document.querySelector('[style*="position:fixed"]')?.remove();
-        // Ricarica il modal con i dati aggiornati
-        fetch('/api/abbina/' + encodeURIComponent(prodottoCodeice))
-          .then(r => r.json())
-          .then(d => {
-            if (d.ok) apriModalAbbinamenti(prodottoCodeice, d);
-          });
-      }, 300);
+      
+      // Aggiorna il bottone nel modal (lo rende VERDE)
+      const modal = document.querySelector('[style*="position:fixed"]');
+      if (modal) {
+        const btn = modal.querySelector(`button[data-accid="${accId}"]`);
+        if (btn) {
+          console.log('🟢 Bottone trovato e aggiornato per:', accId);
+          btn.textContent = '✓ Aggiunto';
+          btn.style.background = '#10b981';
+          btn.disabled = true;
+        } else {
+          console.warn('⚠️ Bottone NON trovato per:', accId);
+        }
+      }
       
       // Feedback
       const msg = document.createElement('div');
