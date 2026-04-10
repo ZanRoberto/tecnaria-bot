@@ -3848,17 +3848,20 @@ function verificaAbbinamenti(idx, codice) {
                              (d.alternative && d.alternative.length > 0);
       
       if (hasAbbinamenti) {
-        // VERDE - ha abbinamenti
-        btn.style.background = 'rgba(16,185,129,0.3)';
-        btn.style.color = '#10b981';
+        // ROSSO - ha abbinamenti (CLICCA PER VEDERLI)
+        btn.style.background = '#ef4444';
+        btn.style.color = '#fff';
         btn.style.cursor = 'pointer';
         btn.disabled = false;
+        btn.textContent = '📋 Abbina';
+        btn.title = 'Clicca per visualizzare e selezionare gli abbinamenti';
       } else {
         // GRIGIO - no abbinamenti
         btn.style.background = 'rgba(107,114,128,0.3)';
         btn.style.color = '#d1d5db';
         btn.style.cursor = 'not-allowed';
         btn.disabled = true;
+        btn.textContent = '📋 Abbina';
       }
     })
     .catch(() => {
@@ -4161,44 +4164,41 @@ function aggiornaPannelloAccessori(data) {
     const prod = data.prodotto;
     
     // Titolo prodotto
-    document.getElementById('pannello-titolo').innerHTML = `
-        <div style="font-size:12px;color:#9ca3af;">${prod.codice}</div>
-        <div style="font-size:14px;font-weight:bold;color:#fff;">${prod.nome}</div>
-    `;
+    let html = `<div style="font-size:11px;color:#ef4444;font-weight:bold;margin-bottom:12px;padding:8px;background:rgba(239,68,68,0.1);border-radius:4px;">
+        <div>${prod.codice}</div>
+        <div>${prod.nome}</div>
+    </div>`;
     
-    // Sezione ufficiali
-    if (data.ufficiali.length > 0) {
-        const html = `<div style="font-size:12px;color:#10b981;font-weight:bold;margin-bottom:6px;">📍 Abbinamenti Ufficiali</div>
-                     <div style="display:flex;flex-direction:column;gap:6px;">
-                     ${data.ufficiali.map(acc => `
-                        <div style="padding:8px;background:rgba(16,185,129,0.1);border-left:2px solid #10b981;border-radius:4px;">
-                            <div style="font-size:11px;color:#d1d5db;">${acc.nome}</div>
-                            <div style="font-size:10px;color:#6b7280;">€${acc.prezzo || 'N/A'}</div>
-                            <button onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')" class="btn-sm" style="width:100%;margin-top:4px;background:#10b981;color:white;border:none;cursor:pointer;padding:4px;border-radius:3px;font-size:10px;">✓ Aggiungi</button>
-                        </div>
-                     `).join('')}
-                     </div>`;
-        document.getElementById('sezioneUfficiali').innerHTML = html;
-    } else {
-        document.getElementById('sezioneUfficiali').innerHTML = '';
+    // UFFICIALI
+    if (data.ufficiali && data.ufficiali.length > 0) {
+        html += `<div style="font-size:10px;color:#ef4444;font-weight:bold;margin-bottom:6px;">✓ UFFICIALI</div>`;
+        data.ufficiali.forEach(acc => {
+            html += `
+            <div style="padding:8px;margin-bottom:6px;background:rgba(239,68,68,0.1);border-left:2px solid #ef4444;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:10px;color:#10b981;margin-top:4px;">→ Clicca per aggiungere</div>
+            </div>
+            `;
+        });
     }
     
-    // Sezione alternative
-    if (data.alternative.length > 0) {
-        const html = `<div style="font-size:12px;color:#f59e0b;font-weight:bold;margin-bottom:6px;margin-top:12px;">★ Abbinamenti Alternativi</div>
-                     <div style="display:flex;flex-direction:column;gap:6px;">
-                     ${data.alternative.map(acc => `
-                        <div style="padding:8px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:4px;">
-                            <div style="font-size:11px;color:#d1d5db;">${acc.nome}</div>
-                            <div style="font-size:10px;color:#6b7280;">€${acc.prezzo || 'N/A'}</div>
-                            <button onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')" class="btn-sm" style="width:100%;margin-top:4px;background:#f59e0b;color:white;border:none;cursor:pointer;padding:4px;border-radius:3px;font-size:10px;">+ Aggiungi</button>
-                        </div>
-                     `).join('')}
-                     </div>`;
-        document.getElementById('sezioneAlternative').innerHTML = html;
-    } else {
-        document.getElementById('sezioneAlternative').innerHTML = '';
+    // ALTERNATIVE
+    if (data.alternative && data.alternative.length > 0) {
+        html += `<div style="font-size:10px;color:#f59e0b;font-weight:bold;margin-top:12px;margin-bottom:6px;">★ ALTERNATIVE</div>`;
+        data.alternative.forEach(acc => {
+            html += `
+            <div style="padding:8px;margin-bottom:6px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:10px;color:#f59e0b;margin-top:4px;">→ Clicca per aggiungere</div>
+            </div>
+            `;
+        });
     }
+    
+    document.getElementById('sezioneUfficiali').innerHTML = html;
+    document.getElementById('sezioneAlternative').innerHTML = '';
 }
 
 function popolaModalAbbinamenti(data) {
