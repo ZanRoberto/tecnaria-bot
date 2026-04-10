@@ -1575,21 +1575,6 @@ def get_abbinamenti_prodotto(codice_prodotto):
         "esclusi": esclusi,
         "count": len(ufficiali) + len(alternative)
     })
-        if row[3] == 'ufficiale':
-            ufficiali.append(acc)
-        elif row[3] == 'alternativa':
-            alternative.append(acc)
-        elif row[3] == 'escluso':
-            esclusi.append(acc)
-    
-    return jsonify({
-        "ok": True,
-        "prodotto": prodotto,
-        "ufficiali": ufficiali,
-        "alternative": alternative,
-        "esclusi": esclusi,
-        "count": len(ufficiali) + len(alternative)
-    })
 
 # ---------------------------------------------------------------------------
 # FRONTEND
