@@ -3970,34 +3970,10 @@ function rimuoviAccessorioAlCantiere(accId) {
 }
 
 function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
-  console.log('🔵 Aggiungi accessorio:', {accId, accNome, prodottoCodeice, cantiereAttivo});
+  console.log('🔵 POST accessorio:', {accId, accNome, cantiereAttivo});
   
-  // Se non c'è cantiere aperto, crea uno automatico
   if (!cantiereAttivo) {
-    const nomeCantiere = prompt('Nome cantiere:', 'Offerta Gessi');
-    if (!nomeCantiere) return;
-    
-    // Crea cantiere
-    fetch('/api/cantieri', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        nome: nomeCantiere,
-        cliente: 'Offerta rapida',
-        indirizzo: '',
-        note: 'Creato automaticamente'
-      })
-    })
-    .then(r => r.json())
-    .then(d => {
-      console.log('✅ Cantiere creato:', d);
-      if (d.ok) {
-        cantiereAttivo = d.cantiere_id;
-        loadCantieri();
-        // Ora aggiungi l'accessorio
-        aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice);
-      }
-    });
+    alert('Apri prima un cantiere');
     return;
   }
   
@@ -4008,51 +3984,45 @@ function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
     importo: 0
   };
   
-  console.log('📤 POST /api/cantieri/' + cantiereAttivo + '/righe:', payload);
-  
   fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload)
   })
   .then(r => {
-    console.log('📥 Risposta status:', r.status);
+    console.log('📥 Status:', r.status);
     return r.json();
   })
   .then(d => {
-    console.log('📦 Risposta JSON:', d);
+    console.log('📦 Response:', d);
     if (d.ok) {
-      console.log('✅ Accessorio aggiunto - carico righe');
+      console.log('✅ Aggiunto - refresh carrello');
       loadRighe();
       
-      // Aggiorna il bottone nel modal (lo rende VERDE)
+      // Aggiorna bottone
       const modal = document.querySelector('[style*="position:fixed"]');
       if (modal) {
         const btn = modal.querySelector(`button[data-accid="${accId}"]`);
         if (btn) {
-          console.log('🟢 Bottone trovato e aggiornato per:', accId);
           btn.textContent = '✓ Aggiunto';
           btn.style.background = '#10b981';
           btn.disabled = true;
-        } else {
-          console.warn('⚠️ Bottone NON trovato per:', accId);
         }
       }
       
-      // Feedback
+      // Toast
       const msg = document.createElement('div');
-      msg.innerHTML = '✓ ' + accNome + ' aggiunto!';
-      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;font-weight:600;';
+      msg.textContent = '✓ ' + accNome;
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:10px 16px;border-radius:4px;z-index:9999;font-size:11px;font-weight:600;';
       document.body.appendChild(msg);
-      setTimeout(() => msg.remove(), 2000);
+      setTimeout(() => msg.remove(), 1500);
     } else {
-      console.error('❌ Errore:', d.error);
       alert('Errore: ' + (d.error || 'Non aggiunto'));
     }
   })
   .catch(e => {
-    console.error('❌ Eccezione:', e);
-    alert('Errore connessione: ' + e.message);
+    console.error('❌ Exception:', e);
+    alert('Errore: ' + e.message);
   });
 }
 
