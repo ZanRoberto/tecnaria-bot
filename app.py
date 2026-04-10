@@ -3750,7 +3750,7 @@ function filtraListino() {
       '<div>' + prezzoHtml + '</div>' +
       '</div>' +
       '<div class="prodotto-actions" style="margin-top:8px;">' +
-      '<button onclick="event.stopPropagation();mostraAbbinamenti(\'' + (p.codice||'') + '\')" class="btn-sm" id="abbina-btn-' + idx + '" style="flex:1; background:rgba(107,114,128,0.3);color:#d1d5db;cursor:not-allowed;">📋 Abbina</button>' +
+      '<button onclick="event.stopPropagation();verificaAbbinamenti(' + idx + ',\'' + (p.codice||'').replace(/'/g,"\\'") + '\')" class="btn-sm" id="abbina-btn-' + idx + '" style="flex:1; background:rgba(107,114,128,0.3);color:#d1d5db;">📋 Abbina</button>' +
       '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
       '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
       '</div></div>';
@@ -3853,35 +3853,119 @@ function aggiungiDaListino(idx) {
 function verificaAbbinamenti(idx, codice) {
   if (!codice) return;
   
+  // Fetch diretto — controlla se abbinamenti sono nel DB
   fetch('/api/abbina/' + encodeURIComponent(codice))
     .then(r => r.json())
     .then(d => {
       const btn = document.getElementById('abbina-btn-' + idx);
       if (!btn) return;
       
+      // Se ha abbinamenti ufficiali O alternative
       const hasAbbinamenti = (d.ufficiali && d.ufficiali.length > 0) || 
                              (d.alternative && d.alternative.length > 0);
       
       if (hasAbbinamenti) {
-        // ROSSO - ha abbinamenti (CLICCA PER VEDERLI)
+        // 🔴 ROSSO - Ha abbinamenti
         btn.style.background = '#ef4444';
-        btn.style.color = '#fff';
+        btn.style.color = 'white';
         btn.style.cursor = 'pointer';
         btn.disabled = false;
-        btn.textContent = '📋 Abbina';
-        btn.title = 'Clicca per visualizzare e selezionare gli abbinamenti';
+        btn.onclick = () => apriModalAbbinamenti(codice, d);
       } else {
-        // GRIGIO - no abbinamenti
+        // 🔘 Grigio - No abbinamenti
         btn.style.background = 'rgba(107,114,128,0.3)';
         btn.style.color = '#d1d5db';
         btn.style.cursor = 'not-allowed';
         btn.disabled = true;
-        btn.textContent = '📋 Abbina';
       }
     })
-    .catch(() => {
-      // Se errore, rimane grigio
+    .catch(e => {
+      console.error('Errore verifica:', e);
+      const btn = document.getElementById('abbina-btn-' + idx);
+      if (btn) btn.style.background = 'rgba(107,114,128,0.3)';
     });
+}
+
+function apriModalAbbinamenti(codice, data) {
+  // Apre modal con lista abbinamenti selezionabili
+  const html = `
+    <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;">
+      <div style="background:#0f172a;border:2px solid #3b82f6;border-radius:12px;width:100%;max-width:600px;max-height:80vh;overflow-y:auto;padding:30px;">
+        
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;border-bottom:2px solid #1e40af;padding-bottom:15px;">
+          <h2 style="margin:0;color:#60a5fa;font-size:20px;font-weight:bold;">Abbinamenti per ${codice}</h2>
+          <button onclick="this.closest('[style*=fixed]').remove()" style="background:#ef4444;color:white;border:none;border-radius:50%;width:40px;height:40px;cursor:pointer;font-size:20px;">✕</button>
+        </div>
+        
+        <div style="margin-bottom:20px;">
+          <div style="font-size:12px;color:#60a5fa;font-weight:bold;margin-bottom:10px;text-transform:uppercase;">✓ Abbinamenti Ufficiali</div>
+          ${(data.ufficiali || []).map(acc => `
+            <div style="background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);border-radius:6px;padding:10px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;" onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}','${acc.nome}','${codice}')">
+              <input type="checkbox" style="margin-right:10px;">
+              <div style="flex:1;">
+                <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
+                <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
+              </div>
+              <div style="background:#10b981;color:white;padding:3px 8px;border-radius:3px;font-size:10px;font-weight:600;">Seleziona</div>
+            </div>
+          `).join('')}
+        </div>
+        
+        ${(data.alternative && data.alternative.length > 0) ? `
+        <div>
+          <div style="font-size:12px;color:#f59e0b;font-weight:bold;margin-bottom:10px;text-transform:uppercase;">★ Abbinamenti Alternativi</div>
+          ${data.alternative.map(acc => `
+            <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:10px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;" onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}','${acc.nome}','${codice}')">
+              <input type="checkbox" style="margin-right:10px;">
+              <div style="flex:1;">
+                <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
+                <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
+              </div>
+              <div style="background:#f59e0b;color:white;padding:3px 8px;border-radius:3px;font-size:10px;font-weight:600;">Seleziona</div>
+            </div>
+          `).join('')}
+        </div>
+        ` : ''}
+        
+      </div>
+    </div>
+  `;
+  
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  document.body.appendChild(container);
+}
+
+function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
+  if (!cantiereAttivo) {
+    alert('Apri prima un cantiere');
+    return;
+  }
+  
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      brand: 'Gessi',
+      categoria: 'Accessori',
+      descrizione: `[${accId}] ${accNome}`,
+      importo: 0
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadRighe();
+      // Chiudi modal
+      document.querySelector('[style*="position:fixed"]')?.remove();
+      // Feedback
+      const msg = document.createElement('div');
+      msg.innerHTML = '✓ ' + accNome + ' aggiunto!';
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 2000);
+    }
+  });
 }
 
 // Controlla se già loggato
