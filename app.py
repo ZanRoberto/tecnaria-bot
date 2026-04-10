@@ -190,15 +190,13 @@ def dedup_brands_on_start():
 dedup_brands_on_start()
 
 def load_gessi_abbinamenti_on_start():
-    """Carica 12 abbinamenti Gessi all'avvio dell'app"""
+    """Carica 12 abbinamenti Gessi all'avvio dell'app - SEMPRE"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Check: se abbinamenti già caricati, esci
-    c.execute("SELECT COUNT(*) FROM product_accessories WHERE brand_accessorio='Gessi'")
-    if c.fetchone()[0] > 0:
-        conn.close()
-        return
+    # Pulisci gli abbinamenti vecchi per Gessi
+    c.execute("DELETE FROM product_accessories WHERE brand_accessorio='Gessi'")
+    conn.commit()
     
     abbinamenti = [
         ('38602#031', 'GSS-SCARICO-LAV', 'Scarico lavabo 32mm cromato', 'Gessi', 'CAT_003', 'ufficiale', 1),
@@ -217,7 +215,7 @@ def load_gessi_abbinamenti_on_start():
     
     for prodotto, acc_id, acc_nome, brand, categoria, tipo, priority in abbinamenti:
         try:
-            c.execute("""INSERT OR REPLACE INTO product_accessories 
+            c.execute("""INSERT INTO product_accessories 
                         (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio, 
                          categoria_accessorio, tipo_relazione, priority, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
