@@ -194,6 +194,12 @@ def load_gessi_abbinamenti_on_start():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
+    # Check: se abbinamenti già caricati, esci
+    c.execute("SELECT COUNT(*) FROM product_accessories WHERE brand_accessorio='Gessi'")
+    if c.fetchone()[0] > 0:
+        conn.close()
+        return
+    
     abbinamenti = [
         ('38602#031', 'GSS-SCARICO-LAV', 'Scarico lavabo 32mm cromato', 'Gessi', 'CAT_003', 'ufficiale', 1),
         ('38602#031', 'GSS-FLESS-LAV', 'Flessibile lavabo 1/2"', 'Gessi', 'CAT_007', 'ufficiale', 2),
@@ -211,18 +217,17 @@ def load_gessi_abbinamenti_on_start():
     
     for prodotto, acc_id, acc_nome, brand, categoria, tipo, priority in abbinamenti:
         try:
-            c.execute("""INSERT OR IGNORE INTO product_accessories 
+            c.execute("""INSERT OR REPLACE INTO product_accessories 
                         (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio, 
                          categoria_accessorio, tipo_relazione, priority, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                      (prodotto, acc_id, acc_nome, brand, categoria, tipo, priority, datetime.now().isoformat()))
-        except:
-            pass
+        except Exception as e:
+            print(f"Errore caricamento abbinamento: {e}")
     
     conn.commit()
     conn.close()
-
-load_gessi_abbinamenti_on_start()
+    print("✅ ABBINAMENTI GESSI CARICATI")
 
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
