@@ -4283,13 +4283,17 @@ function aggiornaPannelloAccessori(data) {
     if (data.ufficiali && data.ufficiali.length > 0) {
         html += `<div style="font-size:10px;color:#ef4444;font-weight:bold;margin-bottom:6px;">✓ UFFICIALI</div>`;
         data.ufficiali.forEach(acc => {
-            html += `
-            <div style="padding:8px;margin-bottom:6px;background:rgba(239,68,68,0.1);border-left:2px solid #ef4444;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
-                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
+            const safeid = (acc.accessorio_id||'').replace(/'/g,"\'");
+            const safenome = (acc.nome||acc.accessorio_id||'').replace(/'/g,"\'");
+            const safebrand = (acc.brand_accessorio||'Gessi').replace(/'/g,"\'");
+            html += `<div style="padding:8px;margin-bottom:6px;background:rgba(239,68,68,0.1);border-left:2px solid #ef4444;border-radius:3px;">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome||acc.accessorio_id}</div>
                 <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
-                <div style="font-size:10px;color:#10b981;margin-top:4px;">→ Clicca per aggiungere</div>
-            </div>
-            `;
+                <button onclick="aggiungiAccessorioAlCantiere('${safeid}','${safenome}','${safebrand}')" 
+                  style="margin-top:6px;width:100%;background:#10b981;color:white;border:none;border-radius:4px;padding:5px;font-size:10px;cursor:pointer;font-weight:600;">
+                  + Aggiungi al carrello
+                </button>
+            </div>`;
         });
     }
     
@@ -4297,17 +4301,34 @@ function aggiornaPannelloAccessori(data) {
     if (data.alternative && data.alternative.length > 0) {
         html += `<div style="font-size:10px;color:#f59e0b;font-weight:bold;margin-top:12px;margin-bottom:6px;">★ ALTERNATIVE</div>`;
         data.alternative.forEach(acc => {
-            html += `
-            <div style="padding:8px;margin-bottom:6px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
-                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
+            const safeid = (acc.accessorio_id||'').replace(/'/g,"\'");
+            const safenome = (acc.nome||acc.accessorio_id||'').replace(/'/g,"\'");
+            const safebrand = (acc.brand_accessorio||'Gessi').replace(/'/g,"\'");
+            html += `<div style="padding:8px;margin-bottom:6px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:3px;">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome||acc.accessorio_id}</div>
                 <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
-                <div style="font-size:10px;color:#f59e0b;margin-top:4px;">→ Clicca per aggiungere</div>
-            </div>
-            `;
+                <button onclick="aggiungiAccessorioAlCantiere('${safeid}','${safenome}','${safebrand}')"
+                  style="margin-top:6px;width:100%;background:rgba(245,158,11,0.3);color:#f59e0b;border:1px solid #f59e0b;border-radius:4px;padding:5px;font-size:10px;cursor:pointer;font-weight:600;">
+                  + Aggiungi al carrello
+                </button>
+            </div>`;
         });
     }
     
-    document.getElementById('sezioneUfficiali').innerHTML = html;
+    // Bottone AGGIUNGI TUTTI in cima
+    let tuttiHtml = '';
+    const tuttiAcc = [...(data.ufficiali||[]), ...(data.alternative||[])];
+    if (tuttiAcc.length > 1) {
+        const tuttiJson = JSON.stringify(tuttiAcc).replace(/'/g,"\'").replace(/"/g,'&quot;');
+        tuttiHtml = `<button onclick="aggiungiTuttiAccessori(${tuttiAcc.length})"
+            id="btn-aggiungi-tutti-acc"
+            data-accessori='${JSON.stringify(tuttiAcc).replace(/'/g,"&#39;")}'
+            style="width:100%;background:#3b82f6;color:white;border:none;border-radius:6px;
+            padding:10px;font-size:12px;font-weight:700;cursor:pointer;margin-bottom:10px;">
+            ⚡ Aggiungi tutti (${tuttiAcc.length}) al carrello
+        </button>`;
+    }
+    document.getElementById('sezioneUfficiali').innerHTML = tuttiHtml + html;
     document.getElementById('sezioneAlternative').innerHTML = '';
 }
 
@@ -4367,9 +4388,49 @@ function creaCardAccessorio(acc, escluso = false) {
     `;
 }
 
-function aggiungiAccessorio(accessorioId) {
-    console.log("Aggiunto accessorio:", accessorioId);
-    alert("Accessorio aggiunto al cantiere");
+function aggiungiAccessorio(accessorioId, nome, brand) {
+    aggiungiAccessorioAlCantiere(accessorioId, nome || accessorioId, brand || 'Gessi');
+}
+
+function aggiungiTuttiAccessori(count) {
+    if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+    const btn = document.getElementById('btn-aggiungi-tutti-acc');
+    if (!btn) return;
+    const accessori = JSON.parse(btn.dataset.accessori || '[]');
+    if (!accessori.length) return;
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Aggiunta in corso...';
+
+    // Tutte le chiamate in parallelo
+    const promises = accessori.map(acc => {
+        const descrizione = '[' + (acc.accessorio_id||'') + '] ' + (acc.nome||acc.accessorio_id||'');
+        return fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                brand: acc.brand_accessorio || 'Gessi',
+                categoria: 'Accessori',
+                descrizione: descrizione,
+                importo: 0
+            })
+        }).then(r => r.json());
+    });
+
+    Promise.all(promises).then(results => {
+        const ok = results.filter(r => r.ok).length;
+        btn.textContent = '✅ ' + ok + ' accessori aggiunti!';
+        btn.style.background = '#10b981';
+        loadRighe();
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.textContent = '⚡ Aggiungi tutti (' + count + ') al carrello';
+            btn.style.background = '#3b82f6';
+        }, 2500);
+    }).catch(() => {
+        btn.disabled = false;
+        btn.textContent = '⚡ Aggiungi tutti (' + count + ') al carrello';
+    });
 }
 
 document.addEventListener('click', function(event) {
