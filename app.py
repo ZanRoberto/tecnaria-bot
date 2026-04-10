@@ -1608,13 +1608,13 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .brand-dropdown-item { padding: 7px 10px; font-size: 11px; cursor: pointer; color: #e0e0e0; }
 .brand-dropdown-item:hover { background: rgba(59,130,245,0.3); color: white; }
 /* DRAWER CANTIERE */
-.cantiere-drawer { display: none; position: fixed; top: 0; right: 0; width: 520px; height: 100vh; background: #0f172e; border-left: 2px solid rgba(59,130,245,0.4); z-index: 1000; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.5); }
+.cantiere-drawer { display: none; position: fixed; top: 0; right: 0; width: 320px; height: 100vh; background: #0f172e; border-left: 2px solid rgba(59,130,245,0.4); z-index: 1000; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.5); overflow-y: auto; }
 .cantiere-drawer.open { display: flex; }
 .drawer-header { background: rgba(59,130,245,0.15); border-bottom: 1px solid rgba(59,130,245,0.3); padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
 .drawer-title { font-size: 15px; font-weight: 700; color: #60a5fa; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 0; }
-.drawer-section { border-bottom: 1px solid rgba(59,130,245,0.15); padding: 14px 18px; }
-.drawer-section-title { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+.drawer-section { border-bottom: 1px solid rgba(59,130,245,0.15); padding: 10px 12px; }
+.drawer-section-title { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
 .riga-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 8px 12px; margin: 5px 0; display: flex; align-items: center; justify-content: space-between; }
 .riga-card-info { flex: 1; }
 .riga-card-brand { font-size: 12px; font-weight: 600; color: #60a5fa; }
@@ -1637,7 +1637,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .domande-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .domanda-chip { padding: 5px 10px; font-size: 10px; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; border-radius: 20px; cursor: pointer; margin-bottom: 0; }
 .domanda-chip:hover { background: rgba(16,185,129,0.3); }
-.prodotti-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.prodotti-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
 .prodotto-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 8px; padding: 12px; cursor: pointer; transition: border-color 0.2s; }
 .prodotto-card:hover { border-color: rgba(59,130,245,0.6); }
 .prodotto-card.su-ordine { border-left: 3px solid #f59e0b; }
@@ -1949,15 +1949,14 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     </div>
 
     <!-- ACCESSORI CONSIGLIATI -->
-    <div class="drawer-section" id="accessori-section" style="display:none;">
-      <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleAccessoriSection()">
+    <div class="drawer-section" id="accessori-section" style="display:block;">
+      <div class="drawer-section-title">
         🔗 Accessori Consigliati
-        <span id="accessori-arrow" style="float:right; color:#9ca3af;">▼</span>
       </div>
-      <div id="accessori-panel" style="display:block;">
-        <div id="accessori-ufficiali"></div>
-        <div id="accessori-alternative"></div>
-        <div id="accessori-esclusi"></div>
+      <div id="accessori-panel" style="display:block;max-height:300px;overflow-y:auto;">
+        <div id="pannello-titolo" style="padding:8px;background:rgba(59,130,246,0.1);border-left:3px solid #3b82f6;margin-bottom:12px;border-radius:4px;"></div>
+        <div id="sezioneUfficiali"></div>
+        <div id="sezioneAlternative"></div>
       </div>
     </div>
 
@@ -3742,6 +3741,36 @@ function faiDomandaListino(domanda) {
   ask();
 }
 
+function aggiungiAccessorio(accId, accNome) {
+  if (!cantiereAttivo) {
+    alert('Nessun cantiere aperto');
+    return;
+  }
+  
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ 
+      brand: 'Gessi', 
+      categoria: 'Accessori', 
+      descrizione: accNome,
+      importo: 0 // Accessori senza prezzo iniziale
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadRighe(); // Ricarica carrello
+      // Feedback visuale
+      const msg = document.createElement('div');
+      msg.innerHTML = '✓ Accessorio aggiunto!';
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 2000);
+    }
+  });
+}
+
 function aggiungiDaListino(idx) {
   if (!cantiereAttivo) {
     if (confirm('Nessun cantiere aperto. Vuoi aprire il pannello cantieri?')) {
@@ -4095,8 +4124,8 @@ function mostraAbbinamenti(prodottoId) {
                 alert("Prodotto non trovato");
                 return;
             }
-            popolaModalAbbinamenti(data);
-            document.getElementById('modalAbbinamenti').classList.add('show');
+            // Aggiorna il drawer a destra INVECE di aprire un modal
+            aggiornaPannelloAccessori(data);
         })
         .catch(e => {
             console.error("Errore:", e);
@@ -4104,8 +4133,48 @@ function mostraAbbinamenti(prodottoId) {
         });
 }
 
-function chiudiModalAbbinamenti() {
-    document.getElementById('modalAbbinamenti').classList.remove('show');
+function aggiornaPannelloAccessori(data) {
+    const prod = data.prodotto;
+    
+    // Titolo prodotto
+    document.getElementById('pannello-titolo').innerHTML = `
+        <div style="font-size:12px;color:#9ca3af;">${prod.codice}</div>
+        <div style="font-size:14px;font-weight:bold;color:#fff;">${prod.nome}</div>
+    `;
+    
+    // Sezione ufficiali
+    if (data.ufficiali.length > 0) {
+        const html = `<div style="font-size:12px;color:#10b981;font-weight:bold;margin-bottom:6px;">📍 Abbinamenti Ufficiali</div>
+                     <div style="display:flex;flex-direction:column;gap:6px;">
+                     ${data.ufficiali.map(acc => `
+                        <div style="padding:8px;background:rgba(16,185,129,0.1);border-left:2px solid #10b981;border-radius:4px;">
+                            <div style="font-size:11px;color:#d1d5db;">${acc.nome}</div>
+                            <div style="font-size:10px;color:#6b7280;">€${acc.prezzo || 'N/A'}</div>
+                            <button onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')" class="btn-sm" style="width:100%;margin-top:4px;background:#10b981;color:white;border:none;cursor:pointer;padding:4px;border-radius:3px;font-size:10px;">✓ Aggiungi</button>
+                        </div>
+                     `).join('')}
+                     </div>`;
+        document.getElementById('sezioneUfficiali').innerHTML = html;
+    } else {
+        document.getElementById('sezioneUfficiali').innerHTML = '';
+    }
+    
+    // Sezione alternative
+    if (data.alternative.length > 0) {
+        const html = `<div style="font-size:12px;color:#f59e0b;font-weight:bold;margin-bottom:6px;margin-top:12px;">★ Abbinamenti Alternativi</div>
+                     <div style="display:flex;flex-direction:column;gap:6px;">
+                     ${data.alternative.map(acc => `
+                        <div style="padding:8px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:4px;">
+                            <div style="font-size:11px;color:#d1d5db;">${acc.nome}</div>
+                            <div style="font-size:10px;color:#6b7280;">€${acc.prezzo || 'N/A'}</div>
+                            <button onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')" class="btn-sm" style="width:100%;margin-top:4px;background:#f59e0b;color:white;border:none;cursor:pointer;padding:4px;border-radius:3px;font-size:10px;">+ Aggiungi</button>
+                        </div>
+                     `).join('')}
+                     </div>`;
+        document.getElementById('sezioneAlternative').innerHTML = html;
+    } else {
+        document.getElementById('sezioneAlternative').innerHTML = '';
+    }
 }
 
 function popolaModalAbbinamenti(data) {
