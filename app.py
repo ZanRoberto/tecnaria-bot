@@ -3869,119 +3869,25 @@ function apriModalAbbinamenti(codice, data) {
     return;
   }
 
-  fetch('/api/cantieri/' + cantiereAttivo + '/righe')
-    .then(r => r.json())
-    .then(righeData => {
-      const righeGiaAggiunte = new Set();
-      if (righeData.righe) {
-        righeData.righe.forEach(r => {
-          const desc = r.descrizione || '';
-          const match = desc.match(/\[(GSS-[^\]]+)\]/);
-          if (match) righeGiaAggiunte.add(match[1]);
-        });
-      }
-      mostraModalSelezionaAbbinamenti(codice, data, righeGiaAggiunte);
-    })
-    .catch(() => mostraModalSelezionaAbbinamenti(codice, data, new Set()));
-}
-
-function mostraModalSelezionaAbbinamenti(codice, data, righeGiaAggiunte) {
-  const html = `
-    <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;">
-      <div style="background:#0f172a;border:2px solid #3b82f6;border-radius:12px;width:100%;max-width:520px;max-height:70vh;overflow-y:auto;padding:25px;box-shadow:0 20px 60px rgba(0,0,0,0.8);">
-        
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:25px;padding-bottom:15px;border-bottom:2px solid #1e40af;">
-          <h2 style="margin:0;color:#60a5fa;font-size:18px;font-weight:bold;">Scegli abbinamenti: ${codice}</h2>
-          <button onclick="this.closest('[style*=position:fixed]').remove()" style="background:#ef4444;color:white;border:none;border-radius:50%;width:36px;height:36px;cursor:pointer;font-size:18px;font-weight:bold;">✕</button>
-        </div>
-        
-        <div id="abbinamenti-lista" style="margin-bottom:20px;"></div>
-        
-        <div style="display:flex;gap:10px;padding-top:15px;border-top:1px solid rgba(59,130,245,0.2);">
-          <button onclick="aggiungiSelezionatiAbbinamenti(${JSON.stringify(codice)})" style="flex:1;background:#10b981;color:white;border:none;border-radius:6px;padding:12px;cursor:pointer;font-weight:600;font-size:13px;">✓ Aggiungi selezionati</button>
-          <button onclick="this.closest('[style*=position:fixed]').remove()" style="flex:1;background:#6b7280;color:white;border:none;border-radius:6px;padding:12px;cursor:pointer;font-weight:600;font-size:13px;">Annulla</button>
-        </div>
-      </div>
-    </div>
-  `;
+  // Aggiungi DIRETTAMENTE tutti gli abbinamenti ufficiali
+  const abbinamenti = data.ufficiali || [];
   
-  const container = document.createElement('div');
-  container.innerHTML = html;
-  document.body.appendChild(container);
-  
-  const listaDiv = container.querySelector('#abbinamenti-lista');
-  let listHTML = '';
-  
-  if (data.ufficiali && data.ufficiali.length > 0) {
-    listHTML += '<div style="margin-bottom:18px;"><div style="font-size:11px;color:#60a5fa;font-weight:bold;margin-bottom:10px;text-transform:uppercase;">✓ Abbinamenti Ufficiali</div>';
-    data.ufficiali.forEach(acc => {
-      const isChecked = righeGiaAggiunte.has(acc.accessorio_id);
-      listHTML += `
-        <label style="display:flex;align-items:center;padding:11px;margin-bottom:8px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);border-radius:6px;cursor:pointer;transition:all 0.2s;user-select:none;">
-          <input type="checkbox" value="${acc.accessorio_id}" data-nome="${acc.nome.replace(/"/g, '&quot;')}" ${isChecked ? 'checked disabled' : ''} style="margin-right:12px;width:18px;height:18px;cursor:pointer;">
-          <div style="flex:1;">
-            <div style="font-weight:600;color:#e0e0e0;font-size:13px;">${acc.nome}</div>
-            <div style="font-size:10px;color:#9ca3af;margin-top:2px;">${acc.accessorio_id}</div>
-          </div>
-          ${isChecked ? '<span style="background:#10b981;color:white;padding:3px 8px;border-radius:3px;font-size:9px;font-weight:600;white-space:nowrap;margin-left:8px;">✓ Aggiunto</span>' : ''}
-        </label>
-      `;
-    });
-    listHTML += '</div>';
-  }
-  
-  if (data.alternative && data.alternative.length > 0) {
-    listHTML += '<div><div style="font-size:11px;color:#f59e0b;font-weight:bold;margin-bottom:10px;text-transform:uppercase;">★ Abbinamenti Alternativi</div>';
-    data.alternative.forEach(acc => {
-      const isChecked = righeGiaAggiunte.has(acc.accessorio_id);
-      listHTML += `
-        <label style="display:flex;align-items:center;padding:11px;margin-bottom:8px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;cursor:pointer;transition:all 0.2s;user-select:none;">
-          <input type="checkbox" value="${acc.accessorio_id}" data-nome="${acc.nome.replace(/"/g, '&quot;')}" ${isChecked ? 'checked disabled' : ''} style="margin-right:12px;width:18px;height:18px;cursor:pointer;">
-          <div style="flex:1;">
-            <div style="font-weight:600;color:#e0e0e0;font-size:13px;">${acc.nome}</div>
-            <div style="font-size:10px;color:#9ca3af;margin-top:2px;">${acc.accessorio_id}</div>
-          </div>
-          ${isChecked ? '<span style="background:#f59e0b;color:white;padding:3px 8px;border-radius:3px;font-size:9px;font-weight:600;white-space:nowrap;margin-left:8px;">✓ Aggiunto</span>' : ''}
-        </label>
-      `;
-    });
-    listHTML += '</div>';
-  }
-  
-  if (!listHTML) {
-    listHTML = '<div style="color:#9ca3af;text-align:center;padding:20px;">Nessun abbinamento disponibile</div>';
-  }
-  
-  listaDiv.innerHTML = listHTML;
-}
-
-function aggiungiSelezionatiAbbinamenti(codice) {
-  const checkboxes = document.querySelectorAll('input[type="checkbox"]:checked:not(:disabled)');
-  const selezionati = [];
-  
-  checkboxes.forEach(cb => {
-    selezionati.push({
-      id: cb.value,
-      nome: cb.getAttribute('data-nome')
-    });
-  });
-  
-  if (selezionati.length === 0) {
-    alert('Seleziona almeno un abbinamento');
+  if (abbinamenti.length === 0) {
+    alert('Nessun abbinamento disponibile');
     return;
   }
-  
-  console.log('🔵 Aggiungi', selezionati.length, 'abbinamenti');
+
+  console.log('🔵 Aggiungo', abbinamenti.length, 'abbinamenti');
   
   let aggiunto = 0;
-  selezionati.forEach(acc => {
+  abbinamenti.forEach(acc => {
     fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         brand: 'Gessi',
         categoria: 'Accessori',
-        descrizione: `[${acc.id}] ${acc.nome}`,
+        descrizione: `[${acc.accessorio_id}] ${acc.nome}`,
         importo: 0
       })
     })
@@ -3989,18 +3895,20 @@ function aggiungiSelezionatiAbbinamenti(codice) {
     .then(d => {
       if (d.ok) {
         aggiunto++;
-        if (aggiunto === selezionati.length) {
+        console.log(`✅ ${acc.nome}`);
+        if (aggiunto === abbinamenti.length) {
           loadRighe();
-          document.querySelector('[style*="position:fixed"]')?.remove();
-          
           const msg = document.createElement('div');
           msg.textContent = `✓ ${aggiunto} abbinamenti aggiunti`;
           msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;font-weight:600;';
           document.body.appendChild(msg);
           setTimeout(() => msg.remove(), 2000);
         }
+      } else {
+        console.error('Errore:', acc.accessorio_id, d.error);
       }
-    });
+    })
+    .catch(e => console.error('Exception:', e));
   });
 }
 
