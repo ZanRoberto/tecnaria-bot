@@ -119,6 +119,7 @@ def init_db():
         finiture TEXT,
         fonte TEXT,
         brand TEXT,
+        image_url TEXT,
         created_at TEXT
     )''')
     
@@ -141,6 +142,7 @@ def init_db():
         tipo_relazione TEXT,
         priority INTEGER DEFAULT 99,
         note TEXT,
+        image_url TEXT,
         created_at TEXT,
         FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id),
         UNIQUE(prodotto_padre, accessorio_id)
@@ -215,6 +217,11 @@ def hash_pwd(pwd):
 
 def get_session_user():
     return session.get('user')
+
+def is_superadmin():
+    """Verifica se l'utente corrente è superadmin"""
+    u = get_session_user()
+    return u and u.get('ruolo') == 'superadmin'
 
 def require_login(ruoli=None):
     u = get_session_user()
@@ -830,6 +837,99 @@ def search_images(query, brands):
         print("[GOOGLE CSE ERROR] " + str(e))
         return []
 
+def scarica_immagini_gessi():
+    """Estrae URL immagini da Gessi.it e le salva nel DB"""
+    try:
+        import urllib.request
+        import urllib.error
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # PARTE 1: PRODOTTI GESSI
+        print("[IMMAGINI] === PRODOTTI GESSI ===")
+        c.execute("SELECT id, codice, nome FROM products WHERE LOWER(brand)='gessi' AND (image_url IS NULL OR image_url='')")
+        prodotti = c.fetchall()
+        
+        print(f"[IMMAGINI] Trovati {len(prodotti)} prodotti senza immagine")
+        
+        aggiornati_prodotti = 0
+        for pid, codice, nome in prodotti:
+            try:
+                # Cerca su Gessi.it
+                gessi_url = f"https://www.gessi.it/it/cerca?search={codice}"
+                req = urllib.request.Request(gessi_url, headers={'User-Agent': 'Mozilla/5.0'})
+                
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    html = resp.read().decode('utf-8', errors='ignore')
+                    
+                    # Estrai URL immagini con regex
+                    img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', html)
+                    
+                    if img_urls:
+                        # Prendi la prima URL valida (non placeholder)
+                        for img_url in img_urls:
+                            if 'placeholder' not in img_url.lower() and len(img_url) < 300:
+                                # SALVA SOLO L'URL, NON BASE64
+                                c.execute("UPDATE products SET image_url=? WHERE id=?", (img_url, pid))
+                                aggiornati_prodotti += 1
+                                print(f"  ✅ {codice}: {img_url[:80]}")
+                                break
+                        
+            except Exception as e:
+                print(f"  ⚠️ {codice}: {str(e)[:50]}")
+                continue
+        
+        # PARTE 2: ACCESSORI
+        print("[IMMAGINI] === ACCESSORI GESSI ===")
+        c.execute("SELECT id, accessorio_id, accessorio_nome FROM product_accessories WHERE LOWER(brand_accessorio)='gessi' AND (image_url IS NULL OR image_url='')")
+        accessori = c.fetchall()
+        
+        print(f"[IMMAGINI] Trovati {len(accessori)} accessori")
+        
+        aggiornati_accessori = 0
+        for aid, acc_id, acc_nome in accessori:
+            try:
+                # Cerca su Gessi.it
+                gessi_url = f"https://www.gessi.it/it/cerca?search={acc_nome}"
+                req = urllib.request.Request(gessi_url, headers={'User-Agent': 'Mozilla/5.0'})
+                
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    html = resp.read().decode('utf-8', errors='ignore')
+                    
+                    # Estrai URL immagini
+                    img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', html)
+                    
+                    if img_urls:
+                        for img_url in img_urls:
+                            if 'placeholder' not in img_url.lower() and len(img_url) < 300:
+                                # SALVA SOLO L'URL
+                                c.execute("UPDATE product_accessories SET image_url=? WHERE id=?", (img_url, aid))
+                                aggiornati_accessori += 1
+                                print(f"  ✅ {acc_id}: {img_url[:80]}")
+                                break
+                        
+            except Exception as e:
+                print(f"  ⚠️ {acc_id}: {str(e)[:50]}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "ok": True, 
+            "prodotti_aggiornati": aggiornati_prodotti, 
+            "prodotti_totali": len(prodotti),
+            "accessori_aggiornati": aggiornati_accessori,
+            "accessori_totali": len(accessori)
+        }
+        
+    except Exception as e:
+        print(f"[IMMAGINI ERROR] {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"ok": False, "error": str(e)}
+
 def deepseek_ask(prompt):
     if not DEEPSEEK_API_KEY:
         return "Errore: API Key non configurata"
@@ -1362,6 +1462,15 @@ def load_accessories_from_excel_lazy(file_content, brand, conn, c):
     except Exception as e:
         return False, f"❌ Errore: {str(e)}", 0
 
+@app.route('/api/scarica-immagini/<brand>', methods=['POST'])
+def scarica_immagini_brand(brand):
+    """Scrapa e salva immagini dei prodotti nel DB"""
+    if not is_superadmin():
+        return jsonify({"ok": False, "error": "Solo superadmin"}), 403
+    
+    result = scarica_immagini_gessi()
+    return jsonify(result)
+
 @app.route('/api/carica-abbinamenti-excel/<brand>', methods=['POST'])
 def carica_abbinamenti_excel(brand):
     """Carica abbinamenti da file Excel nel DB"""
@@ -1793,6 +1902,9 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     </label>
     <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
     <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
+    <button onclick="caricaAbbinamentiEProdotti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Listino + Abbinamenti</button>
+    <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
+    <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica URL Immagini Gessi</button>
   </div>
 
   <!-- CENTRO -->
@@ -2196,6 +2308,9 @@ function doLogin() {
     .then(r => r.json())
     .then(d => {
       if (d.ok) {
+        // Salva il ruolo nel localStorage
+        localStorage.setItem('user_ruolo', d.ruolo || 'commerciale');
+        localStorage.setItem('user_nome', d.nome || 'Utente');
         document.getElementById('login-overlay').style.display = 'none';
         document.getElementById('main-app').style.display = 'flex';
         initApp();
@@ -2214,6 +2329,8 @@ function doLogout() {
     document.getElementById('login-error').textContent = '';
     currentUser = null;
     moduliAttivi = [];
+    localStorage.removeItem('user_ruolo');
+    localStorage.removeItem('user_nome');
   });
 }
 
@@ -2221,6 +2338,15 @@ function initApp() {
   fetch('/api/me').then(r => r.json()).then(d => {
     if (!d.logged) { doLogout(); return; }
     currentUser = d.user;
+    
+    // Se per qualche motivo il ruolo non è corretto, usa il localStorage
+    if (!currentUser.ruolo) {
+      currentUser.ruolo = localStorage.getItem('user_ruolo') || 'commerciale';
+    }
+    if (!currentUser.nome) {
+      currentUser.nome = localStorage.getItem('user_nome') || 'Utente';
+    }
+    
     moduliAttivi = d.moduli || [];
     document.getElementById('user-label').textContent = currentUser.nome + ' (' + currentUser.ruolo + ')';
     setupRightPanel();
@@ -3277,32 +3403,74 @@ function toggleExcelPanel() {
   arrow.textContent = open ? '▼' : '▲';
 }
 
-function caricaAbbinamenti() {
-  const status = document.getElementById('abbinamenti-status');
-  status.textContent = '⏳ Caricamento...';
-  status.style.color = '#9ca3af';
+function scaricaImmaginiGessi() {
+  if (!confirm('Scarica URL immagini Gessi (prodotti + accessori)? Questo potrebbe richiedere 1-2 minuti...')) return;
   
-  // Prendi il brand (default Gessi)
-  const brand = 'Gessi';
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ In corso...';
   
-  fetch('/api/carica-abbinamenti-excel/' + encodeURIComponent(brand), {
-    method: 'POST'
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      status.textContent = '✅ ' + d.message;
-      status.style.color = '#10b981';
-    } else {
-      status.textContent = '❌ ' + (d.error || 'Errore');
-      status.style.color = '#ef4444';
-    }
-    setTimeout(() => { status.textContent = ''; }, 4000);
-  })
-  .catch(e => {
-    status.textContent = '❌ ' + e.message;
-    status.style.color = '#ef4444';
-  });
+  fetch('/api/scarica-immagini/Gessi', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      if (d.ok) {
+        const msg = `✓ Prodotti: ${d.prodotti_aggiornati}/${d.prodotti_totali} | Accessori: ${d.accessori_aggiornati}/${d.accessori_totali}`;
+        btn.textContent = msg;
+        btn.style.background = '#10b981';
+        setTimeout(() => {
+          btn.textContent = '🖼️ Scarica URL Immagini Gessi';
+          btn.style.background = '#06b6d4';
+        }, 4000);
+      } else {
+        btn.textContent = '❌ Errore: ' + d.error;
+        btn.style.background = '#ef4444';
+      }
+    })
+    .catch(e => {
+      btn.disabled = false;
+      btn.textContent = '❌ Errore';
+      console.error(e);
+    });
+}
+
+function caricaAbbinamentiEProdotti() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ Caricamento...';
+  
+  // 1. Carica listino
+  fetch('/api/listino/Gessi')
+    .then(r => r.json())
+    .then(d1 => {
+      const prodotti = d1.ok ? d1.prodotti.length : 0;
+      
+      // 2. Carica abbinamenti
+      return fetch('/api/carica-abbinamenti-excel/Gessi', {method:'POST'})
+        .then(r => r.json())
+        .then(d2 => {
+          const abbinamenti = d2.ok ? d2.count : 0;
+          
+          if (d1.ok && d2.ok) {
+            btn.textContent = `✅ Caricati ${prodotti} prodotti + ${abbinamenti} abbinamenti`;
+            btn.style.background = '#10b981';
+          } else {
+            btn.textContent = `⚠️ ${prodotti} prodotti, ${abbinamenti} abbinamenti`;
+            btn.style.background = '#f59e0b';
+          }
+          
+          setTimeout(() => {
+            btn.textContent = '📋 Carica Listino + Abbinamenti';
+            btn.style.background = '#f59e0b';
+            btn.disabled = false;
+          }, 4000);
+        });
+    })
+    .catch(e => {
+      btn.textContent = '❌ Errore: ' + e.message;
+      btn.style.background = '#ef4444';
+      btn.disabled = false;
+    });
 }
 
 function caricaExcelListino(input) {
