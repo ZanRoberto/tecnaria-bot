@@ -1,2476 +1,4434 @@
 """
-MISSION CONTROL V6.0 — BOT V15 PRODUCTION + AI BRIDGE
-=====================================================
-✅ Bot gira DENTRO app.py come thread daemon
-✅ Memoria condivisa thread-safe (heartbeat_data + Lock)
-✅ Database persistente SQLite su /home/app/data
-✅ ZERO comunicazione HTTP esterna tra bot e app
-✅ Dashboard PAPER/LIVE indicator
-✅ Nomi classe/file allineati a OVERTOP_BASSANO_V15_PRODUCTION
-✅ AI BRIDGE: Claude analizza e comanda in tempo reale
+ORACOLO COVOLO - SISTEMA COMPLETO V2
++ Login 3 livelli: superadmin (Tecnaria) / admin cliente / commerciale
++ Moduli ON/OFF configurabili da superadmin per cliente
++ Pannello destra: Cantieri, Carrello, BI
++ Tutto il precedente invariato
 """
-
-from flask import Flask, jsonify, render_template_string, request, send_file, abort
-from OVERTOP_BASSANO_V15_PRODUCTION import OvertopBassanoV15Production
-from ai_bridge import AIBridge
-import sqlite3
-import json
-import threading
-import time
-import sys
-import os
+import os, json, sqlite3, re, hashlib, secrets, base64, io
 from datetime import datetime
-from pathlib import Path
+from flask import Flask, render_template_string, request, jsonify, session
+import httpx
+try:
+    import openpyxl
+    OPENPYXL_OK = True
+except ImportError:
+    OPENPYXL_OK = False
 
-sys.stdout.flush()
-sys.stderr.flush()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
+os.makedirs(DATA_DIR, exist_ok=True)
 
-app = Flask(__name__)
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "tecnaria2024").strip()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "").strip()
 
-# ═══════════════════════════════════════════════════════════════════════════
-# DATABASE PERSISTENTE
-# ═══════════════════════════════════════════════════════════════════════════
+BRANDS_LIST = [
+    "Acquabella", "Altamarea", "Anem", "Antoniolupi", "Aparici", "Apavisa",
+    "Ariostea", "Artesia", "Austroflamm", "BGP", "Brera", "Bisazza",
+    "Blue Design", "Baufloor", "Bauwerk", "Caros", "Caesar", "Casalgrande Padana",
+    "Cerasarda", "Cerasa", "Cielo", "Colombo", "Cottodeste", "CP Parquet",
+    "CSA", "Decor Walther", "Demm", "DoorAmeda", "Duscholux", "Duravit",
+    "Edimax Astor", "FAP Ceramiche", "FMG", "Floorim", "Gerflor", "Gessi",
+    "Gigacer", "Glamm Fire", "GOman", "Gridiron", "Gruppo Bardelli", "Gruppo Geromin",
+    "Ier Hurne", "Inklostro Bianco", "Iniziativa Legno", "Iris", "Italgraniti",
+    "Kaldewei", "Linki", "Madegan", "Marca Corona", "Mirage", "Milldue",
+    "Murexin", "Noorth", "Omegius", "Piastrelle d Arredo", "Profiletec", "Remer",
+    "Sichenia", "Simas", "Schluter Systems", "SDR", "Sterneldesign", "Stuv",
+    "Sunshower", "Sunshower Wellness", "Tonalite", "Tresse", "Trimline Fires",
+    "Tubes", "Valdama", "Vismara Vetro", "Wedi"
+]
 
-DB_DIR  = os.environ.get("DB_DIR",  "/home/app/data")
-DB_PATH = os.environ.get("DB_PATH", os.path.join(DB_DIR, "trading_data.db"))
-NARRATIVES_DB = os.environ.get("NARRATIVES_DB", os.path.join(DB_DIR, "narratives.db"))
-LOG_FILE= os.path.join(DB_DIR, "trading.log")
-
-Path(DB_DIR).mkdir(parents=True, exist_ok=True)
-
-def log(msg):
-    ts   = datetime.utcnow().isoformat()
-    line = f"{ts}Z {msg}"
-    print(line, flush=True)
-    print(line, file=sys.stderr, flush=True)
-    try:
-        with open(LOG_FILE, "a") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
+MODULI_DISPONIBILI = ["cantieri", "carrello", "bi", "commerciali"]
 
 def init_db():
-    try:
-        log(f"[DB_INIT] 📁 {DB_DIR}")
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp   TEXT DEFAULT (datetime('now')),
-                event_type  TEXT,
-                asset       TEXT,
-                price       REAL,
-                size        REAL,
-                pnl         REAL,
-                direction   TEXT,
-                reason      TEXT,
-                data_json   TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS bot_state (
-                key   TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
-        log("[DB_INIT] ✅ DB OK")
-        return True
-    except Exception as e:
-        log(f"[DB_INIT] ❌ {e}")
-        return False
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Tabelle esistenti
+    c.execute('''CREATE TABLE IF NOT EXISTS aziende (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT UNIQUE NOT NULL,
+        admin_password TEXT,
+        admin_required BOOLEAN DEFAULT 0
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT, content TEXT, azienda_id INTEGER,
+        visibility TEXT DEFAULT 'public', access_code TEXT, upload_date TEXT,
+        FOREIGN KEY (azienda_id) REFERENCES aziende(id)
+    )''')
+    # Tabelle nuove
+    c.execute('''CREATE TABLE IF NOT EXISTS clienti (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT UNIQUE NOT NULL,
+        slug TEXT UNIQUE NOT NULL
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS utenti (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT NOT NULL,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        ruolo TEXT NOT NULL,
+        cliente_id INTEGER,
+        attivo INTEGER DEFAULT 1,
+        FOREIGN KEY (cliente_id) REFERENCES clienti(id)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS moduli_cliente (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cliente_id INTEGER NOT NULL,
+        modulo TEXT NOT NULL,
+        attivo INTEGER DEFAULT 0,
+        UNIQUE(cliente_id, modulo),
+        FOREIGN KEY (cliente_id) REFERENCES clienti(id)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS cantieri (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cliente_id INTEGER NOT NULL,
+        commerciale_id INTEGER,
+        nome TEXT NOT NULL,
+        stato TEXT DEFAULT 'bozza',
+        note TEXT,
+        data_creazione TEXT,
+        data_aggiornamento TEXT,
+        FOREIGN KEY (cliente_id) REFERENCES clienti(id),
+        FOREIGN KEY (commerciale_id) REFERENCES utenti(id)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS cantiere_righe (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cantiere_id INTEGER NOT NULL,
+        brand TEXT, categoria TEXT, descrizione TEXT, note TEXT,
+        importo REAL DEFAULT 0,
+        FOREIGN KEY (cantiere_id) REFERENCES cantieri(id)
+    )''')
+    
+    # TABELLE LAZY LOADING ABBINAMENTI
+    c.execute('''CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        codice TEXT UNIQUE NOT NULL,
+        nome TEXT,
+        collezione TEXT,
+        categoria TEXT,
+        prezzo REAL,
+        prezzo_rivenditore REAL,
+        prezzo_scontato REAL,
+        disponibilita TEXT,
+        descrizione TEXT,
+        finiture TEXT,
+        fonte TEXT,
+        brand TEXT,
+        created_at TEXT
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS categories_accessori (
+        id INTEGER PRIMARY KEY,
+        categoria_id TEXT UNIQUE NOT NULL,
+        categoria_nome TEXT NOT NULL,
+        descrizione TEXT,
+        icona TEXT,
+        created_at TEXT
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS product_accessories (
+        id INTEGER PRIMARY KEY,
+        prodotto_padre TEXT NOT NULL,
+        accessorio_id TEXT NOT NULL,
+        accessorio_nome TEXT,
+        brand_accessorio TEXT,
+        categoria_accessorio TEXT,
+        tipo_relazione TEXT,
+        priority INTEGER DEFAULT 99,
+        note TEXT,
+        created_at TEXT,
+        FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id),
+        UNIQUE(prodotto_padre, accessorio_id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS product_accessories_vincoli (
+        id INTEGER PRIMARY KEY,
+        relazione_id INTEGER NOT NULL,
+        campo_vincolo TEXT,
+        valore_vincolo TEXT,
+        severity TEXT,
+        messaggio TEXT,
+        created_at TEXT,
+        FOREIGN KEY (relazione_id) REFERENCES product_accessories(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS matching_rules (
+        id INTEGER PRIMARY KEY,
+        categoria_prodotto TEXT,
+        categoria_accessorio TEXT,
+        soglia_compatibilita TEXT,
+        nota TEXT,
+        created_at TEXT,
+        FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id)
+    )''')
+    
+    # Cliente default Covolo
+    c.execute("INSERT OR IGNORE INTO clienti (nome, slug) VALUES ('Covolo SRL', 'covolo')")
+    conn.commit()
+    # Inizializza moduli per clienti esistenti
+    c.execute("SELECT id FROM clienti")
+    for (cid,) in c.fetchall():
+        for m in MODULI_DISPONIBILI:
+            c.execute("INSERT OR IGNORE INTO moduli_cliente (cliente_id, modulo, attivo) VALUES (?,?,0)", (cid, m))
+    conn.commit()
+    # Brand default
+    for brand in BRANDS_LIST:
+        c.execute('INSERT OR IGNORE INTO aziende (nome) VALUES (?)', (brand,))
+    conn.commit()
+    conn.close()
 
+app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 init_db()
 
-# ═══════════════════════════════════════════════════════════════════════════
-# HEARTBEAT_DATA — dizionario condiviso tra app.py e bot (thread-safe)
-# ═══════════════════════════════════════════════════════════════════════════
-
-heartbeat_lock = threading.Lock()
-heartbeat_data = {
-    "status":             "UNKNOWN",
-    "mode":               "PAPER",    # PAPER | LIVE
-    "capital":            0.0,
-    "trades":             0,
-    "wins":               0,
-    "losses":             0,
-    "wr":                 0.0,
-    "last_seen":          None,
-    "matrimoni_divorzio": [],
-    "oracolo_snapshot":   {},
-    "m2_direction":       "LONG",
-}
-
-# ═══════════════════════════════════════════════════════════════════════════
-# DB EXECUTE — con retry
-# ═══════════════════════════════════════════════════════════════════════════
-
-def db_execute(query, params=None, fetch=False):
-    for attempt in range(3):
-        try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
-            cur  = conn.execute(query, params or [])
-            if fetch:
-                result = cur.fetchall() if "COUNT" not in query.upper() else cur.fetchone()
-            else:
-                conn.commit()
-                result = None
-            conn.close()
-            return result
-        except Exception as e:
-            log(f"[DB] tentativo {attempt+1} fallito: {e}")
-            if attempt == 2:
-                return None
-            time.sleep(0.5)
-
-# ═══════════════════════════════════════════════════════════════════════════
-# DOWNLOAD SECRET per endpoint protetti
-# ═══════════════════════════════════════════════════════════════════════════
-
-DOWNLOAD_SECRET = os.environ.get("DOWNLOAD_SECRET", "overtop2024")
-
-def _check_key():
-    if request.args.get('key') != DOWNLOAD_SECRET:
-        abort(403, "Chiave non valida")
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ROUTES
-# ═══════════════════════════════════════════════════════════════════════════
-
-@app.route('/trading/log', methods=['POST'])
-def trading_log():
-    try:
-        data       = request.get_json()
-        event_type = data.get("type") or data.get("event_type", "UNKNOWN")
-        if event_type in ("ENTRY", "EXIT"):
-            db_execute("""
-                INSERT INTO trades (event_type, asset, price, size, pnl, direction, reason, data_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (event_type, data.get("asset","BTCUSDC"),
-                  data.get("price",0), data.get("size",0), data.get("pnl",0),
-                  data.get("direction","LONG"), data.get("reason",""),
-                  json.dumps(data)))
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/trading/heartbeat', methods=['POST'])
-def trading_heartbeat():
-    """Compatibilità: accetta heartbeat HTTP se qualcuno lo invia ancora."""
-    try:
-        data = request.get_json()
-        with heartbeat_lock:
-            heartbeat_data.update({k: v for k, v in data.items() if k in heartbeat_data})
-            heartbeat_data["last_seen"] = datetime.utcnow().isoformat()
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/trading/status', methods=['GET'])
-def trading_status():
-    try:
-        row = db_execute("""
-            SELECT COUNT(*),
-                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END),
-                   SUM(pnl), MAX(pnl), MIN(pnl)
-            FROM trades WHERE event_type IN ('EXIT', 'M2_EXIT')
-        """, fetch=True)
-
-        trades_rows = db_execute("""
-            SELECT id, timestamp, event_type, asset, price, size, pnl, direction, reason
-            FROM trades ORDER BY timestamp DESC LIMIT 20
-        """, fetch=True)
-
-        # db_execute con COUNT usa fetchone → tupla diretta, non lista di tuple
-        _row = row if (row and not isinstance(row, list)) else (row[0] if row else None)
-        n_trades  = int(_row[0] or 0) if _row else 0
-        n_wins    = int(_row[1] or 0) if _row else 0
-        total_pnl = float(_row[2] or 0) if _row else 0
-        max_pnl   = float(_row[3] or 0) if _row else 0
-        min_pnl   = float(_row[4] or 0) if _row else 0
-        wr        = (n_wins / n_trades * 100) if n_trades > 0 else 0
-
-        with heartbeat_lock:
-            hb = dict(heartbeat_data)
-
-        capital = hb.get("capital", 0)
-        roi     = (total_pnl / capital * 100) if capital > 0 else 0
-
-        trades = []
-        if trades_rows:
-            for r in trades_rows:
-                trades.append({
-                    "id": r[0], "timestamp": r[1], "type": r[2], "asset": r[3],
-                    "price": float(r[4] or 0), "size": float(r[5] or 0),
-                    "pnl": float(r[6] or 0), "direction": r[7],
-                    "reason": (r[8] or "N/A")
-                })
-
-        suggestions = []
-        if wr < 30 and n_trades > 5:   suggestions.append("⚠️ Win Rate BASSO")
-        if total_pnl < -100:           suggestions.append("🔴 Drawdown ALTO")
-        if n_trades == 0:              suggestions.append("🟡 Nessun trade — warmup")
-        if hb.get("mode") == "PAPER":  suggestions.append("📄 PAPER TRADE attivo — nessun ordine reale")
-
-        return jsonify({
-            "heartbeat": hb,
-            "metrics": {
-                "n_trades": n_trades, "n_wins": n_wins,
-                "wr": round(wr, 1), "pnl": round(total_pnl, 2),
-                "capital": round(capital, 2), "roi": round(roi, 2),
-                "max_pnl": round(max_pnl, 2), "min_pnl": round(min_pnl, 2),
-            },
-            "trades":      trades,
-            "suggestions": suggestions,
-        }), 200
-    except Exception as e:
-        log(f"[STATUS] ❌ {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/telemetry', methods=['GET'])
-def telemetry_report():
-    """Report stabilità — solo numeri, zero interpretazione."""
-    try:
-        with heartbeat_lock:
-            hb = dict(heartbeat_data)
-        telemetry = hb.get("telemetry", {})
-        return jsonify(telemetry), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/trading/command', methods=['POST'])
-def send_command():
-    try:
-        data = request.get_json()
-        cmd  = data.get("command", "")
-        log(f"[COMMAND] 📤 {cmd}")
-        return jsonify({"status": "ok", "command": cmd}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/trading/config', methods=['GET'])
-def get_config():
-    return jsonify({"version": "V6.0+V15_PRODUCTION+IA", "db": DB_PATH}), 200
-
-# ═══════════════════════════════════════════════════════════════════════════
-# DIAGNOSTIC — tutto quello che serve per capire lo stato del sistema
-# ═══════════════════════════════════════════════════════════════════════════
-
-@app.route('/diagnostic', methods=['GET'])
-def diagnostic():
-    try:
-        with heartbeat_lock:
-            hb = dict(heartbeat_data)
-
-        # -- FIX ATTIVI: verifica diretta sul file sorgente --
-        src = "/opt/render/project/src/OVERTOP_BASSANO_V15_PRODUCTION.py"
-        fix_attivi = {}
-        try:
-            code = open(src).read()
-            fix_attivi = {
-                "MIN_HOLD_10s":        "if duration >= MIN_HOLD_SECONDS:" in code,
-                "T1_VOL_pnl_guard":    "volatility == \"ALTA\" and current_pnl_real < 0:" in code,
-                "T4_FP_pnl_guard":     "fp_div > DIVORCE_FP_DIVERGE_PCT and current_pnl_real < 0:" in code,
-                "CESPUGLIO_bypass":    "CESPUGLIO bypass" in code,
-                "drawdown_scope_fix":  "FIX: drawdown_pct calcolato sempre" in code,
-            }
-        except Exception as e:
-            fix_attivi = {"error": str(e)}
-
-        # -- ULTIMO TRADE --
-        ultimo_trade = {}
-        trades_rows = db_execute("""
-            SELECT timestamp, event_type, direction, price, pnl, reason, data_json
-            FROM trades ORDER BY id DESC LIMIT 2
-        """, fetch=True)
-        if trades_rows:
-            for r in trades_rows:
-                et = r[1]
-                if et == "M2_EXIT":
-                    try:
-                        dj = json.loads(r[6]) if r[6] else {}
-                    except:
-                        dj = {}
-                    ultimo_trade = {
-                        "timestamp":  r[0],
-                        "direzione":  r[2],
-                        "prezzo":     r[3],
-                        "pnl":        round(float(r[4] or 0), 4),
-                        "motivo":     r[5],
-                        "durata_s":   dj.get("duration", "?"),
-                        "score":      dj.get("score", "?"),
-                        "matrimonio": dj.get("matrimonio", "?"),
-                    }
-                    break
-
-        # -- DIVORZIO STATS: conta trigger oggi --
-        divorzio_stats = {"T1_VOL": 0, "T2_TREND": 0, "T3_DD": 0, "T4_FP": 0, "totale": 0}
-        div_rows = db_execute("""
-            SELECT reason FROM trades
-            WHERE event_type='M2_EXIT' AND reason LIKE 'DIVORZIO%'
-            AND timestamp >= datetime('now', '-1 day')
-        """, fetch=True)
-        if div_rows:
-            for r in div_rows:
-                reason = r[0] or ""
-                divorzio_stats["totale"] += 1
-                for t in ["T1_VOL", "T2_TREND", "T3_DD", "T4_FP"]:
-                    if t in reason:
-                        divorzio_stats[t] += 1
-
-        # -- PESI SC --
-        sc_pesi = hb.get("sc_pesi", {})
-
-        # -- ORACOLO TOP 5 PER WR --
-        oracolo = hb.get("oracolo_snapshot", {})
-        top_fp = sorted(
-            [(k, v) for k, v in oracolo.items()
-             if isinstance(v, dict) and v.get("samples", 0) >= 5 and not k.startswith("_")],
-            key=lambda x: x[1].get("wr", 0), reverse=True
-        )[:5]
-        oracolo_top5 = [
-            {"fingerprint": k, "wr": round(v["wr"]*100, 1),
-             "campioni": v["samples"], "pnl_avg": v["pnl_avg"]}
-            for k, v in top_fp
-        ]
-
-        # -- CESPUGLIO STATS --
-        phantom = hb.get("phantom", {})
-        per_livello = phantom.get("per_livello", {})
-        cespuglio = per_livello.get("CESPUGLIO_RANGING_2loss", {})
-        cespuglio_stats = {
-            "bloccati":    cespuglio.get("blocked", 0),
-            "would_win":   cespuglio.get("would_win", 0),
-            "would_lose":  cespuglio.get("would_lose", 0),
-            "pnl_salvati": round(cespuglio.get("pnl_saved", 0), 2),
-            "pnl_persi":   round(cespuglio.get("pnl_missed", 0), 2),
-            "net":         round(cespuglio.get("pnl_saved", 0) - cespuglio.get("pnl_missed", 0), 2),
-        }
-
-        # -- STATO GENERALE --
-        stato = {
-            "status":        hb.get("status", "UNKNOWN"),
-            "regime":        hb.get("regime", "?"),
-            "m2_trades":     hb.get("m2_trades", 0),
-            "m2_wins":       hb.get("m2_wins", 0),
-            "m2_losses":     hb.get("m2_losses", 0),
-            "m2_pnl":        round(hb.get("m2_pnl", 0), 4),
-            "m2_wr":         round(hb.get("m2_wr", 0) * 100, 1),
-            "m2_state":      hb.get("m2_state", "?"),
-            "loss_streak":   hb.get("m2_loss_streak", 0),
-            "phantom_bilancio": round(phantom.get("bilancio", 0), 2),
-            "tick_count":    hb.get("tick_count", 0),
-            "last_price":    hb.get("last_price", 0),
-        }
-
-        # -- VERITAS SINTESI --
-        veritas = hb.get("veritas", {})
-        veritas_sintesi = veritas.get("conflitto", {})
-
-        result = {
-            "🔧 FIX_ATTIVI":       fix_attivi,
-            "📊 STATO":            stato,
-            "💰 ULTIMO_TRADE":     ultimo_trade,
-            "💔 DIVORZIO_OGGI":    divorzio_stats,
-            "🧠 PESI_SC":          sc_pesi,
-            "🔮 ORACOLO_TOP5":     oracolo_top5,
-            "🌿 CESPUGLIO":        cespuglio_stats,
-            "⚖️ VERITAS":          veritas_sintesi,
-        }
-
-        # Rendering HTML leggibile
-        html = """<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
-<title>DIAGNOSTIC — OVERTOP V15</title>
-<style>
-body{background:#060810;color:#00ff88;font-family:monospace;padding:20px;font-size:13px;}
-h1{color:#ffd700;font-size:18px;margin-bottom:20px;}
-h2{color:#00aaff;font-size:14px;margin-top:20px;margin-bottom:8px;border-bottom:1px solid #333;padding-bottom:4px;}
-.ok{color:#00ff88;} .err{color:#ff3355;} .warn{color:#ffd700;}
-table{border-collapse:collapse;width:100%;margin-bottom:10px;}
-td,th{padding:4px 12px;text-align:left;border-bottom:1px solid #1a2030;}
-th{color:#aaa;font-weight:normal;}
-.val{color:#fff;}
-</style></head><body>
-<h1>⚡ DIAGNOSTIC — OVERTOP BASSANO V15</h1>
-"""
-        for section, data in result.items():
-            html += f"<h2>{section}</h2><table>"
-            if isinstance(data, dict):
-                for k, v in data.items():
-                    if isinstance(v, bool):
-                        cls = "ok" if v else "err"
-                        val = "✅ ATTIVO" if v else "❌ MANCANTE"
-                    elif isinstance(v, (int, float)):
-                        cls = "val"
-                        val = str(v)
-                    else:
-                        cls = "val"
-                        val = str(v)
-                    html += f"<tr><td style='color:#aaa'>{k}</td><td class='{cls}'>{val}</td></tr>"
-            elif isinstance(data, list):
-                for item in data:
-                    if isinstance(item, dict):
-                        vals = " | ".join(f"<span style='color:#aaa'>{k}:</span> <span class='val'>{v}</span>" for k,v in item.items())
-                        html += f"<tr><td colspan='2'>{vals}</td></tr>"
-            html += "</table>"
-
-        html += f"<p style='color:#333;font-size:11px;margin-top:30px'>Aggiornato: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</p>"
-        html += "</body></html>"
-
-        from flask import Response
-        return Response(html, mimetype='text/html')
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# ═══════════════════════════════════════════════════════════════════════════
-# DOWNLOAD ENDPOINTS — scarica DB, narratives, capsule
-# ═══════════════════════════════════════════════════════════════════════════
-
-@app.route('/download/db')
-def download_db():
-    _check_key()
-    if not os.path.exists(DB_PATH):
-        abort(404, "trading_data.db non trovato")
-    return send_file(DB_PATH, as_attachment=True, download_name="trading_data.db")
-
-@app.route('/download/narratives')
-def download_narratives():
-    _check_key()
-    if not os.path.exists(NARRATIVES_DB):
-        abort(404, "narratives.db non trovato")
-    return send_file(NARRATIVES_DB, as_attachment=True, download_name="narratives.db")
-
-@app.route('/download/capsule')
-def download_capsule():
-    _check_key()
-    capsule_file = "capsule_attive.json"
-    if not os.path.exists(capsule_file):
-        abort(404, "capsule_attive.json non trovato")
-    return send_file(capsule_file, as_attachment=True, download_name="capsule_attive.json")
-
-@app.route('/debug/db')
-def debug_db():
-    _check_key()
-    if not os.path.exists(DB_PATH):
-        return json.dumps({"error": "DB non trovato"}), 404
+def dedup_brands_on_start():
+    """Unifica brand duplicati case-insensitive all'avvio"""
     conn = sqlite3.connect(DB_PATH)
-    rows = dict(conn.execute("SELECT key, value FROM bot_state").fetchall())
+    c = conn.cursor()
+    c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
+    dups = c.fetchall()
+    for lower_name, ids_str, names_str in dups:
+        ids = [int(x) for x in ids_str.split(',')]
+        names = names_str.split(',')
+        canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
+        canonical_id = ids[names.index(canonical_name)]
+        for i, bid in enumerate(ids):
+            if bid != canonical_id:
+                c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
+                c.execute("DELETE FROM aziende WHERE id=?", (bid,))
+    conn.commit()
     conn.close()
-    result = {}
-    for k, v in rows.items():
-        try:
-            parsed = json.loads(v)
-            if isinstance(parsed, dict) and len(str(parsed)) > 2000:
-                result[k] = f"[{len(parsed)} entries]"
-            else:
-                result[k] = parsed
-        except (json.JSONDecodeError, TypeError):
-            result[k] = v
-    return json.dumps(result, indent=2), 200, {'Content-Type': 'application/json'}
 
-# ═══════════════════════════════════════════════════════════════════════════
-# AI BRIDGE STATUS ENDPOINT
-# ═══════════════════════════════════════════════════════════════════════════
+dedup_brands_on_start()
 
-bridge = None  # inizializzato dopo il bot
+def load_gessi_abbinamenti_on_start():
+    """Placeholder — abbinamenti caricheranno da Excel quando l'utente clicca il bottone"""
+    pass
 
-@app.route('/signal_tracker')
-def signal_tracker_view():
-    """Distribuzione previsionale del sistema — quanto si muove il prezzo post-segnale."""
-    try:
-        with heartbeat_lock:
-            hb = dict(heartbeat_data)
-        st = hb.get("signal_tracker", {})
-        return json.dumps(st, indent=2), 200, {'Content-Type': 'application/json'}
-    except Exception as e:
-        return json.dumps({"error": str(e)}), 500
+def hash_pwd(pwd):
+    return hashlib.sha256(pwd.encode()).hexdigest()
 
-@app.route('/bridge/status')
-def bridge_status():
-    if bridge:
-        return json.dumps(bridge.get_status(), indent=2), 200, {'Content-Type': 'application/json'}
-    return json.dumps({"active": False, "reason": "bridge not initialized"}), 200, {'Content-Type': 'application/json'}
+def get_session_user():
+    return session.get('user')
 
-# ═══════════════════════════════════════════════════════════════════════════
-# BRAIN THREAD — analisi periodica ogni 60s
-# ═══════════════════════════════════════════════════════════════════════════
+def require_login(ruoli=None):
+    u = get_session_user()
+    if not u:
+        return None
+    if ruoli and u['ruolo'] not in ruoli:
+        return None
+    return u
 
-def brain_analysis_thread():
-    while True:
-        try:
-            time.sleep(60)
-            row = db_execute("""
-                SELECT COUNT(*), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), SUM(pnl)
-                FROM trades WHERE event_type IN ('EXIT', 'M2_EXIT')
-            """, fetch=True)
-            if row and row[0]:
-                n, w, p = row[0][0] or 0, row[0][1] or 0, row[0][2] or 0
-                wr = (w / n * 100) if n > 0 else 0
-                log(f"[BRAIN] 🧠 {n} trade | WR={wr:.0f}% | PnL={p:.2f}$")
-        except Exception as e:
-            log(f"[BRAIN] ❌ {e}")
+# ---------------------------------------------------------------------------
+# API AUTH
+# ---------------------------------------------------------------------------
 
-threading.Thread(target=brain_analysis_thread, daemon=True, name='brain').start()
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username', '').strip()
+    password = data.get('password', '').strip()
+    # Superadmin
+    if username == 'superadmin' and password == SUPERADMIN_PASSWORD:
+        session['user'] = {'id': 0, 'nome': 'Tecnaria', 'ruolo': 'superadmin', 'cliente_id': None}
+        return jsonify({"ok": True, "ruolo": "superadmin", "nome": "Tecnaria"})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, nome, ruolo, cliente_id, password_hash, attivo FROM utenti WHERE username=?", (username,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": False, "error": "Utente non trovato"})
+    uid, nome, ruolo, cliente_id, pwd_hash, attivo = row
+    if not attivo:
+        return jsonify({"ok": False, "error": "Utente disabilitato"})
+    if hash_pwd(password) != pwd_hash:
+        return jsonify({"ok": False, "error": "Password errata"})
+    session['user'] = {'id': uid, 'nome': nome, 'ruolo': ruolo, 'cliente_id': cliente_id}
+    return jsonify({"ok": True, "ruolo": ruolo, "nome": nome})
 
-# ═══════════════════════════════════════════════════════════════════════════
-# BOT LAUNCHER THREAD + AI BRIDGE
-# ═══════════════════════════════════════════════════════════════════════════
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
 
-def _auto_inject_brain():
-    """
-    Se il DB ha meno di 10 trade reali nell'Oracolo → inietta memoria storica.
-    Eseguito UNA SOLA VOLTA al boot. Il flag 'brain_injected' nel DB evita
-    re-iniezioni ai restart successivi.
-    """
-    try:
+@app.route('/api/me', methods=['GET'])
+def me():
+    u = get_session_user()
+    if not u:
+        return jsonify({"logged": False})
+    # Carica moduli attivi per il cliente
+    moduli = []
+    cid = u.get('cliente_id')
+    if cid:
         conn = sqlite3.connect(DB_PATH)
-        rows = dict(conn.execute("SELECT key, value FROM bot_state").fetchall())
+        c = conn.cursor()
+        c.execute("SELECT modulo FROM moduli_cliente WHERE cliente_id=? AND attivo=1", (cid,))
+        moduli = [r[0] for r in c.fetchall()]
         conn.close()
+    elif u['ruolo'] == 'superadmin':
+        moduli = MODULI_DISPONIBILI
+    return jsonify({"logged": True, "user": u, "moduli": moduli})
 
-        # Già iniettato in precedenza → skip
-        if rows.get('brain_injected') == '1':
-            log("[BRAIN_INJECT] ✅ Brain già iniettato — skip")
-            return
+# ---------------------------------------------------------------------------
+# API SUPERADMIN — gestione clienti e moduli
+# ---------------------------------------------------------------------------
 
-        # Conta i trade reali nell'Oracolo
-        real_samples = 0
-        short_tossici_ok = False
-        if 'oracolo' in rows:
+@app.route('/api/sa/clienti', methods=['GET'])
+def sa_get_clienti():
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, nome, slug FROM clienti ORDER BY nome")
+    clienti = [{"id": r[0], "nome": r[1], "slug": r[2]} for r in c.fetchall()]
+    conn.close()
+    return jsonify({"clienti": clienti})
+
+@app.route('/api/sa/clienti', methods=['POST'])
+def sa_add_cliente():
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    nome = data.get('nome', '').strip()
+    slug = data.get('slug', '').strip().lower().replace(' ', '-')
+    if not nome or not slug:
+        return jsonify({"error": "Nome e slug richiesti"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO clienti (nome, slug) VALUES (?,?)", (nome, slug))
+        cid = c.lastrowid
+        for m in MODULI_DISPONIBILI:
+            c.execute("INSERT OR IGNORE INTO moduli_cliente (cliente_id, modulo, attivo) VALUES (?,?,0)", (cid, m))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "id": cid})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/sa/moduli/<int:cliente_id>', methods=['GET'])
+def sa_get_moduli(cliente_id):
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT modulo, attivo FROM moduli_cliente WHERE cliente_id=?", (cliente_id,))
+    moduli = {r[0]: bool(r[1]) for r in c.fetchall()}
+    conn.close()
+    return jsonify({"moduli": moduli})
+
+@app.route('/api/sa/moduli/<int:cliente_id>', methods=['POST'])
+def sa_set_moduli(cliente_id):
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    modulo = data.get('modulo')
+    attivo = 1 if data.get('attivo') else 0
+    if modulo not in MODULI_DISPONIBILI:
+        return jsonify({"error": "Modulo non valido"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO moduli_cliente (cliente_id, modulo, attivo) VALUES (?,?,?)", (cliente_id, modulo, attivo))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.route('/api/sa/utenti', methods=['GET'])
+def sa_get_utenti():
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT u.id, u.nome, u.username, u.ruolo, u.attivo, cl.nome as cliente
+                 FROM utenti u LEFT JOIN clienti cl ON u.cliente_id=cl.id ORDER BY u.nome""")
+    utenti = [{"id": r[0], "nome": r[1], "username": r[2], "ruolo": r[3], "attivo": r[4], "cliente": r[5]} for r in c.fetchall()]
+    conn.close()
+    return jsonify({"utenti": utenti})
+
+@app.route('/api/sa/utenti', methods=['POST'])
+def sa_add_utente():
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    nome = data.get('nome', '').strip()
+    username = data.get('username', '').strip()
+    password = data.get('password', '').strip()
+    ruolo = data.get('ruolo', 'commerciale')
+    cliente_id = data.get('cliente_id')
+    if not nome or not username or not password:
+        return jsonify({"error": "Dati incompleti"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO utenti (nome, username, password_hash, ruolo, cliente_id) VALUES (?,?,?,?,?)",
+                  (nome, username, hash_pwd(password), ruolo, cliente_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/sa/utenti/<int:uid>', methods=['DELETE'])
+def sa_delete_utente(uid):
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE utenti SET attivo=0 WHERE id=?", (uid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+# ---------------------------------------------------------------------------
+# API CANTIERI
+# ---------------------------------------------------------------------------
+
+@app.route('/api/cantieri', methods=['GET'])
+def get_cantieri():
+    u = require_login(['superadmin', 'admin', 'commerciale'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if u['ruolo'] == 'superadmin':
+        c.execute("""SELECT ca.id, ca.nome, ca.stato, ca.data_creazione, u.nome as comm, cl.nome as cliente
+                     FROM cantieri ca
+                     LEFT JOIN utenti u ON ca.commerciale_id=u.id
+                     LEFT JOIN clienti cl ON ca.cliente_id=cl.id
+                     ORDER BY ca.data_creazione DESC LIMIT 100""")
+    elif u['ruolo'] == 'admin':
+        c.execute("""SELECT ca.id, ca.nome, ca.stato, ca.data_creazione, u.nome as comm, cl.nome as cliente
+                     FROM cantieri ca
+                     LEFT JOIN utenti u ON ca.commerciale_id=u.id
+                     LEFT JOIN clienti cl ON ca.cliente_id=cl.id
+                     WHERE ca.cliente_id=?
+                     ORDER BY ca.data_creazione DESC""", (u['cliente_id'],))
+    else:
+        c.execute("""SELECT ca.id, ca.nome, ca.stato, ca.data_creazione, u.nome as comm, cl.nome as cliente
+                     FROM cantieri ca
+                     LEFT JOIN utenti u ON ca.commerciale_id=u.id
+                     LEFT JOIN clienti cl ON ca.cliente_id=cl.id
+                     WHERE ca.commerciale_id=?
+                     ORDER BY ca.data_creazione DESC""", (u['id'],))
+    rows = c.fetchall()
+    conn.close()
+    return jsonify({"cantieri": [{"id": r[0], "nome": r[1], "stato": r[2], "data": r[3], "commerciale": r[4], "cliente": r[5]} for r in rows]})
+
+@app.route('/api/cantieri', methods=['POST'])
+def add_cantiere():
+    u = require_login(['superadmin', 'admin', 'commerciale'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    nome = data.get('nome', '').strip()
+    if not nome:
+        return jsonify({"error": "Nome richiesto"}), 400
+    cliente_id = u.get('cliente_id') or 1
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO cantieri (cliente_id, commerciale_id, nome, stato, data_creazione, data_aggiornamento) VALUES (?,?,?,?,?,?)",
+              (cliente_id, u['id'] if u['ruolo'] != 'superadmin' else None, nome, 'bozza', datetime.now().isoformat(), datetime.now().isoformat()))
+    cid = c.lastrowid
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "id": cid})
+
+@app.route('/api/cantieri/<int:cid>', methods=['PUT'])
+def update_cantiere(cid):
+    u = require_login(['superadmin', 'admin', 'commerciale'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    stato = data.get('stato')
+    note = data.get('note')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if stato:
+        c.execute("UPDATE cantieri SET stato=?, data_aggiornamento=? WHERE id=?", (stato, datetime.now().isoformat(), cid))
+    if note is not None:
+        c.execute("UPDATE cantieri SET note=?, data_aggiornamento=? WHERE id=?", (note, datetime.now().isoformat(), cid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.route('/api/cantieri/<int:cid>/righe', methods=['GET'])
+def get_righe(cid):
+    u = require_login(['superadmin', 'admin', 'commerciale'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, brand, categoria, descrizione, note, importo FROM cantiere_righe WHERE cantiere_id=?", (cid,))
+    righe = [{"id": r[0], "brand": r[1], "categoria": r[2], "descrizione": r[3], "note": r[4], "importo": r[5]} for r in c.fetchall()]
+    conn.close()
+    return jsonify({"righe": righe})
+
+@app.route('/api/cantieri/<int:cid>/righe', methods=['POST'])
+def add_riga(cid):
+    u = require_login(['superadmin', 'admin', 'commerciale'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO cantiere_righe (cantiere_id, brand, categoria, descrizione, note, importo) VALUES (?,?,?,?,?,?)",
+              (cid, data.get('brand',''), data.get('categoria',''), data.get('descrizione',''), data.get('note',''), data.get('importo',0)))
+    rid = c.lastrowid
+    c.execute("UPDATE cantieri SET data_aggiornamento=? WHERE id=?", (datetime.now().isoformat(), cid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "id": rid})
+
+@app.route('/api/cantieri/righe/<int:rid>', methods=['DELETE'])
+def delete_riga(rid):
+    u = require_login(['superadmin', 'admin', 'commerciale'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM cantiere_righe WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.route('/api/cantieri/<int:cid>', methods=['DELETE'])
+def delete_cantiere(cid):
+    u = require_login(['superadmin', 'admin'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM cantiere_righe WHERE cantiere_id=?", (cid,))
+    c.execute("DELETE FROM cantieri WHERE id=?", (cid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+# ---------------------------------------------------------------------------
+# API BI
+# ---------------------------------------------------------------------------
+
+@app.route('/api/bi/stats', methods=['GET'])
+def bi_stats():
+    u = require_login(['superadmin', 'admin'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    filter_cid = "" if u['ruolo'] == 'superadmin' else f" AND ca.cliente_id={u['cliente_id']}"
+    c.execute("SELECT stato, COUNT(*) FROM cantieri ca WHERE 1=1" + filter_cid + " GROUP BY stato")
+    per_stato = {r[0]: r[1] for r in c.fetchall()}
+    c.execute("SELECT COALESCE(SUM(cr.importo),0) FROM cantiere_righe cr JOIN cantieri ca ON cr.cantiere_id=ca.id WHERE ca.stato='vinta'" + filter_cid)
+    valore_vinto = c.fetchone()[0] or 0
+    c.execute("SELECT COALESCE(SUM(cr.importo),0) FROM cantiere_righe cr JOIN cantieri ca ON cr.cantiere_id=ca.id WHERE ca.stato='bozza' OR ca.stato='inviata'" + filter_cid)
+    valore_aperto = c.fetchone()[0] or 0
+    c.execute("""SELECT u.nome, COUNT(ca.id), COALESCE(SUM(cr.importo),0)
+                 FROM cantieri ca
+                 LEFT JOIN utenti u ON ca.commerciale_id=u.id
+                 LEFT JOIN cantiere_righe cr ON cr.cantiere_id=ca.id
+                 WHERE 1=1""" + filter_cid + " GROUP BY ca.commerciale_id")
+    per_comm = [{"nome": r[0] or "N/D", "cantieri": r[1], "valore": round(r[2], 2)} for r in c.fetchall()]
+    conn.close()
+    return jsonify({"per_stato": per_stato, "valore_vinto": round(valore_vinto, 2), "valore_aperto": round(valore_aperto, 2), "per_commerciale": per_comm})
+
+@app.route('/api/bi/cancella', methods=['POST'])
+def bi_cancella():
+    u = require_login(['superadmin', 'admin'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    da = data.get('da', '')
+    a = data.get('a', '')
+    stati = data.get('stati', [])
+    if not da or not a or not stati:
+        return jsonify({"error": "Parametri mancanti"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    placeholders = ','.join('?' * len(stati))
+    filter_cid = () if u['ruolo'] == 'superadmin' else (u['cliente_id'],)
+    extra = "" if u['ruolo'] == 'superadmin' else " AND cliente_id=?"
+    c.execute("SELECT id FROM cantieri WHERE data_creazione>=? AND data_creazione<=? AND stato IN (" + placeholders + ")" + extra,
+              [da, a + "T23:59:59"] + stati + list(filter_cid))
+    ids = [r[0] for r in c.fetchall()]
+    for cid in ids:
+        c.execute("DELETE FROM cantiere_righe WHERE cantiere_id=?", (cid,))
+        c.execute("DELETE FROM cantieri WHERE id=?", (cid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "eliminati": len(ids)})
+
+# ---------------------------------------------------------------------------
+# API ESISTENTI (invariate)
+# ---------------------------------------------------------------------------
+
+@app.route('/api/get-brands', methods=['GET'])
+def get_brands():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT nome FROM aziende ORDER BY nome')
+    brands = [row[0] for row in c.fetchall()]
+    conn.close()
+    return jsonify({"brands": brands})
+
+@app.route('/api/add-azienda', methods=['POST'])
+def add_azienda():
+    data = request.get_json()
+    nome = data.get('nome', '').strip()
+    if not nome:
+        return jsonify({"error": "Nome richiesto"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        # Controlla se esiste già (case-insensitive)
+        c.execute('SELECT id, nome FROM aziende WHERE LOWER(nome) = LOWER(?)', (nome,))
+        existing = c.fetchone()
+        if existing:
+            conn.close()
+            return jsonify({"ok": True, "nome": existing[1], "existed": True})
+        c.execute('INSERT INTO aziende (nome) VALUES (?)', (nome,))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "nome": nome})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/sa/dedup-brands', methods=['POST'])
+def dedup_brands():
+    """Unifica brand duplicati case-insensitive — mantiene quello con più documenti"""
+    if not require_login(['superadmin']):
+        return jsonify({"error": "Non autorizzato"}), 403
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
+    dups = c.fetchall()
+    merged = 0
+    for lower_name, ids_str, names_str in dups:
+        ids = [int(x) for x in ids_str.split(',')]
+        names = names_str.split(',')
+        # Tieni quello con il nome corretto (prima maiuscola) o il primo della BRANDS_LIST
+        canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
+        canonical_id = ids[names.index(canonical_name)]
+        for i, bid in enumerate(ids):
+            if bid != canonical_id:
+                # Sposta documenti al brand canonico
+                c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
+                c.execute("UPDATE cantiere_righe SET brand=? WHERE brand=?", (canonical_name, names[i]))
+                c.execute("DELETE FROM aziende WHERE id=?", (bid,))
+                merged += 1
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "merged": merged})
+
+@app.route('/api/set-admin-password', methods=['POST'])
+def set_admin_password():
+    data = request.get_json()
+    brand = data.get('brand', '')
+    admin_password = data.get('admin_password', '').strip()
+    if not brand or not admin_password:
+        return jsonify({"error": "Brand e password richiesti"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        pwd_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+        c.execute('UPDATE aziende SET admin_password=?, admin_required=1 WHERE nome=?', (pwd_hash, brand))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "message": "Password admin impostata per " + brand})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/verify-admin', methods=['POST'])
+def verify_admin():
+    data = request.get_json()
+    brand = data.get('brand', '')
+    admin_password = data.get('admin_password', '')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('SELECT admin_password, admin_required FROM aziende WHERE nome=?', (brand,))
+        result = c.fetchone()
+        conn.close()
+        if not result:
+            return jsonify({"ok": False, "error": "Brand non trovato"})
+        pwd_hash, admin_required = result
+        if not admin_required:
+            return jsonify({"ok": True, "message": "Cassetto non protetto"})
+        provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+        if provided_hash == pwd_hash:
+            return jsonify({"ok": True, "message": "Password corretta"})
+        else:
+            return jsonify({"ok": False, "error": "Password errata"})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/upload-document', methods=['POST'])
+def upload_document():
+    data = request.get_json()
+    filename = data.get('filename', '')
+    content = data.get('content', '')
+    brand = data.get('brand', '')
+    visibility = data.get('visibility', 'public')
+    access_code = data.get('access_code', '')
+    admin_password = data.get('admin_password', '')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('SELECT id, admin_required, admin_password FROM aziende WHERE nome = ?', (brand,))
+        result = c.fetchone()
+        if not result:
+            conn.close()
+            return jsonify({"error": "Brand non trovato"}), 400
+        azienda_id, admin_required, pwd_hash = result
+        if admin_required:
+            if not admin_password:
+                conn.close()
+                return jsonify({"error": "Password admin richiesta"}), 403
+            provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+            if provided_hash != pwd_hash:
+                conn.close()
+                return jsonify({"error": "Password admin errata"}), 403
+        c.execute('INSERT INTO documents (filename, content, azienda_id, visibility, access_code, upload_date) VALUES (?, ?, ?, ?, ?, ?)',
+                  (filename, content, azienda_id, visibility, access_code, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/list-documents', methods=['GET'])
+def list_documents():
+    brand = request.args.get('brand', '').strip()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if brand:
+        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility, a.nome
+                     FROM documents d JOIN aziende a ON d.azienda_id = a.id
+                     WHERE LOWER(a.nome) = LOWER(?) ORDER BY d.upload_date DESC''', (brand,))
+    else:
+        c.execute('''SELECT d.id, d.filename, d.upload_date, d.visibility, a.nome
+                     FROM documents d JOIN aziende a ON d.azienda_id = a.id
+                     ORDER BY a.nome, d.upload_date DESC LIMIT 100''')
+    docs = c.fetchall()
+    conn.close()
+    return jsonify({"documents": [{"id": d[0], "filename": d[1], "date": d[2], "visibility": d[3], "brand": d[4]} for d in docs]})
+
+@app.route('/api/delete-document/<int:doc_id>', methods=['DELETE'])
+def delete_document(doc_id):
+    admin_password = request.args.get('admin_password', '')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('''SELECT a.nome, a.admin_required, a.admin_password
+                     FROM documents d JOIN aziende a ON d.azienda_id = a.id WHERE d.id = ?''', (doc_id,))
+        result = c.fetchone()
+        if not result:
+            conn.close()
+            return jsonify({"error": "Documento non trovato"}), 404
+        brand, admin_required, pwd_hash = result
+        if admin_required:
+            if not admin_password:
+                conn.close()
+                return jsonify({"error": "Password admin richiesta"}), 403
+            provided_hash = hashlib.sha256(admin_password.encode()).hexdigest()
+            if provided_hash != pwd_hash:
+                conn.close()
+                return jsonify({"error": "Password admin errata"}), 403
+        c.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/search-documents', methods=['POST'])
+def search_documents():
+    data = request.get_json()
+    brands = data.get('brands', [])
+    question = data.get('question', '')
+    access_code = data.get('access_code')
+    docs = _search_docs_internal(brands, question, access_code)
+    if docs:
+        return jsonify({"found": True, "docs": docs})
+    return jsonify({"found": False})
+
+def _search_docs_internal(brands, question, access_code):
+    if not brands:
+        return []
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    placeholders = ','.join('?' * len(brands))
+    if access_code:
+        query = ("SELECT filename, content FROM documents "
+                 "WHERE (azienda_id IN (SELECT id FROM aziende WHERE nome IN (" + placeholders + ")) AND visibility='public') "
+                 "OR (visibility='private' AND access_code=?) LIMIT 10")
+        c.execute(query, brands + [access_code])
+    else:
+        query = ("SELECT filename, content FROM documents "
+                 "WHERE azienda_id IN (SELECT id FROM aziende WHERE nome IN (" + placeholders + ")) "
+                 "AND visibility='public' LIMIT 10")
+        c.execute(query, brands)
+    docs = c.fetchall()
+    conn.close()
+    return docs
+
+def search_web(question, brands):
+    return None
+
+@app.route('/api/debug-images', methods=['GET'])
+def debug_images():
+    q = request.args.get('q', 'Gessi rubinetto')
+    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+        return jsonify({"error": "Chiavi non configurate", "api_key": bool(GOOGLE_API_KEY), "cse_id": bool(GOOGLE_CSE_ID)})
+    try:
+        resp = httpx.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={"key": GOOGLE_API_KEY, "cx": GOOGLE_CSE_ID, "q": q, "searchType": "image", "num": 3},
+            timeout=8
+        )
+        return jsonify({"status": resp.status_code, "body": resp.json()})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+def search_images(query, brands):
+    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+        return []
+    try:
+        search_query = " ".join(brands) + " " + query + " product"
+        resp = httpx.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={
+                "key": GOOGLE_API_KEY,
+                "cx": GOOGLE_CSE_ID,
+                "q": search_query,
+                "searchType": "image",
+                "num": 6,
+                "imgSize": "medium",
+                "safe": "active"
+            },
+            timeout=8
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get("items", [])
+            return [item["link"] for item in items if "link" in item]
+        print("[GOOGLE CSE] Errore: " + str(resp.status_code))
+        return []
+    except Exception as e:
+        print("[GOOGLE CSE ERROR] " + str(e))
+        return []
+
+def deepseek_ask(prompt):
+    if not DEEPSEEK_API_KEY:
+        return "Errore: API Key non configurata"
+    for attempt in range(2):
+        try:
+            resp = httpx.post(
+                DEEPSEEK_API_URL,
+                json={"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "max_tokens": 800},
+                headers={"Authorization": "Bearer " + DEEPSEEK_API_KEY},
+                timeout=60
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if "choices" in data and len(data["choices"]) > 0:
+                    return data["choices"][0]["message"]["content"]
+            return "Errore API: " + str(resp.status_code)
+        except Exception as e:
+            print("[DEEPSEEK] Tentativo " + str(attempt + 1) + " fallito: " + str(e))
+            if attempt == 1:
+                return "DeepSeek non risponde. Riprova tra qualche secondo."
+    return "Errore sconosciuto"
+
+@app.route('/api/ask', methods=['POST'])
+def ask():
+    data = request.get_json()
+    question = data.get('question', '')
+    brands = data.get('brands', [])
+    use_web = data.get('web', True)
+    access_code = data.get('access_code')
+    if not question or not brands:
+        return jsonify({"error": "Domanda e brand richiesti"}), 400
+
+    # 1. Cerca prima nel listino Excel dei brand selezionati
+    listino_context = ""
+    for brand in brands:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT d.content FROM documents d
+                     JOIN aziende a ON d.azienda_id = a.id
+                     WHERE LOWER(a.nome) = LOWER(?) AND d.filename LIKE '%[EXCEL]%'
+                     ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+        row = c.fetchone()
+        conn.close()
+        if row:
             try:
-                oracolo_data = json.loads(rows['oracolo'])
-                real_samples = sum(
-                    v.get('real_samples', 0)
-                    for k, v in oracolo_data.items()
-                    if not k.startswith('_')
-                )
-                # Verifica che i SHORT tossici siano iniettati con campioni sufficienti
-                fp_short = oracolo_data.get('SHORT|MEDIO|ALTA|SIDEWAYS', {})
-                short_tossici_ok = fp_short.get('samples', 0) >= 5
-            except Exception:
+                import base64 as b64mod, io as iomod
+                content = row[0]
+                if ',' in content: content = content.split(',',1)[1]
+                raw = b64mod.b64decode(content)
+                import openpyxl as oxl
+                wb = oxl.load_workbook(iomod.BytesIO(raw), data_only=True)
+                ws = wb.active
+                # Leggi tutte le righe prodotto
+                headers = None
+                prodotti_trovati = []
+                q_lower = question.lower()
+                for row_data in ws.iter_rows(values_only=True):
+                    row_str = [str(c).lower().strip() if c else '' for c in row_data]
+                    if headers is None:
+                        if 'codice' in ' '.join(row_str): headers = row_str
+                        continue
+                    if not any(row_data): continue
+                    riga_str = ' '.join([str(v).lower() if v else '' for v in row_data])
+                    # Match fuzzy: cerca parole della domanda nella riga
+                    parole = [p for p in q_lower.split() if len(p) > 3]
+                    if parole and any(p in riga_str for p in parole):
+                        vals = [str(v).strip() if v else '—' for v in row_data]
+                        if headers:
+                            prodotti_trovati.append(dict(zip(headers, vals)))
+                        else:
+                            prodotti_trovati.append({'riga': ' | '.join(vals[:6])})
+                if prodotti_trovati:
+                    listino_context += f"\n[LISTINO {brand.upper()} — FONTE EXCEL]\n"
+                    for p in prodotti_trovati[:5]:
+                        if 'codice' in p:
+                            listino_context += f"Codice: {p.get('codice','—')} | Nome: {p.get('nome prodotto', p.get('nome','—'))} | Prezzo cliente: €{p.get('prezzo cliente (€)', p.get('prezzo','—'))} | Prezzo riv.: €{p.get('prezzo rivenditore (€)', p.get('prezzo_rivenditore','—'))} | Disponibilità: {p.get('disponibilità', p.get('disponibilita','—'))} | Desc: {p.get('descrizione breve', p.get('descrizione','—'))}\n"
+                        else:
+                            listino_context += p.get('riga','') + '\n'
+            except Exception as e:
                 pass
 
-        if real_samples >= 10 and short_tossici_ok:
-            log(f"[BRAIN_INJECT] ✅ {real_samples} trade reali + SHORT tossici OK — skip")
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute("INSERT OR REPLACE INTO bot_state VALUES ('brain_injected', '1')")
-            conn.commit()
-            conn.close()
-            return
-        
-        if real_samples >= 10 and not short_tossici_ok:
-            log(f"[BRAIN_INJECT] ⚠️ SHORT tossici mancanti — re-iniezione brain")
-            # Rimuove flag per forzare re-iniezione
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute("DELETE FROM bot_state WHERE key='brain_injected'")
-            conn.commit()
-            conn.close()
+    # 2. Cerca nei documenti caricati
+    doc_context = ""
+    docs = _search_docs_internal(brands, question, access_code)
+    if docs:
+        doc_context = "\n".join(["[DOC: " + d[0] + "] " + d[1][:200] for d in docs])
 
-        log(f"[BRAIN_INJECT] 🧠 Solo {real_samples} trade reali — avvio iniezione dati storici...")
+    # 3. Web solo come fallback
+    web_context = ""
+    images = []
+    if use_web:
+        web_result = search_web(question, brands)
+        if web_result:
+            web_context = "[WEB] " + web_result
+        images = search_images(question, brands)
 
-        # Importa e esegui inject_brain
-        try:
-            import inject_brain
-            inject_brain.inject(DB_PATH, dry_run=False)
-            # Marca come iniettato
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute("INSERT OR REPLACE INTO bot_state VALUES ('brain_injected', '1')")
-            conn.commit()
-            conn.close()
-            log("[BRAIN_INJECT] ✅ Brain iniettato con successo — 22 fingerprint storici caricati")
-        except ImportError:
-            log("[BRAIN_INJECT] ⚠️ inject_brain.py non trovato — il bot parte da zero")
-        except Exception as e:
-            log(f"[BRAIN_INJECT] ❌ Errore iniezione: {e}")
+    # Costruisci prompt con priorità: listino Excel > doc > web
+    prompt = "Sei un esperto commerciale di arredo bagno per i brand: " + ", ".join(brands) + "\n\nDomanda: " + question
 
+    if listino_context:
+        prompt += "\n\n═══ DATI DAL LISTINO UFFICIALE (fonte EXCEL — massima priorità) ═══\n" + listino_context
+        prompt += "IMPORTANTE: usa SEMPRE i prezzi e codici dal listino Excel sopra. Non inventare prezzi."
+    if doc_context:
+        prompt += "\n\nALTRI DOCUMENTI ARCHIVIO:\n" + doc_context
+    if web_context and not listino_context:
+        prompt += "\n\n[FONTE WEB — usa solo se non hai dati da listino]\n" + web_context
+
+    prompt += "\n\nREGOLE:\n- Prezzi da listino Excel = VERDE (affidabili)\n- Se il prezzo viene dal web, segnalalo come 'prezzo indicativo'\n- NON rimandare mai a siti esterni\n- Se trovi il prodotto nel listino, mostra: codice, nome, prezzo cliente, disponibilità\n- Risposta max 1200 caratteri, professionale"
+
+    answer = deepseek_ask(prompt)
+
+    # Indica se i dati vengono dal listino o dal web
+    fonte = "excel" if listino_context else ("doc" if doc_context else "web")
+    return jsonify({"answer": answer, "images": images, "fonte": fonte})
+
+@app.route('/api/cerca-prodotto', methods=['POST'])
+def cerca_prodotto():
+    """Ricerca fuzzy nel listino Excel — restituisce prodotti matching con fonte"""
+    data = request.get_json()
+    query = data.get('query', '').lower().strip()
+    brand = data.get('brand', '')
+    if not query or not brand:
+        return jsonify({"prodotti": [], "fonte": None})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT d.content, d.filename FROM documents d
+                 JOIN aziende a ON d.azienda_id = a.id
+                 WHERE LOWER(a.nome) = LOWER(?) AND d.filename LIKE '%[EXCEL]%'
+                 ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"prodotti": [], "fonte": None, "messaggio": "Nessun listino Excel caricato per " + brand})
+    try:
+        import base64 as b64m, io as iom
+        content = row[0]
+        if ',' in content: content = content.split(',',1)[1]
+        raw = b64m.b64decode(content)
+        import openpyxl as oxl2
+        wb = oxl2.load_workbook(iom.BytesIO(raw), data_only=True)
+        ws = wb.active
+        SINONIMI_HDR = {
+            'codice': ['codice','cod','code','sku'],
+            'nome': ['nome prodotto','nome','name','prodotto'],
+            'categoria': ['categoria','category'],
+            'collezione': ['collezione','collection','linea'],
+            'prezzo': ['prezzo cliente (€)','prezzo cliente','prezzo (€)','prezzo'],
+            'prezzo_rivenditore': ['prezzo rivenditore (€)','prezzo rivenditore','rivenditore'],
+            'disponibilita': ['disponibilità','disponibilita'],
+            'descrizione': ['descrizione breve','descrizione'],
+            'finiture': ['colori / finiture','finiture','colori'],
+        }
+        header_row = None
+        col_map = {}
+        prodotti = []
+        parole = [p for p in query.split() if len(p) > 2]
+        for row_data in ws.iter_rows(values_only=True):
+            if header_row is None:
+                row_str = [str(v).lower().strip() if v else '' for v in row_data]
+                found = {}
+                for campo, syns in SINONIMI_HDR.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s == cell or s in cell for s in syns):
+                            found[campo] = j; break
+                if len(found) >= 2:
+                    header_row = True
+                    col_map = found
+                continue
+            if not any(row_data): continue
+            def gv(campo, rd=row_data):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(rd): return ''
+                v = rd[idx]; return str(v).strip() if v is not None else ''
+            codice = gv('codice')
+            if not codice or codice.lower() == 'codice': continue
+            riga_str = ' '.join([str(v).lower() if v else '' for v in row_data])
+            score = sum(1 for p in parole if p in riga_str)
+            if score == 0: continue
+            def pp(raw):
+                if not raw: return None
+                try: return float(re.sub(r'[^\d.,]','',raw).replace(',','.'))
+                except: return None
+            prodotti.append({
+                'score': score,
+                'codice': codice,
+                'nome': gv('nome'),
+                'categoria': gv('categoria'),
+                'collezione': gv('collezione'),
+                'prezzo': pp(gv('prezzo')),
+                'prezzo_rivenditore': pp(gv('prezzo_rivenditore')),
+                'disponibilita': gv('disponibilita'),
+                'descrizione': gv('descrizione'),
+                'finiture': gv('finiture'),
+                'fonte': 'excel'
+            })
+        prodotti.sort(key=lambda x: -x['score'])
+        return jsonify({"prodotti": prodotti[:10], "fonte": row[1]})
     except Exception as e:
-        log(f"[BRAIN_INJECT] ❌ Errore generale: {e}")
+        return jsonify({"prodotti": [], "fonte": None, "errore": str(e)})
 
+@app.route('/api/listino/<brand>', methods=['GET'])
+def get_listino(brand):
+    """Restituisce i prodotti dal listino Excel caricato per un brand"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Cerca documenti Excel per questo brand (case-insensitive)
+    c.execute("""SELECT d.content, d.filename FROM documents d
+                 JOIN aziende a ON d.azienda_id = a.id
+                 WHERE LOWER(a.nome) = LOWER(?) AND (LOWER(d.filename) LIKE '%.xlsx' OR LOWER(d.filename) LIKE '%.xls' OR LOWER(d.filename) LIKE '%excel%')
+                 ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": False, "prodotti": [], "fonte": None})
+    content_b64, filename = row
+    try:
+        import base64, io
+        if ',' in content_b64:
+            content_b64 = content_b64.split(',', 1)[1]
+        raw = base64.b64decode(content_b64)
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        ws = wb.active
+        # Trova header row
+        header_row = None
+        col_map = {}
+        SINONIMI = {
+            'codice': ['codice','cod','code','sku','art'],
+            'nome': ['nome prodotto','nome','name','prodotto','denominazione'],
+            'categoria': ['categoria','category','tipo'],
+            'collezione': ['collezione','collection','linea'],
+            'prezzo': ['prezzo cliente (€)','prezzo cliente','prezzo (€)','prezzo','price','costo','importo','listino'],
+            'prezzo_rivenditore': ['prezzo rivenditore (€)','prezzo rivenditore','rivenditore','prezzo riv','costo acquisto'],
+            'prezzo_scontato': ['prezzo scontato (€)','prezzo scontato','scontato','offerta'],
+            'disponibilita': ['disponibilità','disponibilita','stock','disponibile'],
+            'descrizione': ['descrizione breve','descrizione','description','dettaglio'],
+            'finiture': ['colori / finiture','finiture','colori','finitura'],
+        }
+        prodotti = []
+        header_row = None
+        col_map = {}
+        for i, row_data in enumerate(ws.iter_rows(values_only=True)):
+            if header_row is None:
+                row_str = [str(c).lower().strip() if c else '' for c in row_data]
+                found = {}
+                for campo, syns in SINONIMI.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s == cell or s in cell for s in syns):
+                            found[campo] = j
+                            break
+                if len(found) >= 2:
+                    header_row = i
+                    col_map = found
+                continue
+            if not any(row_data): continue
+            def getv(campo, rd=row_data):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(rd): return ''
+                v = rd[idx]
+                return str(v).strip() if v is not None else ''
+            codice = getv('codice')
+            if not codice or codice.lower() == 'codice': continue
+            def parse_price(raw):
+                if not raw: return None
+                try: return float(re.sub(r'[^\d.,]','',raw).replace(',','.'))
+                except: return None
+            
+            prod_dict = {
+                'codice': codice,
+                'nome': getv('nome'),
+                'categoria': getv('categoria'),
+                'collezione': getv('collezione'),
+                'prezzo': parse_price(getv('prezzo')),
+                'prezzo_rivenditore': parse_price(getv('prezzo_rivenditore')),
+                'prezzo_scontato': parse_price(getv('prezzo_scontato')),
+                'disponibilita': getv('disponibilita'),
+                'descrizione': getv('descrizione'),
+                'finiture': getv('finiture'),
+                'fonte': 'excel'
+            }
+            prodotti.append(prod_dict)
+            
+            # SALVA SUBITO IN DB products
+            try:
+                c = conn.cursor()
+                c.execute("""INSERT OR REPLACE INTO products 
+                            (codice, nome, collezione, categoria, prezzo, prezzo_rivenditore, 
+                             prezzo_scontato, disponibilita, descrizione, finiture, fonte, brand, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         (codice, prod_dict['nome'], prod_dict['collezione'], prod_dict['categoria'],
+                          prod_dict['prezzo'], prod_dict['prezzo_rivenditore'], prod_dict['prezzo_scontato'],
+                          prod_dict['disponibilita'], prod_dict['descrizione'], prod_dict['finiture'],
+                          'excel', brand, datetime.now().isoformat()))
+                conn.commit()
+            except Exception as e:
+                print(f"[DB] Errore salvataggio prodotto {codice}: {e}")
+        
+        return jsonify({"ok": True, "prodotti": prodotti, "fonte": filename})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "prodotti": []})
 
-def bot_thread_launcher():
-    global bridge
-    retry_count = 0
-    max_retries = 5
-    while retry_count < max_retries:
-        try:
-            # ── AUTO-INJECT BRAIN — prima del bot ───────────────────────
-            _auto_inject_brain()
+# ---------------------------------------------------------------------------
+# API EXCEL INTELLIGENTE
+# ---------------------------------------------------------------------------
 
-            log("[BOT_LAUNCHER] 🚀 Avvio OvertopBassanoV15Production...")
-            bot = OvertopBassanoV15Production(
-                heartbeat_data=heartbeat_data,
-                heartbeat_lock=heartbeat_lock,
-                db_execute=db_execute,
-            )
-            # ── Heartbeat IMMEDIATO — non aspettare 30s ──────────────────
-            with heartbeat_lock:
-                heartbeat_data["status"]  = "RUNNING"
-                heartbeat_data["mode"]    = "PAPER" if bot.paper_trade else "LIVE"
-                heartbeat_data["capital"] = round(bot.capital, 2)
-                heartbeat_data["trades"]  = bot.total_trades
-                heartbeat_data["last_seen"] = datetime.utcnow().isoformat()
+@app.route('/api/parse-excel', methods=['POST'])
+def parse_excel():
+    """Legge un file Excel base64 e restituisce righe con codice/descrizione/prezzo"""
+    if not OPENPYXL_OK:
+        return jsonify({"error": "openpyxl non installato sul server"}), 500
+    data = request.get_json()
+    b64 = data.get('content', '')
+    # Rimuovi eventuale data-URI prefix
+    if ',' in b64:
+        b64 = b64.split(',', 1)[1]
+    try:
+        raw = base64.b64decode(b64)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        ws = wb.active
+        rows = []
+        header_row = None
+        col_map = {}  # nome_campo -> indice colonna (0-based)
+        SINONIMI = {
+            'codice': ['codice','cod','code','sku','art','articolo','ref'],
+            'descrizione': ['descrizione','desc','nome','prodotto','name','denominazione'],
+            'prezzo': ['prezzo','price','costo','cost','importo','€','euro','listino']
+        }
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if header_row is None:
+                # Cerca riga header
+                row_str = [str(c).lower().strip() if c else '' for c in row]
+                found = {}
+                for campo, syns in SINONIMI.items():
+                    for j, cell in enumerate(row_str):
+                        if any(s in cell for s in syns):
+                            found[campo] = j
+                            break
+                if len(found) >= 2:
+                    header_row = i
+                    col_map = found
+                continue
+            if not any(row):
+                continue
+            def get(campo):
+                idx = col_map.get(campo)
+                if idx is None or idx >= len(row): return ''
+                v = row[idx]
+                return str(v).strip() if v is not None else ''
+            codice = get('codice')
+            descrizione = get('descrizione')
+            prezzo_raw = get('prezzo')
+            if not codice and not descrizione:
+                continue
+            # Pulisci prezzo
+            prezzo = None
+            if prezzo_raw:
+                try:
+                    prezzo = float(re.sub(r'[^\d.,]', '', prezzo_raw).replace(',', '.'))
+                except:
+                    pass
+            rows.append({'codice': codice, 'descrizione': descrizione, 'prezzo': prezzo, 'prezzo_src': 'excel' if prezzo is not None else None})
+            if len(rows) >= 200:
+                break
+        return jsonify({"ok": True, "righe": rows, "totale": len(rows)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
-            # ── AI BRIDGE — connette il bot a bridge predittivo locale ─────────────────
-            bridge = AIBridge(heartbeat_data, heartbeat_lock)
-            bridge.start()
+@app.route('/api/arricchisci-prodotto', methods=['POST'])
+def arricchisci_prodotto():
+    """Prende codice+descrizione+prezzo e genera descrizione commerciale sintetica via DeepSeek"""
+    data = request.get_json()
+    codice = data.get('codice', '')
+    descrizione = data.get('descrizione', '')
+    prezzo = data.get('prezzo')
+    brand = data.get('brand', '')
+    prezzo_str = f"€{prezzo}" if prezzo else "non specificato"
 
-            log(f"[BOT_LAUNCHER] ✅ Bot istanziato — capital=${bot.capital:.2f} — bot.run() in partenza")
-            bot.run()
-        except Exception as e:
-            retry_count += 1
-            log(f"[BOT_LAUNCHER] ❌ Errore tentativo {retry_count}/{max_retries}: {e}")
-            import traceback
-            log(traceback.format_exc())
-            time.sleep(5)
-    log(f"[BOT_LAUNCHER] ❌ Bot non avviabile dopo {max_retries} tentativi")
+    prompt = f"""Sei un esperto commerciale di arredo bagno e pavimentazioni di alto livello.
 
-threading.Thread(target=bot_thread_launcher, daemon=True, name='bot_v15').start()
-log("[MAIN] ✅ Bot thread + AI Bridge avviati")
+Devi creare una descrizione commerciale SINTETICA (max 3 righe, circa 150 caratteri) di questo prodotto, da inserire in un'offerta/proposta per un cliente finale.
 
-# ═══════════════════════════════════════════════════════════════════════════
-# DASHBOARD HTML
-# ═══════════════════════════════════════════════════════════════════════════
+Brand: {brand if brand else 'non specificato'}
+Codice: {codice if codice else 'non specificato'}
+Descrizione originale: {descrizione}
+Prezzo: {prezzo_str}
 
-DASHBOARD_HTML = """
-<!DOCTYPE html>
-<html lang="it">
+La descrizione deve:
+- Essere convincente e professionale
+- Evidenziare il valore e la qualità
+- NON inventare caratteristiche tecniche specifiche non note
+- Essere massimo 150 caratteri
+- Non includere il prezzo nel testo
+
+Rispondi SOLO con la descrizione commerciale, nient'altro."""
+
+    risposta = deepseek_ask(prompt)
+    return jsonify({"ok": True, "descrizione_ai": risposta.strip()})
+
+@app.route('/api/cantieri/<int:cid>/righe-da-ai', methods=['POST'])
+def add_riga_da_ai(cid):
+    """Aggiunge una riga al cantiere proveniente dall'arricchimento AI/Excel"""
+    u = require_login(['superadmin', 'admin', 'commerciale'])
+    if not u:
+        return jsonify({"error": "Non autorizzato"}), 403
+    data = request.get_json()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    codice = data.get('codice', '')
+    descrizione = data.get('descrizione', '')
+    if codice:
+        descrizione = f"[{codice}] {descrizione}" if descrizione else codice
+    c.execute("INSERT INTO cantiere_righe (cantiere_id, brand, categoria, descrizione, note, importo) VALUES (?,?,?,?,?,?)",
+              (cid, data.get('brand',''), data.get('categoria',''), descrizione,
+               data.get('note',''), data.get('importo', 0) or 0))
+    rid = c.lastrowid
+    c.execute("UPDATE cantieri SET data_aggiornamento=? WHERE id=?", (datetime.now().isoformat(), cid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "id": rid})
+
+# ============================================================================
+# LAZY LOADING ABBINAMENTI PER BRAND
+# ============================================================================
+
+def load_accessories_from_excel_lazy(file_content, brand, conn, c):
+    """Carica categorie, abbinamenti, vincoli da Excel in memoria"""
+    try:
+        if ',' in file_content:
+            file_content = file_content.split(',', 1)[1]
+        
+        raw = base64.b64decode(file_content)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        
+        count_categories = 0
+        count_abbinamenti = 0
+        count_vincoli = 0
+        
+        # CARICA CATEGORIE
+        if "CATEGORIE_ACCESSORI" in wb.sheetnames:
+            ws = wb["CATEGORIE_ACCESSORI"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not any(row):
+                    continue
+                categoria_id = row[0]
+                categoria_nome = row[1]
+                descrizione = row[2] if len(row) > 2 else ""
+                icona = row[3] if len(row) > 3 else ""
+                
+                try:
+                    c.execute("""
+                        INSERT OR REPLACE INTO categories_accessori 
+                        (categoria_id, categoria_nome, descrizione, icona, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (categoria_id, categoria_nome, descrizione, icona, datetime.now().isoformat()))
+                    count_categories += 1
+                except:
+                    pass
+        
+        # CARICA ABBINAMENTI
+        if "ABBINAMENTI" in wb.sheetnames:
+            ws = wb["ABBINAMENTI"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not any(row):
+                    continue
+                
+                prodotto_padre = row[0]
+                accessorio_id = row[1]
+                accessorio_nome = row[2] if len(row) > 2 else ""
+                brand_accessorio = row[3] if len(row) > 3 else brand
+                categoria_accessorio = row[4] if len(row) > 4 else ""
+                tipo_relazione = row[5] if len(row) > 5 else "ufficiale"
+                priority = row[6] if len(row) > 6 else 99
+                
+                vincoli_campo = row[7] if len(row) > 7 else None
+                vincoli_valore = row[8] if len(row) > 8 else None
+                vincoli_severity = row[9] if len(row) > 9 else None
+                vincoli_messaggio = row[10] if len(row) > 10 else None
+                
+                note = row[11] if len(row) > 11 else ""
+                
+                try:
+                    c.execute("""
+                        INSERT OR REPLACE INTO product_accessories
+                        (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio,
+                         categoria_accessorio, tipo_relazione, priority, note, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio,
+                          categoria_accessorio, tipo_relazione, int(priority) if priority else 99,
+                          note, datetime.now().isoformat()))
+                    
+                    rel_id = c.lastrowid
+                    count_abbinamenti += 1
+                    
+                    if vincoli_campo:
+                        c.execute("""
+                            INSERT INTO product_accessories_vincoli
+                            (relazione_id, campo_vincolo, valore_vincolo, severity, messaggio, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (rel_id, vincoli_campo, vincoli_valore, vincoli_severity,
+                              vincoli_messaggio, datetime.now().isoformat()))
+                        count_vincoli += 1
+                except:
+                    pass
+        
+        # CARICA REGOLE
+        if "REGOLE_MATCHING" in wb.sheetnames:
+            ws = wb["REGOLE_MATCHING"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not any(row):
+                    continue
+                categoria_prodotto = row[0]
+                categoria_accessorio = row[1]
+                soglia = row[2] if len(row) > 2 else "media"
+                nota = row[3] if len(row) > 3 else ""
+                
+                try:
+                    c.execute("""
+                        INSERT INTO matching_rules
+                        (categoria_prodotto, categoria_accessorio, soglia_compatibilita, nota, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (categoria_prodotto, categoria_accessorio, soglia, nota,
+                          datetime.now().isoformat()))
+                except:
+                    pass
+        
+        msg = f"✅ {brand}: {count_abbinamenti} abbinamenti caricati"
+        total = count_categories + count_abbinamenti + count_vincoli
+        return True, msg, total
+        
+    except Exception as e:
+        return False, f"❌ Errore: {str(e)}", 0
+
+@app.route('/api/carica-abbinamenti-excel/<brand>', methods=['POST'])
+def carica_abbinamenti_excel(brand):
+    """Carica abbinamenti da file Excel nel DB"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Cerca file abbinamenti per questo brand nel DB documents
+        c.execute("""SELECT content, filename FROM documents d
+                     JOIN aziende a ON d.azienda_id = a.id
+                     WHERE LOWER(a.nome) = LOWER(?)
+                     AND (LOWER(d.filename) LIKE '%abbinamenti%' OR LOWER(d.filename) LIKE '%abbina%')
+                     ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+        
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": f"File abbinamenti non trovato per {brand}"}), 404
+        
+        content_b64, filename = row
+        
+        # Decodifica Excel
+        if ',' in content_b64:
+            content_b64 = content_b64.split(',', 1)[1]
+        
+        raw = base64.b64decode(content_b64)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        
+        # Trova foglio abbinamenti
+        sheet_name = None
+        for sn in wb.sheetnames:
+            if 'abbina' in sn.lower():
+                sheet_name = sn
+                break
+        
+        if not sheet_name:
+            conn.close()
+            return jsonify({"ok": False, "error": f"Foglio 'ABBINAMENTI' non trovato"}), 400
+        
+        ws = wb[sheet_name]
+        
+        # Pulisci vecchi abbinamenti per questo brand
+        c.execute("DELETE FROM product_accessories WHERE brand_accessorio=?", (brand,))
+        conn.commit()
+        
+        count = 0
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i == 0:  # Skip header
+                continue
+            
+            if not row or not row[0]:  # Skip empty
+                continue
+            
+            prodotto = str(row[0]).strip() if row[0] else None
+            acc_id = str(row[1]).strip() if row[1] else None
+            acc_nome = str(row[2]).strip() if row[2] else ""
+            brand_acc = str(row[3]).strip() if row[3] else brand
+            categoria = str(row[4]).strip() if row[4] else ""
+            tipo = str(row[5]).strip() if row[5] else "ufficiale"
+            priority = int(row[6]) if row[6] else 99
+            note = str(row[7]).strip() if row[7] else ""
+            
+            if not prodotto or not acc_id:
+                continue
+            
+            try:
+                c.execute("""INSERT INTO product_accessories 
+                            (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio, 
+                             categoria_accessorio, tipo_relazione, priority, note, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         (prodotto, acc_id, acc_nome, brand_acc, categoria, tipo, priority, note, datetime.now().isoformat()))
+                count += 1
+            except Exception as e:
+                print(f"Errore riga {i}: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        if count == 0:
+            return jsonify({"ok": False, "error": "Nessun abbinamento trovato nel file"}), 400
+        
+        return jsonify({
+            "ok": True,
+            "message": f"✅ Caricati {count} abbinamenti",
+            "brand": brand,
+            "filename": filename,
+            "count": count
+        })
+    
+    except Exception as e:
+        conn.close()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route('/api/load-brand-accessories/<brand>', methods=['GET'])
+def load_brand_accessories(brand):
+    """Carica SOLO i file Excel del brand selezionato"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Cerca i file Excel del brand (con parola chiave abbinamenti)
+        c.execute("""
+            SELECT d.content, d.filename 
+            FROM documents d
+            JOIN aziende a ON d.azienda_id = a.id
+            WHERE LOWER(a.nome) = LOWER(?)
+            AND (d.filename LIKE '%ABBINAMENTI%' OR d.filename LIKE '%abbinamenti%')
+            ORDER BY d.upload_date DESC
+            LIMIT 1
+        """, (brand,))
+        
+        row = c.fetchone()
+        
+        if not row:
+            conn.close()
+            return jsonify({
+                "ok": False, 
+                "message": f"Nessun file abbinamenti trovato per {brand}",
+                "loaded": 0
+            }), 404
+        
+        file_content, filename = row
+        
+        # Carica i dati dal file
+        success, msg, count = load_accessories_from_excel_lazy(file_content, brand, conn, c)
+        
+        conn.commit()
+        conn.close()
+        
+        if success:
+            return jsonify({
+                "ok": True,
+                "message": msg,
+                "brand": brand,
+                "filename": filename,
+                "loaded": count,
+                "status": "✅ Caricato"
+            })
+        else:
+            return jsonify({
+                "ok": False,
+                "message": msg,
+                "brand": brand
+            }), 400
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "brand": brand
+        }), 500
+
+@app.route('/api/abbina/<codice_prodotto>', methods=['GET'])
+def get_abbinamenti_prodotto(codice_prodotto):
+    """Restituisce accessori ufficiali + alternativi per un codice prodotto"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Cerca il prodotto (opzionale — gli abbinamenti si vedono comunque)
+    c.execute("""SELECT codice, nome, collezione, categoria, prezzo FROM products 
+                 WHERE codice = ? LIMIT 1""", (codice_prodotto,))
+    prodotto_row = c.fetchone()
+    
+    prodotto = None
+    if prodotto_row:
+        prodotto = {
+            'codice': prodotto_row[0],
+            'nome': prodotto_row[1],
+            'collezione': prodotto_row[2],
+            'categoria': prodotto_row[3],
+            'prezzo': prodotto_row[4]
+        }
+    
+    # Cerca accessori per questo prodotto (SEMPRE, anche se prodotto non in DB)
+    c.execute("""SELECT accessorio_id, accessorio_nome, brand_accessorio, tipo_relazione, priority, note
+                 FROM product_accessories
+                 WHERE prodotto_padre = ?
+                 ORDER BY tipo_relazione DESC, priority ASC""", (codice_prodotto,))
+    
+    rows = c.fetchall()
+    conn.close()
+    
+    ufficiali = []
+    alternative = []
+    esclusi = []
+    
+    for row in rows:
+        acc = {
+            'accessorio_id': row[0],
+            'nome': row[1],
+            'brand': row[2],
+            'tipo': row[3],
+            'priority': row[4],
+            'note': row[5] if row[5] else ''
+        }
+        if row[3] == 'ufficiale':
+            ufficiali.append(acc)
+        elif row[3] == 'alternativa':
+            alternative.append(acc)
+        elif row[3] == 'escluso':
+            esclusi.append(acc)
+    
+    # Se non ci sono abbinamenti, ritorna 404
+    if len(ufficiali) == 0 and len(alternative) == 0:
+        return jsonify({"ok": False, "error": "Nessun abbinamento trovato"}), 404
+    
+    return jsonify({
+        "ok": True,
+        "prodotto": prodotto,
+        "ufficiali": ufficiali,
+        "alternative": alternative,
+        "esclusi": esclusi,
+        "count": len(ufficiali) + len(alternative)
+    })
+
+# ---------------------------------------------------------------------------
+# FRONTEND
+# ---------------------------------------------------------------------------
+
+@app.route('/')
+def index():
+    return render_template_string(r'''<!DOCTYPE html>
+<html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MISSION CONTROL V6.0</title>
-<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<title>Oracolo Covolo</title>
 <style>
-:root {
-  --bg:       #060810;
-  --bg2:      #0c1020;
-  --bg3:      #111828;
-  --green:    #00ff88;
-  --green2:   #00cc66;
-  --red:      #ff3355;
-  --yellow:   #ffd700;
-  --blue:     #00aaff;
-  --purple:   #bb66ff;
-  --orange:   #ff8800;
-  --gray:     #445566;
-  --text:     #ccd6e0;
-  --dim:      #667788;
-  --border:   #1a2535;
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Share Tech Mono',monospace; background:var(--bg); color:var(--text); min-height:100vh; }
-body::before { content:''; position:fixed; inset:0; background:
-  radial-gradient(ellipse 80% 50% at 20% 0%, rgba(0,255,136,0.04) 0%, transparent 60%),
-  radial-gradient(ellipse 60% 40% at 80% 100%, rgba(0,170,255,0.03) 0%, transparent 60%);
-  pointer-events:none; z-index:0; }
-
-.wrap { max-width:1300px; margin:0 auto; padding:14px; position:relative; z-index:1; }
-
-/* ── HEADER ── */
-.hdr { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;
-       border-bottom:1px solid var(--border); padding-bottom:12px; flex-wrap:wrap; gap:10px; }
-.hdr-title { font-family:'Orbitron',monospace; font-size:18px; font-weight:900;
-             letter-spacing:3px; color:var(--green); text-shadow:0 0 20px rgba(0,255,136,0.4); }
-.hdr-right { display:flex; align-items:center; gap:12px; font-size:12px; }
-.badge { padding:3px 10px; border-radius:2px; font-weight:700; font-size:11px; letter-spacing:1px; }
-.badge-paper { background:#1a1500; color:var(--yellow); border:1px solid var(--yellow); }
-.badge-live  { background:#1a0000; color:var(--red);    border:1px solid var(--red); animation:pulse 1s infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
-.status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:5px; }
-.dot-run { background:var(--green); box-shadow:0 0 8px var(--green); animation:pulse 2s infinite; }
-.dot-off { background:var(--red); }
-
-/* ── TICKER BAR ── */
-.ticker { background:var(--bg2); border:1px solid var(--border); border-left:3px solid var(--green);
-          padding:8px 14px; margin-bottom:14px; border-radius:2px;
-          display:flex; gap:24px; align-items:center; flex-wrap:wrap; font-size:12px; }
-.price-big { font-family:'Orbitron',monospace; font-size:22px; font-weight:700; color:var(--green); }
-
-/* ── ALERT BAR ── */
-.alert-bar { padding:8px 14px; margin-bottom:14px; border-radius:2px; font-size:12px;
-             display:none; border-left:3px solid var(--red); background:rgba(255,51,85,0.08); color:var(--red); }
-
-/* ── KPI GRID ── */
-.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:8px; margin-bottom:14px; }
-.kpi { background:var(--bg2); border:1px solid var(--border); padding:10px 12px; border-radius:2px;
-       position:relative; overflow:hidden; transition:border-color .2s; }
-.kpi:hover { border-color:var(--green); }
-.kpi::after { content:''; position:absolute; bottom:0; left:0; right:0; height:2px; background:var(--green); transform:scaleX(0); transition:transform .3s; }
-.kpi:hover::after { transform:scaleX(1); }
-.kpi-lbl { font-size:9px; color:var(--dim); letter-spacing:1px; text-transform:uppercase; }
-.kpi-val { font-family:'Orbitron',monospace; font-size:18px; font-weight:700; margin-top:3px; }
-.kpi-val.pos { color:var(--green); } .kpi-val.neg { color:var(--red); }
-.kpi-val.neu { color:var(--text); }
-.kpi-sub { font-size:9px; color:var(--dim); margin-top:2px; }
-
-/* ── TWO COLUMN LAYOUT ── */
-.two-col { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px; }
-@media(max-width:800px){ .two-col { grid-template-columns:1fr; } }
-.three-col { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:10px; }
-@media(max-width:900px){ .three-col { grid-template-columns:1fr 1fr; } }
-@media(max-width:600px){ .three-col { grid-template-columns:1fr; } }
-
-/* ── PANEL ── */
-.panel { background:var(--bg2); border:1px solid var(--border); border-radius:2px; overflow:hidden; }
-.panel-head { padding:8px 12px; font-size:10px; letter-spacing:2px; text-transform:uppercase;
-              display:flex; align-items:center; justify-content:space-between;
-              border-bottom:1px solid var(--border); }
-.panel-head.green  { border-left:3px solid var(--green);  color:var(--green); }
-.panel-head.blue   { border-left:3px solid var(--blue);   color:var(--blue); }
-.panel-head.yellow { border-left:3px solid var(--yellow); color:var(--yellow); }
-.panel-head.purple { border-left:3px solid var(--purple); color:var(--purple); }
-.panel-head.orange { border-left:3px solid var(--orange); color:var(--orange); }
-.panel-head.red    { border-left:3px solid var(--red);    color:var(--red); }
-.panel-body { padding:10px 12px; }
-
-/* ── M2 DIRECTION BOX ── */
-.dir-box { margin:8px 0; padding:12px; border-radius:2px; text-align:center;
-           font-family:'Orbitron',monospace; font-size:20px; font-weight:900; letter-spacing:4px;
-           transition:all .3s; }
-.dir-long  { background:linear-gradient(135deg,rgba(0,255,136,0.08),rgba(0,204,102,0.04));
-             border:1px solid var(--green); color:var(--green); text-shadow:0 0 15px rgba(0,255,136,0.5); }
-.dir-short { background:linear-gradient(135deg,rgba(255,51,85,0.08),rgba(200,0,40,0.04));
-             border:1px solid var(--red); color:var(--red); text-shadow:0 0 15px rgba(255,51,85,0.5); }
-
-/* ── MINI STATS ROW ── */
-.stat-row { display:flex; flex-wrap:wrap; gap:10px; font-size:11px; padding:6px 0; border-bottom:1px solid var(--border); }
-.stat-row:last-child { border-bottom:none; }
-.stat-item { display:flex; gap:4px; align-items:center; }
-.stat-lbl { color:var(--dim); }
-.stat-val { font-weight:700; }
-
-/* ── ORACOLO TABLE ── */
-.oracolo-table { width:100%; border-collapse:collapse; font-size:10px; }
-.oracolo-table th { color:var(--dim); font-size:9px; letter-spacing:1px; padding:4px 6px;
-                    text-transform:uppercase; border-bottom:1px solid var(--border); text-align:left; }
-.oracolo-table td { padding:4px 6px; border-bottom:1px solid rgba(255,255,255,0.03); }
-.oracolo-table tr:hover td { background:rgba(255,255,255,0.02); }
-.wr-bar { display:inline-block; height:3px; border-radius:1px; vertical-align:middle; margin-left:4px; }
-
-/* ── IA CAPSULE ── */
-.capsule-item { padding:5px 8px; margin-bottom:4px; border-radius:1px; font-size:10px;
-                display:flex; justify-content:space-between; align-items:center; }
-.cap-l2-blk  { background:rgba(255,51,85,0.08);   border-left:2px solid var(--red); }
-.cap-l2-bst  { background:rgba(0,255,136,0.08);   border-left:2px solid var(--green); }
-.cap-l3-stk  { background:rgba(255,215,0,0.08);   border-left:2px solid var(--yellow); }
-.cap-l3-reg  { background:rgba(255,136,0,0.08);   border-left:2px solid var(--orange); }
-.cap-l3-opp  { background:rgba(0,170,255,0.08);   border-left:2px solid var(--blue); }
-.ttl-bar { font-size:9px; color:var(--dim); }
-
-/* ── LOG FEED ── */
-.log-feed { font-size:10px; line-height:1.9; max-height:180px; overflow-y:auto;
-            scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
-.log-feed::-webkit-scrollbar { width:3px; }
-.log-feed::-webkit-scrollbar-thumb { background:var(--border); }
-.log-line { padding:1px 0; border-bottom:1px solid rgba(255,255,255,0.02); }
-
-/* ── PHANTOM ── */
-.phantom-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-bottom:8px; }
-.ph-kpi { background:var(--bg3); padding:8px; border-radius:1px; text-align:center; }
-.ph-kpi-lbl { font-size:9px; color:var(--dim); }
-.ph-kpi-val { font-size:16px; font-weight:700; margin-top:2px; }
-.verdict-box { padding:8px; text-align:center; border-radius:1px; font-size:12px; font-weight:700;
-               letter-spacing:1px; margin-bottom:8px; }
-.verdict-green  { background:rgba(0,255,136,0.08); border:1px solid var(--green); color:var(--green); }
-.verdict-red    { background:rgba(255,51,85,0.08);  border:1px solid var(--red);   color:var(--red); }
-.verdict-yellow { background:rgba(255,215,0,0.08);  border:1px solid var(--yellow); color:var(--yellow); }
-
-/* ── TRADES TABLE ── */
-.trade-tbl { width:100%; border-collapse:collapse; font-size:10px; }
-.trade-tbl th { color:var(--dim); font-size:9px; letter-spacing:1px; padding:5px 6px;
-                border-bottom:1px solid var(--border); text-align:left; text-transform:uppercase; }
-.trade-tbl td { padding:5px 6px; border-bottom:1px solid rgba(255,255,255,0.02); }
-.trade-tbl tr:hover td { background:rgba(255,255,255,0.02); }
-.pnl-pos { color:var(--green); font-weight:700; }
-.pnl-neg { color:var(--red); font-weight:700; }
-
-/* ── CONTROLS ── */
-.controls { display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
-.btn { background:transparent; border:1px solid var(--green); color:var(--green); padding:7px 14px;
-       border-radius:2px; cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:11px;
-       letter-spacing:1px; transition:all .15s; }
-.btn:hover { background:rgba(0,255,136,0.1); }
-.btn-red   { border-color:var(--red); color:var(--red); }
-.btn-red:hover { background:rgba(255,51,85,0.1); }
-
-/* ── REGIME INDICATOR ── */
-.regime-badge { display:inline-block; padding:2px 8px; border-radius:1px; font-size:10px;
-                font-weight:700; letter-spacing:1px; }
-.regime-trending-bull  { background:rgba(0,255,136,0.12); color:var(--green); border:1px solid var(--green2); }
-.regime-trending-bear  { background:rgba(255,51,85,0.12);  color:var(--red);   border:1px solid var(--red); }
-.regime-explosive      { background:rgba(255,215,0,0.12);  color:var(--yellow); border:1px solid var(--yellow); }
-.regime-ranging        { background:rgba(0,170,255,0.12);  color:var(--blue);   border:1px solid var(--blue); }
-
-/* ── DRIFT INDICATOR ── */
-.drift-bar-wrap { height:4px; background:var(--bg3); border-radius:2px; overflow:hidden; margin-top:4px; }
-.drift-bar-fill { height:100%; border-radius:2px; transition:width .5s,background .5s; }
-
-/* ── SPARKLINE AREA ── */
-.sparkline-wrap { height:40px; margin-top:6px; position:relative; }
-canvas.spark { width:100%; height:40px; }
-
-/* ── SECTION SEPARATOR ── */
-.sep { height:1px; background:linear-gradient(90deg,transparent,var(--border),transparent); margin:10px 0; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system; background: linear-gradient(135deg, #0f172e 0%, #1a1f3a 100%); color: #e0e0e0; min-height: 100vh; }
+.container { display: flex; height: 100vh; overflow: hidden; }
+.sidebar { width: 320px; background: rgba(15,23,46,0.9); border-right: 1px solid rgba(59,130,245,0.2); padding: 16px; overflow-y: auto; flex-shrink: 0; }
+.main { flex: 1; display: flex; flex-direction: column; padding: 16px; min-width: 0; min-height: 0; overflow: hidden; }
+.rightpanel { width: 280px; background: rgba(15,23,46,0.9); border-left: 1px solid rgba(59,130,245,0.2); padding: 12px; overflow-y: auto; flex-shrink: 0; display: none; }
+.rightpanel.visible { display: block; }
+h2 { color: #3b82f6; margin-bottom: 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+button { padding: 8px 12px; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; margin-bottom: 6px; font-size: 11px; }
+button:hover { opacity: 0.85; }
+.btn-green { background: #10b981; }
+.btn-red { background: #ef4444; }
+.btn-gray { background: #6b7280; }
+.btn-purple { background: #8b5cf6; }
+.btn-sm { padding: 4px 8px; font-size: 10px; margin-bottom: 0; }
+.dropdown { background: rgba(30,41,59,0.95); border: 1px solid rgba(59,130,245,0.5); border-radius: 6px; padding: 8px; max-height: 220px; overflow-y: auto; display: none; margin-bottom: 8px; }
+.dropdown.show { display: block; }
+.brand-item { padding: 4px; cursor: pointer; font-size: 11px; }
+.brand-item input { margin-right: 4px; }
+.badge { display: inline-block; background: #10b981; color: white; padding: 2px 5px; border-radius: 3px; margin: 2px; font-size: 10px; }
+.chat-area { flex: 1; background: rgba(15,23,46,0.5); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 12px; overflow-y: auto; margin-bottom: 8px; font-size: 12px; min-height: 0; }
+.oracolo-msg { position: relative; }
+.copy-btn { position: absolute; top: 6px; right: 6px; padding: 3px 8px; font-size: 10px; background: rgba(59,130,245,0.3); color: #93c5fd; border: 1px solid rgba(59,130,245,0.4); border-radius: 4px; cursor: pointer; margin-bottom: 0; }
+.copy-btn:hover { background: rgba(59,130,245,0.5); }
+.message { background: rgba(59,130,245,0.1); padding: 8px; margin: 4px 0; border-radius: 4px; border-left: 3px solid #3b82f6; }
+.message img { max-width: 100%; max-height: 180px; margin-top: 6px; border-radius: 4px; }
+.input-area { display: flex; gap: 8px; }
+input[type=text], input[type=password], input[type=number], select, textarea { padding: 8px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 11px; }
+input[type=text]::placeholder, input[type=password]::placeholder { color: #6b7280; }
+.title { color: #3b82f6; font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+.btn-3pulsanti { display: flex; gap: 6px; margin-bottom: 10px; }
+.btn-3pulsanti button { flex: 1; padding: 7px; font-size: 10px; }
+.toggle-btn { width: 100%; padding: 7px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; margin-bottom: 6px; font-size: 11px; }
+.toggle-on { background: #10b981; color: white; }
+.toggle-off { background: #6b7280; color: white; }
+.module-box { background: rgba(30,41,59,0.6); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
+.module-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; cursor: pointer; }
+.module-header:hover { background: rgba(59,130,245,0.1); }
+.module-title { font-size: 12px; font-weight: 600; color: #93c5fd; }
+.module-body { padding: 8px 10px; border-top: 1px solid rgba(59,130,245,0.2); display: none; }
+.module-body.open { display: block; }
+.cantiere-item { background: rgba(59,130,245,0.1); border-radius: 4px; padding: 6px 8px; margin: 4px 0; font-size: 11px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+.cantiere-item:hover { background: rgba(59,130,245,0.2); }
+.stato-badge { padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; }
+.stato-bozza { background: #6b7280; color: white; }
+.stato-inviata { background: #3b82f6; color: white; }
+.stato-vinta { background: #10b981; color: white; }
+.stato-persa { background: #ef4444; color: white; }
+.riga-item { background: rgba(30,41,59,0.8); border-radius: 4px; padding: 5px 8px; margin: 3px 0; font-size: 10px; display: flex; justify-content: space-between; align-items: center; }
+.login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9999; display: flex; align-items: center; justify-content: center; }
+.login-box { background: rgba(15,23,46,0.98); border: 1px solid rgba(59,130,245,0.4); border-radius: 12px; padding: 32px; width: 320px; }
+.login-title { color: #3b82f6; font-size: 20px; font-weight: 700; margin-bottom: 20px; text-align: center; }
+.sa-panel { background: rgba(139,92,246,0.15); border: 1px solid rgba(139,92,246,0.4); border-radius: 6px; padding: 8px; margin-bottom: 6px; font-size: 11px; }
+.bi-stat { background: rgba(30,41,59,0.8); border-radius: 4px; padding: 6px 8px; margin: 3px 0; font-size: 11px; display: flex; justify-content: space-between; }
+.brand-autocomplete { position: relative; width: 100%; }
+.brand-dropdown-list { position: absolute; top: 100%; left: 0; right: 0; background: #1e293b; border: 1px solid rgba(59,130,245,0.5); border-top: none; border-radius: 0 0 6px 6px; max-height: 180px; overflow-y: auto; z-index: 3000; display: none; }
+.brand-dropdown-list.open { display: block; }
+.brand-dropdown-item { padding: 7px 10px; font-size: 11px; cursor: pointer; color: #e0e0e0; }
+.brand-dropdown-item:hover { background: rgba(59,130,245,0.3); color: white; }
+/* DRAWER CANTIERE */
+.cantiere-drawer { display: none; position: fixed; top: 0; right: 0; width: 320px; height: 100vh; background: #0f172e; border-left: 2px solid rgba(59,130,245,0.4); z-index: 1000; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.5); overflow-y: auto; }
+.cantiere-drawer.open { display: flex; }
+.drawer-header { background: rgba(59,130,245,0.15); border-bottom: 1px solid rgba(59,130,245,0.3); padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.drawer-title { font-size: 15px; font-weight: 700; color: #60a5fa; }
+.drawer-body { flex: 1; overflow-y: auto; padding: 0; }
+.drawer-section { border-bottom: 1px solid rgba(59,130,245,0.15); padding: 10px 12px; }
+.drawer-section-title { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+.riga-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 8px 12px; margin: 5px 0; display: flex; align-items: center; justify-content: space-between; }
+.riga-card-info { flex: 1; }
+.riga-card-brand { font-size: 12px; font-weight: 600; color: #60a5fa; }
+.riga-card-cat { font-size: 11px; color: #9ca3af; }
+.riga-card-importo { font-size: 13px; font-weight: 700; color: #10b981; margin: 0 12px; white-space: nowrap; }
+.totale-bar { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); border-radius: 6px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+.form-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.form-row > * { flex: 1; }
+.drawer-footer { border-top: 1px solid rgba(59,130,245,0.3); padding: 12px 18px; display: flex; gap: 8px; flex-shrink: 0; background: rgba(15,23,46,0.95); }
+/* LISTINO DASHBOARD */
+.listino-panel { position: fixed; top: 0; left: 320px; right: 0; bottom: 0; background: rgba(10,15,35,0.97); z-index: 500; display: none; flex-direction: column; }
+.listino-panel.open { display: flex; }
+.listino-header { background: rgba(59,130,245,0.15); border-bottom: 1px solid rgba(59,130,245,0.3); padding: 12px 18px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.listino-brand-tag { background: rgba(59,130,245,0.3); border: 1px solid rgba(59,130,245,0.5); color: #93c5fd; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+.listino-search { flex: 1; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; padding: 8px 12px; font-size: 12px; }
+.listino-body { flex: 1; overflow-y: auto; padding: 12px 18px; }
+.filtri-bar { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.filtro-btn { padding: 4px 10px; font-size: 10px; border-radius: 20px; border: 1px solid rgba(59,130,245,0.3); background: transparent; color: #9ca3af; cursor: pointer; margin-bottom: 0; }
+.filtro-btn.active { background: rgba(59,130,245,0.4); color: white; border-color: #3b82f6; }
+.domande-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.domanda-chip { padding: 5px 10px; font-size: 10px; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; border-radius: 20px; cursor: pointer; margin-bottom: 0; }
+.domanda-chip:hover { background: rgba(16,185,129,0.3); }
+.prodotti-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.prodotto-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 8px; padding: 12px; cursor: pointer; transition: border-color 0.2s; }
+.prodotto-card:hover { border-color: rgba(59,130,245,0.6); }
+.prodotto-card.su-ordine { border-left: 3px solid #f59e0b; }
+.prodotto-card.disponibile { border-left: 3px solid #10b981; }
+.prodotto-codice { font-size: 9px; color: #6b7280; font-family: monospace; margin-bottom: 3px; }
+.prodotto-nome { font-size: 12px; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; }
+.prodotto-cat { font-size: 10px; color: #9ca3af; margin-bottom: 6px; }
+.prodotto-prezzo-excel { color: #10b981; font-weight: 700; font-size: 13px; }
+.prodotto-prezzo-web { color: #ef4444; font-weight: 700; font-size: 13px; }
+.prodotto-prezzo-sc { color: #f59e0b; font-size: 11px; text-decoration: line-through; margin-left: 4px; }
+.prodotto-disp { font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 10px; }
+.disp-ok { background: rgba(16,185,129,0.2); color: #10b981; }
+.disp-ord { background: rgba(245,158,11,0.2); color: #f59e0b; }
+.prodotto-actions { display: flex; gap: 4px; margin-top: 8px; }
+.prodotto-actions button { flex: 1; padding: 4px; font-size: 9px; margin-bottom: 0; }
+.doc-row { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; margin-bottom:4px; background:rgba(30,41,59,0.7); border:1px solid rgba(59,130,245,0.15); font-size:11px; }
+.doc-brand-tag { background:rgba(59,130,245,0.2); color:#93c5fd; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; white-space:nowrap; }
+.doc-tipo-excel { background:rgba(16,185,129,0.2); color:#10b981; padding:2px 6px; border-radius:10px; font-size:9px; font-weight:600; }
+.doc-tipo-doc { background:rgba(139,92,246,0.2); color:#a78bfa; padding:2px 6px; border-radius:10px; font-size:9px; font-weight:600; }
+/* EXCEL PANEL */
+.excel-row { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.15); border-radius: 6px; padding: 8px 10px; margin: 4px 0; font-size: 11px; }
+.excel-row-header { display: flex; align-items: center; gap: 8px; }
+.excel-codice { color: #9ca3af; font-size: 10px; font-family: monospace; }
+.excel-desc { flex: 1; color: #e0e0e0; font-size: 11px; }
+.prezzo-excel { color: #10b981; font-weight: 700; font-size: 12px; }
+.prezzo-web { color: #ef4444; font-weight: 700; font-size: 12px; }
+.excel-ai-desc { color: #93c5fd; font-size: 11px; margin-top: 4px; padding: 4px 6px; background: rgba(59,130,245,0.08); border-radius: 4px; border-left: 2px solid #3b82f6; }
+.excel-actions { display: flex; gap: 4px; margin-top: 6px; }
 </style>
 </head>
 <body>
-<div class="wrap">
 
-  <!-- HEADER -->
-  <div class="hdr">
-    <div class="hdr-title">⚡ MISSION CONTROL V6.0</div>
-    <div class="hdr-right">
-      <span><span class="status-dot" id="status-dot"></span><span id="status-txt" style="font-size:11px">OFFLINE</span></span>
-      <span id="mode-badge" class="badge badge-paper">PAPER</span>
-      <span style="font-size:10px; color:var(--dim)" id="last-seen">--</span>
+<!-- LOGIN OVERLAY -->
+<div class="login-overlay" id="login-overlay">
+  <div class="login-box">
+    <div class="login-title">Oracolo Covolo</div>
+    <div style="margin-bottom: 12px;">
+      <input type="text" id="login-user" placeholder="Username" style="width: 100%; margin-bottom: 8px;" onkeypress="if(event.key==='Enter') doLogin()">
+      <input type="password" id="login-pwd" placeholder="Password" style="width: 100%;" onkeypress="if(event.key==='Enter') doLogin()">
+    </div>
+    <button onclick="doLogin()" style="width: 100%; padding: 10px; font-size: 13px;">Accedi</button>
+    <div id="login-error" style="color: #ef4444; font-size: 11px; margin-top: 8px; text-align: center;"></div>
+    <div style="font-size: 10px; color: #4b5563; margin-top: 16px; text-align: center;">Oracolo Covolo — Tecnaria</div>
+  </div>
+</div>
+
+<div class="container" id="main-app" style="display: none;">
+  <!-- SIDEBAR SX -->
+  <div class="sidebar">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+      <span id="user-label" style="font-size: 11px; color: #60a5fa; font-weight: 600;"></span>
+      <button onclick="doLogout()" class="btn-sm btn-gray">Esci</button>
+    </div>
+    <h2>Seleziona brand</h2>
+    <button onclick="toggleDropdown()" style="width: 100%;">Seleziona Brand</button>
+    <div id="dropdown" class="dropdown">
+      <!-- TAB BAR -->
+      <div style="display:flex; gap:4px; margin-bottom:8px;">
+        <button id="tab-brand" onclick="switchTab('brand')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:#3b82f6;">Per nome</button>
+        <button id="tab-cat" onclick="switchTab('cat')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:rgba(59,130,245,0.3);">Per categoria</button>
+      </div>
+      <!-- TAB BRAND -->
+      <div id="tab-content-brand">
+        <input type="text" id="search" placeholder="Ricerca brand..." onkeyup="filterBrands()" style="width: 100%; margin-bottom: 6px;">
+        <div id="brands-list"></div>
+      </div>
+      <!-- TAB CATEGORIA -->
+      <div id="tab-content-cat" style="display:none;">
+        <input type="text" id="search-cat" placeholder="Es: rubinetteria, piastrelle, doccia..." onkeyup="filterPerCategoria()" style="width: 100%; margin-bottom: 6px;">
+        <div id="cat-results"></div>
+      </div>
+    </div>
+    <div id="selected"></div>
+    <div id="brand-loading-status" style="font-size:11px; color:#10b981; margin-bottom:8px;"></div>
+    <h2>Gruppi salvati</h2>
+    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+      <input type="text" id="group-name" placeholder="Nome gruppo..." style="flex: 1;">
+      <button onclick="saveGroup()" class="btn-green btn-sm" style="margin-bottom:0;">Salva</button>
+    </div>
+    <div id="saved-groups" style="max-height: 120px; overflow-y: auto; font-size: 11px;"></div>
+    <h2 style="margin-top: 10px;">Protezione cassetto</h2>
+    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+      <input type="password" id="admin-pwd" placeholder="Password admin..." style="flex: 1;">
+      <button onclick="setAdminPassword()" class="btn-green btn-sm" style="margin-bottom:0;">Proteggi</button>
+    </div>
+    <h2>Nuovo cassetto</h2>
+    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+      <input type="text" id="new-cassetto" placeholder="Nome cassetto..." style="flex: 1;">
+      <button onclick="addCassetto()" class="btn-green btn-sm" style="margin-bottom:0;">+</button>
+    </div>
+    <h2>Accesso privato</h2>
+    <input type="password" id="access-code" placeholder="Codice accesso..." style="width: 100%; margin-bottom: 6px;">
+    <button onclick="toggleAccess()" style="width: 100%;">Attiva</button>
+    <div style="font-size: 10px; color: #9ca3af; margin-top: 4px;" id="access-status">Accesso: PUBBLICO</div>
+    <h2 style="margin-top: 10px;">Web search</h2>
+    <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()">ON</button>
+    <h2>Upload documenti</h2>
+    <div class="brand-autocomplete" style="margin-bottom:6px;">
+      <input type="text" id="upload-brand-input" placeholder="Cerca brand..." autocomplete="off"
+        oninput="filterAutocomplete('upload-brand-input','upload-brand-list','upload-brand-val')"
+        onfocus="filterAutocomplete('upload-brand-input','upload-brand-list','upload-brand-val')"
+        onblur="setTimeout(()=>closeAutocomplete('upload-brand-list'),200)"
+        style="width:100%;">
+      <input type="hidden" id="upload-brand-val">
+      <div class="brand-dropdown-list" id="upload-brand-list"></div>
+    </div>
+    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
+      Upload Doc <input type="file" id="file-doc" style="display:none" onchange="doUpload(this, 'doc')">
+    </label>
+    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
+      Upload Excel <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
+    </label>
+    <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
+    <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
+  </div>
+
+  <!-- CENTRO -->
+  <div class="main">
+    <div class="title">Oracolo Covolo</div>
+    <div class="btn-3pulsanti" id="btn-3pulsanti">
+      <button class="btn-green" onclick="generateOfferta()">OFFERTA</button>
+      <button class="btn-green" onclick="generateAnalisi()">ANALISI</button>
+      <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
+      <button style="background:#8b5cf6;" onclick="apriListino()">📋 LISTINO</button>
+    </div>
+    <div class="chat-area" id="chat"></div>
+    <div class="input-area">
+      <input type="text" id="question" placeholder="Domanda libera o cerca prodotto..." onkeypress="if(event.key==='Enter') ask()" oninput="cercaRapidaListino(this.value)" style="flex: 1;">
+      <button onclick="ask()" style="width: 100px;">Invia</button>
+    </div>
+    <!-- RISULTATI RICERCA RAPIDA LISTINO -->
+    <div id="quick-search-results" style="display:none; background:rgba(15,23,46,0.98); border:1px solid rgba(59,130,245,0.3); border-radius:6px; margin-top:4px; max-height:280px; overflow-y:auto; z-index:100;">
     </div>
   </div>
 
-  <!-- ALERT BAR -->
-  <div class="alert-bar" id="alert-bar"></div>
+  <!-- PANNELLO LISTINO -->
+  <div class="listino-panel" id="listino-panel">
+    <div class="listino-header">
+      <span id="listino-brand-tag" class="listino-brand-tag">—</span>
+      <input type="text" id="listino-search" class="listino-search" placeholder="Cerca prodotto per nome, codice, collezione..." oninput="filtraListino()">
+      <!-- SELETTORE LISTINO -->
+      <div style="display:flex;gap:4px;flex-shrink:0;">
+        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;">👤 Cliente</button>
+        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.3);border-radius:4px;color:#f59e0b;">🏪 Rivenditore</button>
+      </div>
+      <button onclick="chiudiListino()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+    </div>
 
-  <!-- TICKER -->
-  <div class="ticker">
-    <span class="price-big" id="btc-price">--</span>
-    <span style="color:var(--dim)">BTC/USDC</span>
-    <span>⚡ <span id="tick-n" style="color:var(--yellow)">0</span></span>
-    <span>🕐 <span id="last-tick" style="color:var(--dim)">--</span></span>
-    <span id="trade-status-txt" style="color:var(--dim)">🔍 Analizzando...</span>
-    <span style="margin-left:auto; font-size:10px;" id="regime-badge-ticker"></span>
-  </div>
+    <!-- FILTRI LINEA + CATEGORIA + RICERCA -->
+    <div style="padding:8px 18px; background:rgba(15,23,46,0.8); border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0;">
+      <div id="filtri-linea" class="filtri-bar" style="margin-bottom:6px;"></div>
+      <div id="filtri-cat" class="filtri-bar" style="margin-bottom:6px;"></div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="text" id="listino-search" class="listino-search" style="flex:1;" placeholder="Cerca nome, codice..." oninput="filtraListino()">
+        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;white-space:nowrap;">👤 Cliente</button>
+        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.2);border-radius:4px;color:#f59e0b;white-space:nowrap;">🏪 Riv.</button>
+      </div>
+    </div>
 
-  <!-- KPI ROW -->
-  <div class="kpi-grid">
-    <div class="kpi">
-      <div class="kpi-lbl">PnL M2</div>
-      <div class="kpi-val" id="k-pnl">--</div>
-      <div class="kpi-sub" id="k-roi">ROI --</div>
+    <!-- DOMANDE RAPIDE AI -->
+    <div style="padding:6px 18px; border-bottom:1px solid rgba(59,130,245,0.1); flex-shrink:0;">
+      <div class="domande-bar" id="domande-bar"></div>
     </div>
-    <div class="kpi">
-      <div class="kpi-lbl">Win Rate</div>
-      <div class="kpi-val" id="k-wr">--</div>
-      <div class="kpi-sub" id="k-wl">0W / 0L</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-lbl">Capitale</div>
-      <div class="kpi-val neu" id="k-cap">--</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-lbl">Trade M2</div>
-      <div class="kpi-val neu" id="k-trades">--</div>
-      <div class="kpi-sub" id="k-avg-dur">avg dur --</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-lbl">Soglia</div>
-      <div class="kpi-val neu" id="k-soglia">--</div>
-      <div class="kpi-sub">base / min</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-lbl">IA Capsule</div>
-      <div class="kpi-val neu" id="k-caps">--</div>
-      <div class="kpi-sub" id="k-caps-sub">L2: 0  L3: 0</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-lbl">Phantom</div>
-      <div class="kpi-val" id="k-phantom">--</div>
-      <div class="kpi-sub" id="k-phantom-sub">bilancio --</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-lbl">State</div>
-      <div class="kpi-val neu" id="k-state">--</div>
-      <div class="kpi-sub" id="k-streak">streak 0</div>
+
+    <!-- GRIGLIA PRODOTTI -->
+    <div class="listino-body">
+      <div id="listino-count" style="font-size:10px; color:#6b7280; margin-bottom:8px;"></div>
+      <div class="prodotti-grid" id="prodotti-grid"></div>
     </div>
   </div>
 
-  <!-- ROW 1: M2 + ORACOLO -->
-  <div class="two-col">
-
-    <!-- M2 CAMPO GRAVITAZIONALE -->
-    <div class="panel">
-      <div class="panel-head blue">🎯 MOTORE 2 — CAMPO GRAVITAZIONALE
-        <span id="m2-shadow-badge" style="font-size:9px; color:var(--dim)">shadow chiuso</span>
+  <!-- PANNELLO GESTIONE DOCUMENTI -->
+  <div id="gestisci-doc-panel" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:2000; align-items:center; justify-content:center;">
+    <div style="background:#0f172e; border:1px solid rgba(59,130,245,0.4); border-radius:12px; width:700px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column;">
+      <!-- Header -->
+      <div style="padding:16px 20px; border-bottom:1px solid rgba(59,130,245,0.2); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+        <div style="font-size:14px; font-weight:700; color:#60a5fa;">📁 Gestione Documenti</div>
+        <button onclick="chiudiGestisciDoc()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
       </div>
-      <div class="panel-body">
-        <div class="dir-box dir-long" id="dir-box"><span id="dir-txt">⏳ ATTESA</span></div>
-        <div class="stat-row">
-          <div class="stat-item"><span class="stat-lbl">WR</span><span class="stat-val" id="m2-wr-detail">0%</span></div>
-          <div class="stat-item"><span class="stat-lbl">PnL</span><span class="stat-val" id="m2-pnl-detail">$0</span></div>
-          <div class="stat-item"><span class="stat-lbl">Trades</span><span class="stat-val" id="m2-t-detail">0</span></div>
-          <div class="stat-item"><span class="stat-lbl">Loss streak</span><span class="stat-val" id="m2-streak">0</span></div>
-          <div class="stat-item"><span class="stat-lbl">Cooldown</span><span class="stat-val" id="m2-cooldown">0s</span></div>
-        </div>
-        <div class="stat-row">
-          <div class="stat-item"><span class="stat-lbl">RSI</span><span class="stat-val" id="m2-rsi">--</span></div>
-          <div class="stat-item"><span class="stat-lbl">MACD hist</span><span class="stat-val" id="m2-macd">--</span></div>
-          <div class="stat-item"><span class="stat-lbl">Soglia base</span><span class="stat-val" id="m2-sog-base">60</span></div>
-          <div class="stat-item"><span class="stat-lbl">Drift thr</span><span class="stat-val" id="m2-drift-thr">--</span></div>
-        </div>
-        <div class="drift-bar-wrap"><div class="drift-bar-fill" id="drift-fill" style="width:50%;background:var(--blue)"></div></div>
-        <div style="font-size:9px;color:var(--dim);margin-top:2px;text-align:center" id="drift-lbl">drift 0.000%</div>
-        <div class="log-feed" id="m2-log" style="margin-top:8px">In attesa M2...</div>
+      <!-- Filtro brand -->
+      <div style="padding:12px 20px; border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0; display:flex; gap:8px;">
+        <input type="text" id="filtro-doc-brand" placeholder="Filtra per brand (lascia vuoto per tutti)..." style="flex:1; font-size:11px;" oninput="filtraDocumenti()">
+        <button onclick="filtraDocumenti()" style="margin-bottom:0; padding:6px 12px; font-size:11px;">🔍 Cerca</button>
+        <button onclick="filtraDocumenti(true)" class="btn-gray" style="margin-bottom:0; padding:6px 12px; font-size:11px;">Tutti</button>
       </div>
-    </div>
-
-    <!-- ORACOLO DINAMICO -->
-    <div class="panel">
-      <div class="panel-head purple">🔮 ORACOLO DINAMICO — Fingerprint Memory</div>
-      <div class="panel-body">
-        <div style="font-size:9px; color:var(--dim); margin-bottom:6px;">
-          Fingerprint = (momentum × volatilità × trend × direction). WR pesato con decay 0.95.
-          🟢 ≥60% vincente  🟡 45-60% neutro  🔴 &lt;45% tossico
-        </div>
-        <table class="oracolo-table" id="oracolo-tbl">
-          <thead>
-            <tr>
-              <th>FINGERPRINT</th>
-              <th>WR</th>
-              <th>CAMPIONI</th>
-              <th>PnL avg</th>
-              <th>EXIT EARLY</th>
-              <th>STATUS</th>
-            </tr>
-          </thead>
-          <tbody id="oracolo-body">
-            <tr><td colspan="6" style="color:var(--dim);text-align:center;padding:12px">Nessun dato ancora</td></tr>
-          </tbody>
-        </table>
-        <div class="sep"></div>
-        <div style="font-size:9px; color:var(--dim)">Divorzi permanenti: <span id="divorzi-list" style="color:var(--red)">nessuno</span></div>
-        <div style="font-size:9px; color:var(--dim); margin-top:4px">Calibratore: <span id="calib-params" style="color:var(--text)">--</span></div>
-      </div>
+      <!-- Lista documenti -->
+      <div id="doc-list-panel" style="flex:1; overflow-y:auto; padding:12px 20px;"></div>
     </div>
   </div>
 
-  <!-- ROW 2: IA CAPSULE + PHANTOM -->
-  <div class="two-col">
+  <!-- PANNELLO DX -->
+  <div class="rightpanel" id="rightpanel">
+    <div style="font-size: 13px; font-weight: 700; color: #93c5fd; margin-bottom: 10px;">Moduli</div>
 
-    <!-- INTELLIGENZA AUTONOMA -->
-    <div class="panel">
-      <div class="panel-head orange">🧠 INTELLIGENZA AUTONOMA — Capsule Vive
-        <span id="ia-gen-count" style="font-size:9px; color:var(--dim)">gen: 0 / exp: 0</span>
-      </div>
-      <div class="panel-body">
-        <div class="stat-row" style="margin-bottom:8px">
-          <div class="stat-item"><span class="stat-lbl">L2 (esperienza)</span><span class="stat-val" id="ia-l2">0</span></div>
-          <div class="stat-item"><span class="stat-lbl">L3 (evento)</span><span class="stat-val" id="ia-l3">0</span></div>
-          <div class="stat-item"><span class="stat-lbl">Blocchi</span><span class="stat-val" id="ia-blocks">0</span></div>
-          <div class="stat-item"><span class="stat-lbl">Boost soglia</span><span class="stat-val" id="ia-boosts">0</span></div>
-          <div class="stat-item"><span class="stat-lbl">Trade osservati</span><span class="stat-val" id="ia-observed">0</span></div>
+    <!-- SUPERADMIN PANEL -->
+    <div id="sa-panel" style="display:none;">
+      <div class="module-box">
+        <div class="module-header" onclick="toggleModule('sa-config')">
+          <span class="module-title">Config Superadmin</span>
+          <span style="font-size:10px; color:#8b5cf6;">SA</span>
         </div>
-        <div id="ia-capsule-list" style="max-height:200px; overflow-y:auto;">
-          <div style="color:var(--dim); font-size:10px; text-align:center; padding:20px 0">
-            Nessuna capsule attiva.<br>Il sistema impara dai trade.
+        <div class="module-body" id="sa-config">
+          <div style="margin-bottom: 8px;">
+            <select id="sa-cliente-sel" style="width:100%; margin-bottom:6px;" onchange="loadSAModuli()">
+              <option value="">-- Seleziona cliente --</option>
+            </select>
+            <div id="sa-moduli-list" style="font-size:11px;"></div>
+          </div>
+          <div style="border-top: 1px solid rgba(59,130,245,0.2); padding-top: 8px; margin-top: 4px;">
+            <div style="font-size: 11px; font-weight: 600; color: #9ca3af; margin-bottom: 6px;">Nuovo utente</div>
+            <input type="text" id="sa-u-nome" placeholder="Nome..." style="width:100%; margin-bottom:4px;">
+            <input type="text" id="sa-u-username" placeholder="Username..." style="width:100%; margin-bottom:4px;">
+            <input type="password" id="sa-u-pwd" placeholder="Password..." style="width:100%; margin-bottom:4px;">
+            <select id="sa-u-ruolo" style="width:100%; margin-bottom:4px;">
+              <option value="commerciale">Commerciale</option>
+              <option value="admin">Admin cliente</option>
+            </select>
+            <select id="sa-u-cliente" style="width:100%; margin-bottom:6px;">
+              <option value="">-- Cliente --</option>
+            </select>
+            <button onclick="saAddUtente()" class="btn-green" style="width:100%;">Crea utente</button>
+          </div>
+          <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
+            <button onclick="dedupBrands()" class="btn-red" style="width:100%; font-size:10px;">🧹 Unifica brand duplicati</button>
+            <div id="dedup-result" style="font-size:10px; color:#10b981; margin-top:4px;"></div>
+          </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- PHANTOM TRACKER -->
-    <div class="panel">
-      <div class="panel-head yellow">👻 PHANTOM — Se avessi fatto...
-        <span style="font-size:9px; color:var(--dim)">Zavorra o Protezione?</span>
+    <!-- CANTIERI -->
+    <div class="module-box" id="mod-cantieri" style="display:none;">
+      <div class="module-header" onclick="toggleModule('cantieri-body')">
+        <span class="module-title">Cantieri</span>
+        <span id="cantieri-count" style="font-size:10px; color:#9ca3af;">0</span>
       </div>
-      <div class="panel-body">
-        <div class="phantom-grid">
-          <div class="ph-kpi">
-            <div class="ph-kpi-lbl">BLOCCATI</div>
-            <div class="ph-kpi-val" id="ph-tot" style="color:var(--yellow)">0</div>
-          </div>
-          <div class="ph-kpi">
-            <div class="ph-kpi-lbl">🛡️ PROTETTI</div>
-            <div class="ph-kpi-val" id="ph-prot" style="color:var(--green)">0</div>
-          </div>
-          <div class="ph-kpi">
-            <div class="ph-kpi-lbl">⚠️ MANCATI</div>
-            <div class="ph-kpi-val" id="ph-zav" style="color:var(--red)">0</div>
-          </div>
-          <div class="ph-kpi">
-            <div class="ph-kpi-lbl">💰 SALVATI</div>
-            <div class="ph-kpi-val" id="ph-saved" style="color:var(--green)">$0</div>
-          </div>
-          <div class="ph-kpi">
-            <div class="ph-kpi-lbl">💸 PERSI</div>
-            <div class="ph-kpi-val" id="ph-miss" style="color:var(--red)">$0</div>
-          </div>
-          <div class="ph-kpi">
-            <div class="ph-kpi-lbl">⚖️ BILANCIO</div>
-            <div class="ph-kpi-val" id="ph-bil">$0</div>
-          </div>
+      <div class="module-body" id="cantieri-body">
+        <div style="display: flex; gap: 4px; margin-bottom: 8px;">
+          <input type="text" id="new-cantiere" placeholder="Nome cantiere / cliente..." style="flex:1;">
+          <button onclick="addCantiere()" class="btn-green btn-sm" style="margin-bottom:0;">+</button>
         </div>
-        <div class="verdict-box" id="ph-verdict">In attesa dati...</div>
-        <div id="ph-levels" style="font-size:10px; max-height:80px; overflow-y:auto;"></div>
-        <div class="log-feed" id="ph-log" style="max-height:80px; margin-top:6px;"></div>
+        <div id="cantieri-list"></div>
       </div>
+    </div>
+
+    <!-- BI -->
+    <div class="module-box" id="mod-bi" style="display:none;">
+      <div class="module-header" onclick="toggleModule('bi-body'); loadBI();">
+        <span class="module-title">BI / Statistiche</span>
+        <span style="font-size:10px; color:#9ca3af;">admin</span>
+      </div>
+      <div class="module-body" id="bi-body">
+        <div id="bi-stats"></div>
+        <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
+          <div style="font-size:11px; font-weight:600; color:#9ca3af; margin-bottom:6px;">Pulizia archivio</div>
+          <input type="date" id="bi-da" style="width:100%; margin-bottom:4px;">
+          <input type="date" id="bi-a" style="width:100%; margin-bottom:4px;">
+          <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">Stati da eliminare:</div>
+          <label style="font-size:10px; display:block;"><input type="checkbox" value="vinta" id="del-vinta"> Vinte</label>
+          <label style="font-size:10px; display:block;"><input type="checkbox" value="persa" id="del-persa"> Perse</label>
+          <label style="font-size:10px; display:block; margin-bottom:6px;"><input type="checkbox" value="bozza" id="del-bozza"> Bozze</label>
+          <button onclick="biCancella()" class="btn-red" style="width:100%; font-size:10px;">Cancella selezionati</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- COMMERCIALI -->
+    <div class="module-box" id="mod-commerciali" style="display:none;">
+      <div class="module-header" onclick="toggleModule('comm-body')">
+        <span class="module-title">Commerciali</span>
+        <span style="font-size:10px; color:#9ca3af;">admin</span>
+      </div>
+      <div class="module-body" id="comm-body">
+        <div id="comm-list" style="font-size:11px;"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- DRAWER DETTAGLIO CANTIERE -->
+<div class="cantiere-drawer" id="cantiere-drawer">
+  <div class="drawer-header">
+    <div>
+      <div class="drawer-title" id="drawer-nome"></div>
+      <div style="font-size:11px; color:#9ca3af; margin-top:2px;">Gestione offerta</div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <select id="cantiere-stato" style="font-size:11px; padding:5px 8px;" onchange="updateCantiere()">
+        <option value="bozza">Bozza</option>
+        <option value="inviata">Inviata</option>
+        <option value="vinta">Vinta</option>
+        <option value="persa">Persa</option>
+      </select>
+      <button onclick="closeCantiere()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
     </div>
   </div>
 
-  <!-- AI BRIDGE — IL GENERALE -->
-  <div class="panel" style="margin-bottom:10px; border-color:var(--purple); border-width:2px;">
-    <div class="panel-head purple" style="font-size:11px;">🌉 IL GENERALE — AI BRIDGE
-      <span id="bridge-ts" style="font-size:9px; color:var(--dim)">—</span>
-    </div>
-    <div class="panel-body">
-      <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
-        <div id="bridge-mercato-badge" style="font-family:'Orbitron',monospace; font-size:12px; font-weight:700;
-             padding:5px 14px; border-radius:2px; letter-spacing:2px; border:1px solid var(--dim); color:var(--dim)">
-          — MERCATO —
-        </div>
-        <div id="bridge-alert-badge" style="font-size:10px; padding:3px 10px; border-radius:2px;
-             border:1px solid var(--dim); color:var(--dim)">● ATTESA</div>
-        <div style="font-size:9px; color:var(--dim)">ultima analisi: <span id="bridge-last-ts">—</span></div>
-        <div style="margin-left:auto; font-size:9px; color:var(--dim)">
-          <span id="bridge-active-dot">⚫</span> <span id="bridge-active-txt">offline</span>
-          &nbsp;|&nbsp; err: <span id="bridge-errors">0</span>
-        </div>
-      </div>
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px;">
-        <div style="background:var(--bg3); border-left:3px solid var(--purple); padding:8px 12px; border-radius:1px;">
-          <div style="font-size:9px; color:var(--purple); margin-bottom:3px; letter-spacing:1px">ANALISI</div>
-          <div id="bridge-analisi" style="font-size:11px; color:var(--text); line-height:1.5">In attesa...</div>
-        </div>
-        <div style="background:rgba(0,255,136,0.04); border-left:3px solid var(--green); padding:8px 12px; border-radius:1px;">
-          <div style="font-size:9px; color:var(--green); margin-bottom:3px; letter-spacing:1px">🎯 PROSSIMO SETUP</div>
-          <div id="bridge-prossimo" style="font-size:11px; color:var(--text); line-height:1.5">—</div>
-        </div>
-      </div>
-      <div id="bridge-note-box" style="background:rgba(255,215,0,0.04); border-left:3px solid var(--yellow);
-           padding:6px 12px; margin-bottom:8px; border-radius:1px; display:none;">
-        <div style="font-size:9px; color:var(--yellow); margin-bottom:2px;">📝 NOTA PER TE</div>
-        <div id="bridge-note" style="font-size:11px; color:var(--text)">—</div>
-      </div>
-      <div class="log-feed" id="bridge-log" style="max-height:100px; font-size:10px;">Bridge non ancora attivo...</div>
-    </div>
-  </div>
-
-  <!-- GRAFICO LIVE — PREZZO + SEGNALI -->
-  <div class="panel" style="margin-bottom:10px; border-color:var(--green); border-width:2px;">
-    <div class="panel-head green">📈 GRAFICO LIVE — BTC/USDC
-      <span id="chart-info" style="font-size:9px; color:var(--dim)">ultimi 120 tick · 30s window</span>
-    </div>
-    <div class="panel-body" style="padding:8px;">
-      <canvas id="priceChart" style="width:100%; height:220px; display:block;"></canvas>
-      <div style="display:flex; gap:16px; margin-top:6px; font-size:9px; color:var(--dim); flex-wrap:wrap;">
-        <span><span style="color:var(--green)">━</span> Prezzo</span>
-        <span><span style="color:var(--yellow); font-size:11px">◆</span> Segnale (score≥soglia)</span>
-        <span><span style="color:var(--green); font-size:12px">▲</span> Entry LONG</span>
-        <span><span style="color:var(--red); font-size:12px">▼</span> Entry SHORT</span>
-        <span><span style="color:#888; font-size:11px">✕</span> Exit</span>
-        <span id="chart-score-live" style="margin-left:auto; color:var(--text)"></span>
+  <div class="drawer-body">
+    <!-- RIGHE ESISTENTI -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Elementi nel carrello</div>
+      <div id="righe-list"></div>
+      <div class="totale-bar" id="totale-bar" style="display:none;">
+        <span style="font-size:12px; color:#9ca3af;">Totale offerta</span>
+        <span style="font-size:15px; font-weight:700; color:#10b981;" id="totale-valore">€0</span>
       </div>
     </div>
-  </div>
 
-  <!-- SUPERCERVELLO — DUE LINEE: MERCATO vs PREDIZIONE -->
-  <div class="panel" style="margin-bottom:10px; border-color:#aa44ff; border-width:2px;">
-    <div class="panel-head" style="color:#aa44ff;">🧠 SUPERCERVELLO — Mercato vs Predizione
-      <span id="sc-updated" style="font-size:9px; color:var(--dim)">in attesa dati...</span>
+    <!-- ACCESSORI CONSIGLIATI -->
+    <div class="drawer-section" id="accessori-section" style="display:block;">
+      <div class="drawer-section-title">
+        🔗 Accessori Consigliati
+      </div>
+      <div id="accessori-panel" style="display:block;max-height:300px;overflow-y:auto;">
+        <div id="pannello-titolo" style="padding:8px;background:rgba(59,130,246,0.1);border-left:3px solid #3b82f6;margin-bottom:12px;border-radius:4px;"></div>
+        <div id="sezioneUfficiali"></div>
+        <div id="sezioneAlternative"></div>
+      </div>
     </div>
-    <div class="panel-body" style="padding:8px;">
 
-      <!-- Metriche -->
-      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-bottom:8px;">
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;">
-          <div style="font-size:9px;color:var(--dim)">STATO SC</div>
-          <div id="sc-stato" style="font-size:14px;font-weight:500;color:var(--yellow)">ATTESA</div>
+    <!-- AGGIUNGI RIGA -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Aggiungi elemento</div>
+      <div class="form-row">
+        <div class="brand-autocomplete" style="flex:1;">
+          <input type="text" id="riga-brand-input" placeholder="Cerca brand..." autocomplete="off"
+            oninput="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
+            onfocus="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
+            onblur="setTimeout(()=>closeAutocomplete('riga-brand-list'),200)"
+            onchange="aggiornaCampiExtra()"
+            style="width:100%;">
+          <input type="hidden" id="riga-brand-val" onchange="aggiornaCampiExtra()">
+          <div class="brand-dropdown-list" id="riga-brand-list"></div>
         </div>
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;">
-          <div style="font-size:9px;color:var(--dim)">⬆ LONG</div>
-          <div id="sc-carica" style="font-size:14px;font-weight:500;">0.00</div>
+        <input type="text" id="riga-categoria" placeholder="Categoria (es. sanitari)" style="flex:1;">
+      </div>
+      <input type="text" id="riga-descrizione" placeholder="Descrizione prodotto..." style="width:100%; margin-bottom:8px;">
+
+      <!-- CAMPI EXTRA PIASTRELLE -->
+      <div id="extra-piastrelle" style="display:none; background:rgba(59,130,245,0.08); border:1px solid rgba(59,130,245,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
+        <div style="font-size:10px; color:#60a5fa; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli piastrella / rivestimento</div>
+        <div class="form-row">
+          <input type="text" id="extra-formato" placeholder="Formato (es. 60x120 cm)" style="flex:1;">
+          <input type="text" id="extra-finitura" placeholder="Finitura (es. lappato, opaco)" style="flex:1;">
         </div>
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;">
-          <div style="font-size:9px;color:var(--dim)">⬇ SHORT</div>
-          <div id="sc-carica-short" style="font-size:14px;font-weight:500;">0.00</div>
+        <input type="text" id="extra-colore" placeholder="Colore / tono (es. grigio cemento, effetto marmo)" style="width:100%;">
+      </div>
+
+      <!-- CAMPI EXTRA LEGNO / PARQUET -->
+      <div id="extra-legno" style="display:none; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
+        <div style="font-size:10px; color:#10b981; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli legno / parquet</div>
+        <div class="form-row">
+          <input type="text" id="extra-essenza" placeholder="Essenza (es. rovere, noce, frassino)" style="flex:1;">
+          <input type="text" id="extra-legno-finitura" placeholder="Finitura (es. oliato, laccato)" style="flex:1;">
         </div>
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;">
-          <div style="font-size:9px;color:var(--dim)">WR REALE</div>
-          <div id="sc-wr" style="font-size:14px;font-weight:500;color:var(--green)">—</div>
-        </div>
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;">
-          <div style="font-size:9px;color:var(--dim)">P&L</div>
-          <div id="sc-pnl" style="font-size:14px;font-weight:500;">$0</div>
+        <div class="form-row">
+          <input type="text" id="extra-legno-formato" placeholder="Formato doga (es. 190x1900 mm)" style="flex:1;">
+          <input type="text" id="extra-legno-tono" placeholder="Tono (es. sbiancato, miele, wengè)" style="flex:1;">
         </div>
       </div>
 
-      <!-- Grafico due linee — canvas puro -->
-      <canvas id="scChart" style="width:100%;height:180px;display:block;"></canvas>
-
-      <!-- Legenda -->
-      <div style="display:flex;gap:12px;margin-top:6px;font-size:9px;color:var(--dim);flex-wrap:wrap;">
-        <span><span style="color:#378ADD">━</span> Mercato reale</span>
-        <span><span style="color:#639922">╌</span> Predizione SC</span>
-        <span><span style="color:#639922;font-size:11px">▲</span> BUY</span>
-        <span><span style="color:#E24B4A;font-size:11px">▼</span> SELL loss</span>
-        <span><span style="color:#639922;font-size:11px">✓</span> SELL win</span>
-        <span><span style="color:#EF9F27;font-size:11px">◆</span> BLOCCA</span>
+      <!-- CAMPI EXTRA VINILICO/TECNICO -->
+      <div id="extra-vinilico" style="display:none; background:rgba(139,92,246,0.08); border:1px solid rgba(139,92,246,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
+        <div style="font-size:10px; color:#8b5cf6; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli pavimento tecnico / vinilico</div>
+        <div class="form-row">
+          <input type="text" id="extra-vin-formato" placeholder="Formato" style="flex:1;">
+          <input type="text" id="extra-vin-spessore" placeholder="Spessore (es. 5mm)" style="flex:1;">
+        </div>
+        <input type="text" id="extra-vin-effetto" placeholder="Effetto (es. legno, pietra, cemento)" style="width:100%;">
       </div>
 
-      <!-- Carica bar -->
-      <div style="margin-top:8px;">
-        <div style="font-size:9px;color:var(--dim);margin-bottom:2px;">Carica SC (0→1)</div>
-        <canvas id="scCaricaChart" style="width:100%;height:50px;display:block;"></canvas>
+      <div class="form-row">
+        <input type="number" id="riga-importo" placeholder="Importo €" style="flex:1;">
+        <button onclick="addRiga()" class="btn-green" style="flex:1; margin-bottom:0;">+ Aggiungi</button>
       </div>
-
-      <!-- Metriche predizione vs mercato -->
-      <div style="margin-top:8px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;">
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;">
-          <div style="font-size:9px;color:var(--dim)">SCOSTAMENTO</div>
-          <div id="pred-scost" style="font-size:14px;font-weight:500;color:var(--yellow)">—</div>
-          <div style="font-size:8px;color:var(--dim)">$ medio</div>
-        </div>
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;">
-          <div style="font-size:9px;color:var(--dim)">CONFERMATE</div>
-          <div id="pred-conf" style="font-size:14px;font-weight:500;color:var(--green)">—</div>
-          <div style="font-size:8px;color:var(--dim)">su totale</div>
-        </div>
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;">
-          <div style="font-size:9px;color:var(--dim)">SCORE PRED.</div>
-          <div id="pred-score" style="font-size:14px;font-weight:500;">—</div>
-          <div style="font-size:8px;color:var(--dim)">% corrette</div>
-        </div>
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;grid-column:span 3;">
-          <div style="font-size:9px;color:var(--dim)">PRED → TRADE → PnL</div>
-          <div id="pred-trade" style="font-size:14px;font-weight:500;">—</div>
-          <div style="font-size:8px;color:var(--dim)">trade da predizione / PnL cumulativo</div>
-        </div>
-        <div style="background:rgba(100,100,100,0.08);border-radius:6px;padding:8px;text-align:center;grid-column:span 3;border:1px solid rgba(100,200,100,0.2);">
-          <div style="font-size:9px;color:var(--dim)">CALIBRAZIONE MAGNITUDINE</div>
-          <div id="pred-ratio" style="font-size:18px;font-weight:500;">—</div>
-          <div style="font-size:8px;color:var(--dim)">100% = perfetto · &lt;100% troppo aggressiva · &gt;100% troppo conservativa</div>
-        </div>
-      </div>
-
-      <!-- Narrativa oracolo interno -->
-      <div style="margin-top:8px;">
-        <div style="font-size:9px;color:var(--dim);margin-bottom:2px;">Narrativa Oracolo Interno</div>
-        <div id="sc-narrativa" style="font-size:9px;color:var(--text);font-family:monospace;line-height:1.8;min-height:40px;">
-          In attesa tick...
-        </div>
-      </div>
-
-      <!-- Pesi organi -->
-      <div style="margin-top:8px;">
-        <div style="font-size:9px;color:var(--dim);margin-bottom:4px;">Pesi organi (adattativi)</div>
-        <div id="sc-pesi" style="display:flex;gap:6px;flex-wrap:wrap;font-size:9px;"></div>
-      </div>
-
     </div>
-  </div>
-
-  <!-- VERITAS TRACKER — CHI AVEVA RAGIONE -->
-  <div class="panel" style="margin-bottom:10px; border-color:#ff8800; border-width:2px;">
-    <div class="panel-head" style="color:#ff8800;">⚖️ VERITAS — Chi aveva ragione?
-      <span id="vt-counts" style="font-size:9px; color:var(--dim)">in attesa segnali...</span>
-    </div>
-    <div class="panel-body">
-      <div style="font-size:9px; color:var(--dim); margin-bottom:8px;">
-        Ogni decisione SC viene verificata 60s dopo. La verità emerge dai dati reali.
+    <!-- AGGIUNGI MANUALE / VOCE LIBERA -->
+    <div class="drawer-section">
+      <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleExcelPanel()">
+        ⚡ Importa da Excel / Voce libera
+        <span id="excel-panel-arrow" style="float:right; color:#9ca3af;">▼</span>
       </div>
+      <div id="excel-panel" style="display:none;">
+        <!-- Upload Excel -->
+        <div style="margin-bottom:8px;">
+          <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:7px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
+            📊 Carica Excel prodotti
+            <input type="file" id="excel-listino" accept=".xlsx,.xls" style="display:none" onchange="caricaExcelListino(this)">
+          </label>
+          <div id="excel-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px;"></div>
+        </div>
 
-      <!-- Conflitto principale -->
-      <div id="vt-conflitto" style="display:none; margin-bottom:10px; padding:8px;
-           border:1px solid #ff8800; border-radius:4px; font-size:10px;">
-      </div>
+        <!-- Lista righe Excel -->
+        <div id="excel-righe-list" style="max-height:340px; overflow-y:auto;"></div>
 
-      <!-- Tabella risultati -->
-      <table style="width:100%; border-collapse:collapse; font-size:10px;">
-        <thead>
-          <tr>
-            <th style="color:var(--dim);padding:4px 6px;text-align:left;border-bottom:1px solid var(--border);font-size:9px;">ORACOLO</th>
-            <th style="color:var(--dim);padding:4px 6px;text-align:left;border-bottom:1px solid var(--border);font-size:9px;">SC</th>
-            <th style="color:var(--dim);padding:4px 6px;text-align:center;border-bottom:1px solid var(--border);font-size:9px;">N</th>
-            <th style="color:var(--dim);padding:4px 6px;text-align:center;border-bottom:1px solid var(--border);font-size:9px;">HIT 60s</th>
-            <th style="color:var(--dim);padding:4px 6px;text-align:center;border-bottom:1px solid var(--border);font-size:9px;">PnL avg</th>
-            <th style="color:var(--dim);padding:4px 6px;text-align:center;border-bottom:1px solid var(--border);font-size:9px;">VERDETTO</th>
-          </tr>
-        </thead>
-        <tbody id="vt-body">
-          <tr><td colspan="6" style="color:var(--dim);text-align:center;padding:16px">
-            In attesa... (serve score ≥ soglia con decisione SC)
-          </td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
+        <!-- Separatore -->
+        <div style="border-top:1px solid rgba(59,130,245,0.15); margin: 10px 0 8px 0;"></div>
 
-  <!-- SIGNAL TRACKER — MOTORE PREVISIONALE -->
-  <div class="panel" style="margin-bottom:10px; border-color:var(--blue); border-width:2px;">
-    <div class="panel-head blue">🔭 MOTORE PREVISIONALE — Signal Tracker
-      <span id="st-counts" style="font-size:9px; color:var(--dim)">open:0 / chiusi:0</span>
-    </div>
-    <div class="panel-body">
-      <div style="font-size:9px; color:var(--dim); margin-bottom:8px;">
-        Ogni volta che score ≥ soglia il sistema registra il segnale e misura il movimento reale
-        nei successivi 30s/60s/120s. Dopo 50 segnali emerge la distribuzione previsionale.
-      </div>
-      <table style="width:100%; border-collapse:collapse; font-size:10px;" id="st-table">
-        <thead>
-          <tr>
-            <th style="color:var(--dim);padding:4px 6px;text-align:left;border-bottom:1px solid var(--border);font-size:9px;letter-spacing:1px">CONTESTO</th>
-            <th style="color:var(--dim);padding:4px 6px;text-align:center;border-bottom:1px solid var(--border);font-size:9px">N</th>
-            <th style="color:var(--dim);padding:4px 6px;text-align:center;border-bottom:1px solid var(--border);font-size:9px">HIT 60s</th>
-            <th style="color:var(--dim);padding:4px 6px;text-align:center;border-bottom:1px solid var(--border);font-size:9px">Δ avg 60s</th>
-            <th style="color:var(--dim);padding:4px 6px;text-align:center;border-bottom:1px solid var(--border);font-size:9px">PnL sim</th>
-          </tr>
-        </thead>
-        <tbody id="st-body">
-          <tr><td colspan="5" style="color:var(--dim);text-align:center;padding:16px">
-            In attesa segnali... (serve score ≥ soglia)
-          </td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-
-  <!-- ECONOMIC EDGE — QUANDO PRENDO SOLDI -->
-  <div class="panel" style="margin-bottom:10px; border-color:#00ff88; border-width:2px;">
-    <div class="panel-head" style="color:#00ff88;">💰 ECONOMIC EDGE — Quando prendo soldi veri?
-      <span style="font-size:9px; color:var(--dim); margin-left:8px;">hit_economica = % casi che coprono le fee reali</span>
-    </div>
-    <div class="panel-body">
-      <div style="font-size:9px; color:var(--dim); margin-bottom:8px;">
-        🟢 ≥50% = prendi soldi &nbsp;|&nbsp; 🟡 30-50% = vicino &nbsp;|&nbsp; 🔴 &lt;30% = sterile
-        &nbsp;|&nbsp; Fee simulata: $0.10 per trade
-      </div>
-      <div id="edge-body">
-        <div style="color:var(--dim); text-align:center; padding:16px; font-size:10px;">
-          In attesa dati Signal Tracker...
+        <!-- Voce manuale libera -->
+        <div style="font-size:10px; color:#9ca3af; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Voce manuale (trasporto, manodopera, ecc.)</div>
+        <input type="text" id="voce-desc" placeholder="Descrizione voce..." style="width:100%; margin-bottom:6px;">
+        <div class="form-row">
+          <input type="number" id="voce-importo" placeholder="Importo €" style="flex:1;">
+          <button onclick="addVoceManuale()" class="btn-purple" style="flex:1; margin-bottom:0; font-size:11px;">+ Aggiungi</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- ROW 3: LOG DECISIONI + LIVE LOG M2 -->
-  <div class="two-col">
-    <div class="panel">
-      <div class="panel-head green">📋 DECISIONI BOT — Live Log</div>
-      <div class="panel-body">
-        <div style="display:flex; flex-wrap:wrap; gap:8px; font-size:9px; margin-bottom:8px; color:var(--dim)">
-          <span style="color:var(--green)">🚀 ENTRY</span>
-          <span style="color:var(--green)">🟢 WIN</span>
-          <span style="color:var(--red)">🔴 LOSS</span>
-          <span>⚡ SEED</span>
-          <span style="color:#aa44ff">👻 FANTASMA</span>
-          <span style="color:var(--orange)">🚫 MEM</span>
-          <span style="color:var(--yellow)">💊 CAPSULE</span>
-          <span style="color:var(--red)">💔 DIVORZIO</span>
-          <span style="color:#aaaaff">🌙 SMORZ</span>
-          <span style="color:var(--blue)">🌉 BRIDGE</span>
-          <span style="color:var(--orange)">🧭 OC3</span>
-          <span style="color:var(--purple)">🛑 STOP</span>
-        </div>
-        <div class="log-feed" id="live-log" style="max-height:280px">In attesa...</div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head blue">🎯 LOG M2 — Campo Gravitazionale</div>
-      <div class="panel-body">
-        <div class="log-feed" id="m2-log-full" style="max-height:330px">In attesa M2...</div>
-      </div>
-    </div>
+  <div class="drawer-footer">
+    <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta AI</button>
+    <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">Elimina cantiere</button>
   </div>
-
-  <!-- ROW 4: TRADES TABLE -->
-  <div class="panel" style="margin-bottom:10px">
-    <div class="panel-head green">📊 ULTIMI TRADE</div>
-    <div class="panel-body" style="overflow-x:auto">
-      <table class="trade-tbl">
-        <thead>
-          <tr>
-            <th>ORA</th><th>TIPO</th><th>DIR</th><th>PREZZO</th>
-            <th>PnL $</th><th>SIZE</th><th>MOTIVO</th>
-          </tr>
-        </thead>
-        <tbody id="trades-body">
-          <tr><td colspan="7" style="color:var(--dim); text-align:center; padding:16px">Nessun trade ancora</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- CONTROLS + ALERTS -->
-  <div class="controls">
-    <button class="btn" onclick="sendCmd('RESUME')">▶ RESUME</button>
-    <button class="btn btn-red" onclick="sendCmd('STOP')">■ STOP</button>
-    <button class="btn" onclick="sendCmd('RESET_LOSSES')">↺ RESET</button>
-  </div>
-  <div id="suggestions-box" style="font-size:11px; color:var(--dim); padding:6px 0;"></div>
-
-</div><!-- /wrap -->
+</div>
 
 <script>
-const $ = id => document.getElementById(id);
+let BRANDS = [];
+let selected = [];
+let webEnabled = true;
+let accessCode = null;
+let accessLevel = "public";
+let groups = JSON.parse(localStorage.getItem('oracolo_groups')) || {};
+let currentUser = null;
+let moduliAttivi = [];
+let cantiereAttivo = null;
 
-// ============================================================
-// GRAFICO LIVE — Mostra la TENSIONE, non la storia
-// ============================================================
+// ---------------------------------------------------------------------------
+// AUTOCOMPLETE BRAND
+// ---------------------------------------------------------------------------
+function filterAutocomplete(inputId, listId, valId) {
+  const input = document.getElementById(inputId);
+  const list = document.getElementById(listId);
+  const val = input.value.toLowerCase();
+  const filtered = val.length === 0 ? BRANDS : BRANDS.filter(b => b.toLowerCase().includes(val));
+  list.innerHTML = filtered.map(b =>
+    '<div class="brand-dropdown-item" onmousedown="selectBrand(\'' + inputId + '\',\'' + listId + '\',\'' + valId + '\',\'' + b.replace(/'/g, "\\'") + '\')">' + b + '</div>'
+  ).join('');
+  list.classList.add('open');
+}
 
-const SCPanel = (() => {
-  // Buffer dati reali
-  const MAX = 120;
-  const prices  = [];
-  const preds   = [];
-  const cariche = [];
-  const labels  = [];
-  const buyMkrs = [];
-  const sellMkrs= [];
-  let scChart = null, scCarica = null;
-  let wins = 0, losses = 0, pnlTot = 0;
-  let lastTrades = [];
-
-  function update(hb) {
-    const price = hb.last_price || 0;
-    if (!price) return;
-
-    // Usa storia completa dal bot — non accumula tick per tick
-    const carica = hb.oi_carica || 0;
-    const stato  = hb.oi_stato  || 'ATTESA';
-
-    if (hb.sc_price_history && hb.sc_price_history.length > 2) {
-      const ph = hb.sc_price_history;
-      const ch = hb.sc_carica_history || [];
-      prices.length = 0; preds.length = 0; cariche.length = 0; labels.length = 0;
-      ph.forEach((p, i) => {
-        prices.push(p);
-        labels.push(i);
-        const c = ch[i] !== undefined ? ch[i] : carica;
-        // Delta reali dal Veritas — non fattore inventato
-        const deltaFuoco  = hb.pred_delta_fuoco  || 5.0;
-        const deltaCarica = hb.pred_delta_carica || 2.0;
-        let delta = 0;
-        if (c >= 0.65)      delta = deltaFuoco;
-        else if (c >= 0.40) delta = deltaCarica;
-        preds.push(Math.round((p + delta) * 100) / 100);
-        cariche.push(Math.round(c * 1000) / 1000);
-      });
-    } else {
-      prices.push(price);
-      labels.push(labels.length);
-      if (prices.length > MAX) { prices.shift(); labels.shift(); }
-      preds.push(Math.round((price + (carica - 0.5) * 150) * 100) / 100);
-      cariche.push(Math.round(carica * 1000) / 1000);
-      if (preds.length   > MAX) preds.shift();
-      if (cariche.length > MAX) cariche.shift();
-    }
-
-    // Stato e carica
-    const statoEl = document.getElementById('sc-stato');
-    if (statoEl) {
-      statoEl.textContent = stato;
-      statoEl.style.color = stato==='FUOCO' ? '#00ff88' : stato==='CARICA' ? '#ffd700' : '#888';
-    }
-    const caricaEl = document.getElementById('sc-carica');
-    if (caricaEl) {
-      caricaEl.textContent = carica.toFixed(3);
-      caricaEl.style.color = carica >= 0.65 ? '#00ff88' : carica >= 0.4 ? '#ffd700' : '#888';
-    }
-    const caricaShortEl = document.getElementById('sc-carica-short');
-    if (caricaShortEl) {
-      const cs = hb.oi_carica_short || 0;
-      caricaShortEl.textContent = cs.toFixed(3);
-      caricaShortEl.style.color = cs >= 0.65 ? '#ff3355' : cs >= 0.4 ? '#ff8800' : '#888';
-    }
-
-    // Trades — calcola WR e PnL dai trade reali
-    const trades = hb.trades || [];
-    if (trades.length !== lastTrades.length) {
-      lastTrades = trades;
-      wins = 0; losses = 0; pnlTot = 0;
-      const exits = trades.filter(t => t.type === 'M2_EXIT');
-      exits.forEach(t => {
-        const p = t.pnl || 0;
-        pnlTot += p;
-        if (p > 0) wins++; else losses++;
-        // Marker sul grafico
-        const idx = Math.min(prices.length - 1, Math.max(0, prices.length - 10));
-        if (p > 0) sellMkrs.push({x: labels[idx]||0, y: t.price||price});
-        else       sellMkrs.push({x: labels[idx]||0, y: t.price||price, loss: true});
-      });
-      trades.filter(t => t.type === 'M2_ENTRY').forEach(t => {
-        const idx = Math.min(prices.length - 1, Math.max(0, prices.length - 15));
-        buyMkrs.push({x: labels[idx]||0, y: t.price||price});
-      });
-    }
-
-    const nTrades = wins + losses;
-    const wr = nTrades > 0 ? Math.round(wins/nTrades*100) : 0;
-    const wrEl = document.getElementById('sc-wr');
-    if (wrEl) { wrEl.textContent = nTrades > 0 ? wr + '%' : '—';
-               wrEl.style.color = wr >= 60 ? '#00ff88' : wr >= 45 ? '#ffd700' : '#ff3355'; }
-    const pnlEl = document.getElementById('sc-pnl');
-    if (pnlEl) { pnlEl.textContent = (pnlTot>=0?'+':'') + '$' + Math.round(pnlTot);
-               pnlEl.style.color = pnlTot >= 0 ? '#00ff88' : '#ff3355'; }
-
-    // Narrativa oracolo interno
-    const narr = hb.oi_narrativa || [];
-    const narrEl = document.getElementById('sc-narrativa');
-    if (narrEl && narr.length > 0) {
-      narrEl.innerHTML = narr.slice(-5).map(n => `<div>${n}</div>`).join('');
-    }
-
-    // Pesi organi
-    const pesiEl = document.getElementById('sc-pesi');
-    if (pesiEl && hb.sc_pesi) {
-      pesiEl.innerHTML = Object.entries(hb.sc_pesi)
-        .sort((a,b) => b[1]-a[1])
-        .map(([k,v]) => {
-          const pct = Math.round(v*100);
-          const col = pct >= 30 ? '#00ff88' : pct >= 20 ? '#ffd700' : '#888';
-          return `<span style="color:${col}">${k.replace('_',' ')} ${pct}%</span>`;
-        }).join(' · ');
-    }
-
-    // Updated
-    const upd = document.getElementById('sc-updated');
-    if (upd) upd.textContent = 'aggiornato ' + new Date().toLocaleTimeString();
-
-    // Metriche predizione
-    const scost = hb.pred_scostamento;
-    const conf  = hb.pred_conferme;
-    const tot   = hb.pred_totale;
-    const score = hb.pred_score;
-    if (scost !== undefined) {
-      const scostEl = document.getElementById('pred-scost');
-      if (scostEl) { scostEl.textContent = '$' + scost.toFixed(1);
-        scostEl.style.color = scost < 50 ? 'var(--green)' : scost < 150 ? 'var(--yellow)' : 'var(--red)'; }
-      const confEl = document.getElementById('pred-conf');
-      if (confEl) confEl.textContent = (conf||0) + '/' + (tot||0);
-      const scoreEl = document.getElementById('pred-score');
-      if (scoreEl) { scoreEl.textContent = (score||0).toFixed(1) + '%';
-        scoreEl.style.color = score >= 60 ? 'var(--green)' : score >= 50 ? 'var(--yellow)' : 'var(--red)'; }
-      const tradeEl = document.getElementById('pred-trade');
-      if (tradeEl) {
-        const tn  = hb.pred_trade_n   || 0;
-        const tpnl= hb.pred_trade_pnl || 0;
-        tradeEl.textContent = tn + ' trade / ' + (tpnl >= 0 ? '+' : '') + '$' + tpnl.toFixed(2);
-        tradeEl.style.color = tpnl > 0 ? 'var(--green)' : tpnl < 0 ? 'var(--red)' : 'var(--dim)';
-      }
-      const ratioEl = document.getElementById('pred-ratio');
-      if (ratioEl && hb.pred_ratio !== undefined) {
-        const r = hb.pred_ratio;
-        ratioEl.textContent = r.toFixed(1) + '%';
-        // Verde vicino a 100%, giallo se distante, rosso se molto distante
-        const dist = Math.abs(r - 100);
-        ratioEl.style.color = dist < 20 ? 'var(--green)' : dist < 50 ? 'var(--yellow)' : 'var(--red)';
-      }
-    }
-
-    // Disegna grafici
-    drawCharts();
-  }
-
-  function drawCharts() {
-    // Canvas puro — zero dipendenze Chart.js
-    const c1 = document.getElementById('scChart');
-    const c2 = document.getElementById('scCaricaChart');
-    if (!c1 || !c2 || prices.length < 2) return;
-
-    const W1 = c1.offsetWidth||600, H1 = 180;
-    c1.width = W1; c1.height = H1;
-    const ctx1 = c1.getContext('2d');
-    ctx1.clearRect(0,0,W1,H1);
-    ctx1.fillStyle='#060810'; ctx1.fillRect(0,0,W1,H1);
-
-    const PAD = {top:10,right:56,bottom:20,left:8};
-    const w1 = W1-PAD.left-PAD.right;
-    const h1 = H1-PAD.top-PAD.bottom;
-
-    const allPrices = prices.concat(preds).filter(v=>v>0);
-    const minP = Math.min(...allPrices)*0.9999;
-    const maxP = Math.max(...allPrices)*1.0001;
-    const rngP = maxP-minP||1;
-
-    const xOf = i => PAD.left + (i/(prices.length-1||1))*w1;
-    const yOf = v => PAD.top + (1-(v-minP)/rngP)*h1;
-
-    // Griglia Y
-    ctx1.strokeStyle='rgba(255,255,255,0.05)'; ctx1.lineWidth=1;
-    for(let i=0;i<=4;i++){
-      const y=PAD.top+i*h1/4;
-      ctx1.beginPath(); ctx1.moveTo(PAD.left,y); ctx1.lineTo(PAD.left+w1,y); ctx1.stroke();
-    }
-
-    // Linea Mercato
-    ctx1.beginPath(); ctx1.strokeStyle='#378ADD'; ctx1.lineWidth=1.5; ctx1.setLineDash([]);
-    prices.forEach((p,i)=>i===0?ctx1.moveTo(xOf(i),yOf(p)):ctx1.lineTo(xOf(i),yOf(p)));
-    ctx1.stroke();
-
-    // Linea Predizione
-    ctx1.beginPath(); ctx1.strokeStyle='#639922'; ctx1.lineWidth=1; ctx1.setLineDash([4,3]);
-    preds.forEach((p,i)=>{ if(p>0) i===0?ctx1.moveTo(xOf(i),yOf(p)):ctx1.lineTo(xOf(i),yOf(p)); });
-    ctx1.stroke(); ctx1.setLineDash([]);
-
-    // BUY markers
-    buyMkrs.forEach(m=>{
-      const xi=Math.min(prices.length-1,Math.max(0,m.x));
-      const xp=xOf(xi), yp=yOf(m.y||prices[xi]||minP);
-      ctx1.fillStyle='#00ff88'; ctx1.font='12px sans-serif'; ctx1.textAlign='center';
-      ctx1.fillText('▲',xp,yp+14);
-    });
-
-    // SELL markers
-    sellMkrs.forEach(m=>{
-      const xi=Math.min(prices.length-1,Math.max(0,m.x));
-      const xp=xOf(xi), yp=yOf(m.y||prices[xi]||minP);
-      ctx1.fillStyle=m.loss?'#ff3355':'#00ff88';
-      ctx1.font='12px sans-serif'; ctx1.textAlign='center';
-      ctx1.fillText('▼',xp,yp-4);
-    });
-
-    // Label prezzo live
-    const lp=prices[prices.length-1];
-    ctx1.font='bold 10px Share Tech Mono'; ctx1.textAlign='left';
-    ctx1.fillStyle='#378ADD';
-    ctx1.fillText('$'+Math.round(lp),PAD.left+w1+2,yOf(lp)+4);
-
-    // ── Grafico carica ────────────────────────────────────────
-    const W2=c2.offsetWidth||600, H2=50;
-    c2.width=W2; c2.height=H2;
-    const ctx2=c2.getContext('2d');
-    ctx2.clearRect(0,0,W2,H2);
-    ctx2.fillStyle='#060810'; ctx2.fillRect(0,0,W2,H2);
-
-    const w2=W2-PAD.left-PAD.right;
-    const xOf2=i=>PAD.left+(i/(cariche.length-1||1))*w2;
-    const yOf2=v=>2+(1-Math.min(1,Math.max(0,v)))*(H2-4);
-
-    // Area carica LONG
-    if(cariche.length>=2){
-      ctx2.beginPath();
-      cariche.forEach((c,i)=>i===0?ctx2.moveTo(xOf2(i),yOf2(c)):ctx2.lineTo(xOf2(i),yOf2(c)));
-      ctx2.lineTo(xOf2(cariche.length-1),H2); ctx2.lineTo(PAD.left,H2); ctx2.closePath();
-      ctx2.fillStyle='rgba(239,159,39,0.15)'; ctx2.fill();
-      ctx2.beginPath();
-      cariche.forEach((c,i)=>i===0?ctx2.moveTo(xOf2(i),yOf2(c)):ctx2.lineTo(xOf2(i),yOf2(c)));
-      ctx2.strokeStyle='#EF9F27'; ctx2.lineWidth=1.5; ctx2.stroke();
-    }
-
-    // Linea soglia 0.65
-    const ySoglia=yOf2(0.65);
-    ctx2.strokeStyle='rgba(255,255,255,0.2)'; ctx2.lineWidth=1; ctx2.setLineDash([2,4]);
-    ctx2.beginPath(); ctx2.moveTo(PAD.left,ySoglia); ctx2.lineTo(PAD.left+w2,ySoglia); ctx2.stroke();
-    ctx2.setLineDash([]);
-    ctx2.font='8px Share Tech Mono'; ctx2.fillStyle='rgba(255,255,255,0.3)'; ctx2.textAlign='left';
-    ctx2.fillText('0.65',PAD.left+w2+2,ySoglia+3);
-  }
-
-  return { update };
-})();
-
-const VeritatisPanel = (() => {
-  function update(hb) {
-    const vt = hb.veritas;
-    if (!vt) return;
-
-    // Contatori
-    const cnt = document.getElementById('vt-counts');
-    if (cnt) cnt.textContent = `segnali: ${vt.n_closed} chiusi / ${vt.n_open} aperti`;
-
-    // Conflitto
-    const conf = vt.conflitto || {};
-    const confEl = document.getElementById('vt-conflitto');
-    if (confEl && conf.chi_aveva_ragione) {
-      confEl.style.display = 'block';
-      const chi = conf.chi_aveva_ragione;
-      const col = chi === 'ORACOLO' ? '#00ff88' : '#ff8800';
-      const pnl = conf.pnl_perso_bloccando || conf.pnl_salvato_bloccando || 0;
-      const msg = chi === 'ORACOLO'
-        ? `🔥 ORACOLO aveva ragione — SC ha bloccato $${Math.abs(pnl).toFixed(0)} di guadagni`
-        : `🛡️ SC aveva ragione — ha salvato $${Math.abs(pnl).toFixed(0)} bloccando perdite`;
-      confEl.innerHTML = `<span style="color:${col};font-weight:500">${msg}</span>`;
-    }
-
-    // Tabella
-    const body = document.getElementById('vt-body');
-    if (!body || !vt.rows || vt.rows.length === 0) return;
-    body.innerHTML = vt.rows.map(r => {
-      const hitCol = r.hit_rate >= 0.6 ? 'var(--green)' : r.hit_rate >= 0.45 ? 'var(--yellow)' : 'var(--red)';
-      const pnlCol = r.pnl_avg > 0 ? 'var(--green)' : 'var(--red)';
-      const verdCol = r.verdetto === 'GIUSTO' ? 'var(--green)' : 'var(--red)';
-      const scStyle = r.sc === 'BLOCCA' ? 'color:var(--red)' : 'color:var(--green)';
-      return `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:5px 6px;color:var(--yellow)">${r.oi}</td>
-        <td style="padding:5px 6px;${scStyle}">${r.sc}</td>
-        <td style="padding:5px 6px;text-align:center">${r.n}</td>
-        <td style="padding:5px 6px;text-align:center;color:${hitCol}">${(r.hit_rate*100).toFixed(0)}%</td>
-        <td style="padding:5px 6px;text-align:center;color:${pnlCol}">${r.pnl_avg > 0 ? '+' : ''}$${r.pnl_avg.toFixed(2)}</td>
-        <td style="padding:5px 6px;text-align:center;color:${verdCol};font-weight:500">${r.verdetto}</td>
-      </tr>`;
-    }).join('');
-  }
-  return { update };
-})();
-
-const LiveChart = (() => {
-  const MAX_PTS = 150;
-  let prices   = [];   // {ts, v}
-  let events   = [];   // {ts, type, dir, score, soglia}
-  let curScore  = 0;
-  let curSoglia = 60;
-  let shadowOpen = false;
-  let shadowDir  = 'LONG';
-  let entryPrice = null;
-
-  function addPrice(price, ts) {
-    prices.push({ts: ts||Date.now(), v:price});
-    if (prices.length > MAX_PTS) prices.shift();
-  }
-
-  function addEvent(type, dir, score, soglia, ts) {
-    events.push({ts:ts||Date.now(), type, dir, score, soglia});
-    const cut = Date.now() - 300000;  // solo ultimi 5 minuti
-    events = events.filter(e => e.ts > cut);
-    if (events.length > 30) events = events.slice(-30);  // max 30
-    if (type === 'entry') entryPrice = prices.length ? prices[prices.length-1].v : null;
-    if (type === 'exit')  entryPrice = null;
-  }
-
-  function setScore(score, soglia) { curScore=score; curSoglia=soglia; }
-  function setShadow(open, dir)    { shadowOpen=open; shadowDir=dir; }
-
-  function draw() {
-    const canvas = document.getElementById('priceChart');
-    if (!canvas || prices.length < 2) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.offsetWidth, H = canvas.offsetHeight||240;
-    canvas.width=W; canvas.height=H;
-
-    // Layout
-    const TENSION_H = 28;  // altezza barra tensione in alto
-    const PAD = {top: TENSION_H+12, right:64, bottom:32, left:10};
-    const w = W-PAD.left-PAD.right;
-    const h = H-PAD.top-PAD.bottom;
-
-    // Pulisci canvas completamente
-    ctx.clearRect(0, 0, W, H);
-    // Sfondo
-    ctx.fillStyle='#060810'; ctx.fillRect(0,0,W,H);
-
-    // ── BARRA DI TENSIONE ─────────────────────────────────────
-    // Mostra quanto il sistema è vicino alla soglia
-    // 0% = lontano | 100% = ENTRA
-    const tension = curSoglia > 0 ? Math.min(1, curScore/curSoglia) : 0;
-    const tensionW = w * tension;
-
-    // Sfondo barra
-    ctx.fillStyle='#0c1020';
-    ctx.fillRect(PAD.left, 6, w, TENSION_H-4);
-
-    // Colore barra in base alla tensione
-    let tCol, tGlow;
-    if (tension >= 1.0)      { tCol='#00ff88'; tGlow='rgba(0,255,136,0.4)'; }
-    else if (tension >= 0.85) { tCol='#ffd700'; tGlow='rgba(255,215,0,0.3)'; }
-    else if (tension >= 0.65) { tCol='#ff8800'; tGlow='rgba(255,136,0,0.2)'; }
-    else                      { tCol='#334455'; tGlow='transparent'; }
-
-    // Gradiente barra
-    const tGrad = ctx.createLinearGradient(PAD.left, 0, PAD.left+tensionW, 0);
-    tGrad.addColorStop(0, tCol+'44');
-    tGrad.addColorStop(1, tCol);
-    ctx.fillStyle = tGrad;
-    ctx.fillRect(PAD.left, 6, tensionW, TENSION_H-4);
-
-    // Bordo barra
-    ctx.strokeStyle = '#1a2535';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(PAD.left, 6, w, TENSION_H-4);
-
-    // Linea soglia (marker verticale sulla barra)
-    ctx.strokeStyle = '#ffffff33';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([2,2]);
-    ctx.beginPath();
-    ctx.moveTo(PAD.left+w, 6); ctx.lineTo(PAD.left+w, TENSION_H+2);
-    ctx.stroke(); ctx.setLineDash([]);
-
-    // Testo tensione
-    ctx.font = 'bold 10px Share Tech Mono';
-    ctx.textAlign = 'left';
-    if (tension >= 1.0) {
-      ctx.fillStyle = '#00ff88';
-      ctx.fillText('⚡ PRONTO — score ' + curScore.toFixed(0) + ' / ' + curSoglia, PAD.left+4, 20);
-    } else if (tension >= 0.85) {
-      ctx.fillStyle = '#ffd700';
-      ctx.fillText('⚠ IN AVVICINAMENTO — ' + (tension*100).toFixed(0) + '% soglia', PAD.left+4, 20);
-    } else {
-      ctx.fillStyle = '#334455';
-      ctx.fillText('· in attesa  score ' + curScore.toFixed(0) + ' / soglia ' + curSoglia, PAD.left+4, 20);
-    }
-    // Direzione attesa
-    ctx.textAlign = 'right';
-    ctx.fillStyle = shadowDir==='LONG' ? '#00ff88' : '#ff3355';
-    ctx.fillText(shadowDir==='LONG' ? '↑ LONG' : '↓ SHORT', PAD.left+w-2, 20);
-
-    // ── GRAFICO PREZZO ────────────────────────────────────────
-    const vals = prices.map(p=>p.v);
-    let mn=Math.min(...vals), mx=Math.max(...vals);
-    const sp=mx-mn;
-    if(sp<15){mn-=8;mx+=8;}else{mn-=sp*.06;mx+=sp*.06;}
-
-    const xOf = i => PAD.left + (i/(prices.length-1))*w;
-    const yOf = v => PAD.top  + h - ((v-mn)/(mx-mn))*h;
-
-    // Griglia
-    ctx.strokeStyle='rgba(255,255,255,0.03)'; ctx.lineWidth=1;
-    for(let i=0;i<=3;i++){
-      const y=PAD.top+(h/3)*i;
-      ctx.beginPath(); ctx.moveTo(PAD.left,y); ctx.lineTo(PAD.left+w,y); ctx.stroke();
-      const val=mx-((mx-mn)/3)*i;
-      ctx.fillStyle='#2a3a4a'; ctx.font='9px Share Tech Mono';
-      ctx.textAlign='left';
-      ctx.fillText('$'+val.toFixed(0), PAD.left+w+4, y+3);
-    }
-
-    // Livello entry se posizione aperta
-    if(shadowOpen && entryPrice){
-      const ey=yOf(entryPrice);
-      ctx.setLineDash([5,3]);
-      ctx.strokeStyle=shadowDir==='LONG'?'rgba(0,255,136,0.5)':'rgba(255,51,85,0.5)';
-      ctx.lineWidth=1.5;
-      ctx.beginPath(); ctx.moveTo(PAD.left,ey); ctx.lineTo(PAD.left+w,ey); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.font='9px Share Tech Mono'; ctx.textAlign='left';
-      ctx.fillStyle=shadowDir==='LONG'?'#00ff88':'#ff3355';
-      ctx.fillText('ENTRY '+shadowDir+' $'+entryPrice.toFixed(0), PAD.left+4, ey-3);
-
-      // PnL corrente
-      if(prices.length>0){
-        const cur=prices[prices.length-1].v;
-        const pnlDelta=shadowDir==='LONG'?cur-entryPrice:entryPrice-cur;
-        const pnlUSD=(pnlDelta/entryPrice)*5000;
-        ctx.textAlign='right';
-        ctx.fillStyle=pnlDelta>=0?'#00ff88':'#ff3355';
-        ctx.font='bold 10px Share Tech Mono';
-        ctx.fillText((pnlDelta>=0?'+':'')+pnlUSD.toFixed(2)+'$', PAD.left+w-4, ey-3);
-      }
-    }
-
-    // Colore linea prezzo
-    const first=prices[0].v, last=prices[prices.length-1].v;
-    let lCol='#00ff88';
-    if(tension>=0.85) lCol='#ffd700';
-    if(shadowOpen) lCol=shadowDir==='LONG'?'#00ff88':'#ff3355';
-    if(last<first && !shadowOpen) lCol='#ff3355';
-
-    // Area sotto
-    ctx.beginPath();
-    prices.forEach((p,i)=>i===0?ctx.moveTo(xOf(i),yOf(p.v)):ctx.lineTo(xOf(i),yOf(p.v)));
-    ctx.lineTo(xOf(prices.length-1),PAD.top+h);
-    ctx.lineTo(PAD.left,PAD.top+h); ctx.closePath();
-    const ag=ctx.createLinearGradient(0,PAD.top,0,PAD.top+h);
-    ag.addColorStop(0,lCol+'22'); ag.addColorStop(1,'rgba(0,0,0,0)');
-    ctx.fillStyle=ag; ctx.fill();
-
-    // Linea prezzo
-    ctx.beginPath();
-    ctx.strokeStyle=lCol; ctx.lineWidth=2;
-    ctx.shadowColor=lCol; ctx.shadowBlur=tension>=0.85?8:4;
-    prices.forEach((p,i)=>i===0?ctx.moveTo(xOf(i),yOf(p.v)):ctx.lineTo(xOf(i),yOf(p.v)));
-    ctx.stroke(); ctx.shadowBlur=0;
-
-    // Punto live pulsante
-    const lp=prices[prices.length-1];
-    const lx=xOf(prices.length-1), ly=yOf(lp.v);
-    const pulse=tension>=0.85?6:4;
-    ctx.beginPath(); ctx.arc(lx,ly,pulse,0,Math.PI*2);
-    ctx.fillStyle=lCol;
-    ctx.shadowColor=lCol; ctx.shadowBlur=12; ctx.fill(); ctx.shadowBlur=0;
-
-    // ── MARKER EVENTI ─────────────────────────────────────────
-    const tMin=prices[0].ts, tMax=prices[prices.length-1].ts, tRng=tMax-tMin||1;
-    events.forEach(ev=>{
-      if(ev.ts<tMin||ev.ts>tMax) return;
-      const xp=PAD.left+((ev.ts-tMin)/tRng)*w;
-      let closest=prices[0];
-      prices.forEach(p=>{ if(Math.abs(p.ts-ev.ts)<Math.abs(closest.ts-ev.ts)) closest=p; });
-      const yp=yOf(closest.v);
-
-      if(ev.type==='entry'){
-        const col=ev.dir==='LONG'?'#00ff88':'#ff3355';
-        // Linea verticale evento
-        ctx.strokeStyle=col+'66'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
-        ctx.beginPath(); ctx.moveTo(xp,PAD.top); ctx.lineTo(xp,PAD.top+h); ctx.stroke();
-        ctx.setLineDash([]);
-        // Freccia
-        ctx.font='bold 16px Share Tech Mono'; ctx.textAlign='center';
-        ctx.fillStyle=col;
-        ctx.shadowColor=col; ctx.shadowBlur=10;
-        ctx.fillText(ev.dir==='LONG'?'▲':'▼', xp, ev.dir==='LONG'?yp+18:yp-8);
-        ctx.shadowBlur=0;
-        // Score badge — solo se non sovrapposto
-        const others = events.filter(e => e !== ev && Math.abs((e.ts-tMin)/(tRng||1)*w - (xp-PAD.left)) < 20);
-        if (others.length === 0) {
-          ctx.font='bold 9px Share Tech Mono';
-          ctx.fillStyle='#000';
-          ctx.fillRect(xp-14, ev.dir==='LONG'?yp+20:yp-28, 28, 12);
-          ctx.fillStyle=col;
-          ctx.fillText(ev.score.toFixed(0)+'/'+ev.soglia.toFixed(0), xp, ev.dir==='LONG'?yp+30:yp-18);
+function selectBrand(inputId, listId, valId, brand) {
+  document.getElementById(inputId).value = brand;
+  document.getElementById(valId).value = brand;
+  closeAutocomplete(listId);
+  if (inputId === 'riga-brand-input') aggiornaCampiExtra();
+  
+  // LAZY LOADING ABBINAMENTI E LISTINO quando seleziona il brand principale
+  if (inputId === 'brand-input') {
+    console.log('Caricando accessori e listino per:', brand);
+    const statusEl = document.getElementById('brand-loading-status');
+    if (statusEl) statusEl.textContent = '⏳ Caricamento ' + brand + '...';
+    
+    // 1. Carica abbinamenti
+    fetch('/api/load-brand-accessories/' + encodeURIComponent(brand))
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          console.log('✅ Abbinamenti:', data.message);
+        } else {
+          console.error('❌ Abbinamenti:', data.message);
         }
-      } else if(ev.type==='exit'){
-        ctx.strokeStyle='#55667788'; ctx.lineWidth=1; ctx.setLineDash([2,4]);
-        ctx.beginPath(); ctx.moveTo(xp,PAD.top); ctx.lineTo(xp,PAD.top+h); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.font='11px Share Tech Mono'; ctx.textAlign='center';
-        ctx.fillStyle='#667788'; ctx.fillText('✕', xp, yp-6);
-      }
-    });
-
-    // Prezzo corrente label
-    ctx.font='bold 11px Share Tech Mono'; ctx.textAlign='left';
-    ctx.fillStyle=lCol;
-    ctx.fillText('$'+lp.v.toLocaleString('en-US',{minimumFractionDigits:2}), PAD.left+w+4, yOf(lp.v)+4);
-
-    // Timestamp
-    ctx.fillStyle='#2a3a4a'; ctx.font='8px Share Tech Mono';
-    ctx.textAlign='left';
-    ctx.fillText(new Date(prices[0].ts).toLocaleTimeString(), PAD.left, H-6);
-    ctx.textAlign='right';
-    ctx.fillText(new Date(tMax).toLocaleTimeString(), PAD.left+w, H-6);
+      })
+      .catch(e => console.error('Errore abbinamenti:', e));
+    
+    // 2. Carica listino
+    caricaListinoBrand(brand);
   }
-
-  return { addPrice, addEvent, setScore, setShadow, draw };
-})();
-const fmt = (n,d=2) => (n>=0?'+':'')+n.toFixed(d);
-const fmtUSD = n => (n>=0?'+$':'-$')+Math.abs(n).toFixed(2);
-
-function colorWR(wr) {
-  if(wr>=60) return 'var(--green)';
-  if(wr>=45) return 'var(--yellow)';
-  return 'var(--red)';
-}
-function colorPnL(p) { return p>=0?'var(--green)':'var(--red)'; }
-
-function renderLog(lines, elId, maxH) {
-  const el = $(elId);
-  if(!lines||lines.length===0) return;
-  const LOG_COLORS = {
-    '🚀':'var(--green)','🟢':'var(--green)','🔴':'var(--red)','💔':'var(--red)',
-    '🛑':'var(--red)','⚡':'var(--dim)','👻':'#aa44ff','🚫':'var(--orange)',
-    '💊':'var(--yellow)','🌙':'#aaaaff','🌉':'var(--blue)','🎯':'var(--blue)',
-    '🧭':'var(--orange)','🌍':'var(--purple)','💓':'var(--dim)','🔄':'var(--blue)',
-    '🧠':'var(--orange)','🗑️':'var(--dim)','⚡':'var(--yellow)',
-  };
-  el.innerHTML = [...lines].reverse().map(line => {
-    let col = 'var(--text)';
-    for(const [emoji,c] of Object.entries(LOG_COLORS)) {
-      if(line.includes(emoji)){ col=c; break; }
-    }
-    return `<div class="log-line" style="color:${col}">${line}</div>`;
-  }).join('');
 }
 
-function regimeClass(r) {
-  const m = {'TRENDING_BULL':'regime-trending-bull','TRENDING_BEAR':'regime-trending-bear',
-             'EXPLOSIVE':'regime-explosive','RANGING':'regime-ranging'};
-  return m[r]||'regime-ranging';
+function caricaListinoBrand(brand) {
+  console.log('Caricando listino per:', brand);
+  
+  fetch('/api/listino/' + encodeURIComponent(brand))
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok && data.prodotti) {
+        console.log('✅ Listino:', data.prodotti.length, 'prodotti');
+        
+        window.listinoData = data.prodotti || [];
+        window.listinoBrand = brand;
+        window.listinoTipo = data.tipo || 'cliente';
+        
+        const statusEl = document.getElementById('brand-loading-status');
+        if (statusEl) {
+          statusEl.textContent = '✅ ' + brand + ': ' + data.prodotti.length + ' prodotti caricati';
+        }
+        
+        if (window.renderListino) {
+          renderListino(window.listinoData);
+        }
+      } else {
+        console.error('❌ Listino non trovato');
+      }
+    })
+    .catch(e => {
+      console.error('Errore listino:', e);
+    });
 }
 
-let pnlHistory = [];
+function closeAutocomplete(listId) {
+  const list = document.getElementById(listId);
+  if (list) list.classList.remove('open');
+}
 
-function update() {
-  fetch('/trading/status').then(r=>r.json()).then(d => {
-    const m=d.metrics, hb=d.heartbeat;
-
-    // STATUS
-    const running = hb.status==='RUNNING';
-    $('status-dot').className = 'status-dot '+(running?'dot-run':'dot-off');
-    $('status-txt').textContent = hb.status||'OFFLINE';
-    $('status-txt').style.color = running?'var(--green)':'var(--red)';
-    const mode = hb.mode||'PAPER';
-    $('mode-badge').textContent = mode==='LIVE'?'🔴 LIVE':'📄 PAPER';
-    $('mode-badge').className = 'badge '+(mode==='LIVE'?'badge-live':'badge-paper');
-    $('last-seen').textContent = hb.last_seen ? new Date(hb.last_seen).toLocaleTimeString() : '--';
-
-    // TICKER
-    if(hb.last_price) $('btc-price').textContent = '$'+hb.last_price.toLocaleString('en-US',{minimumFractionDigits:2});
-    $('tick-n').textContent = (hb.tick_count||0).toLocaleString();
-    $('last-tick').textContent = hb.last_tick ? new Date(hb.last_tick).toLocaleTimeString() : '--';
-
-    // Regime badge ticker
-    const reg = hb.regime||'RANGING';
-    const regConf = ((hb.regime_conf||0)*100).toFixed(0);
-    $('regime-badge-ticker').innerHTML = `<span class="regime-badge ${regimeClass(reg)}">${reg} ${regConf}%</span>`;
-
-    // Trade status
-    const ts = $('trade-status-txt');
-    if(hb.posizione_aperta){ts.textContent='🟢 M1 APERTO';ts.style.color='var(--green)';}
-    else if(hb.m2_shadow_open){ts.textContent='🎯 M2 SHADOW APERTO';ts.style.color='var(--blue)';}
-    else if((hb.tick_count||0)<200){ts.textContent='⏳ Warmup';ts.style.color='var(--yellow)';}
-    else{ts.textContent='🔍 In attesa setup';ts.style.color='var(--dim)';}
-
-    // KPI
-    const m2pnl = hb.m2_pnl||0;
-    const m2wr  = ((hb.m2_wr||0)*100);
-    const m2t   = hb.m2_trades||0;
-    const m2w   = hb.m2_wins||0;
-    const m2l   = hb.m2_losses||0;
-    pnlHistory.push(m2pnl); if(pnlHistory.length>60) pnlHistory.shift();
-
-    const pnlEl = $('k-pnl');
-    pnlEl.textContent = fmtUSD(m2pnl);
-    pnlEl.className = 'kpi-val '+(m2pnl>=0?'pos':'neg');
-    $('k-roi').textContent = 'ROI '+(m2pnl/10000*100).toFixed(3)+'%';
-
-    const wrEl = $('k-wr');
-    wrEl.textContent = m2wr.toFixed(1)+'%';
-    wrEl.style.color = colorWR(m2wr);
-    $('k-wl').textContent = m2w+'W / '+m2l+'L';
-
-    $('k-cap').textContent = '$'+(hb.capital||10000).toFixed(0);
-    $('k-trades').textContent = m2t;
-    const cs = hb.m2_campo_stats||{};
-    const avgDur = cs.avg_duration || (hb.telemetry?.D_performance?.total?.avg_duration)||0;
-    $('k-avg-dur').textContent = 'avg '+avgDur.toFixed(0)+'s';
-
-    const sogMin = hb.m2_soglia_min||58, sogBase = hb.m2_soglia_base||60;
-    $('k-soglia').textContent = sogBase+'/'+sogMin;
-
-    const ia = hb.ia_stats||{};
-    $('k-caps').textContent = ia.attive||0;
-    $('k-caps-sub').textContent = 'L2:'+(ia.l2||0)+'  L3:'+(ia.l3||0);
-
-    const ph = hb.phantom||{};
-    const bilancio = ph.bilancio||0;
-    $('k-phantom').textContent = (bilancio>=0?'+':'')+bilancio.toFixed(1);
-    $('k-phantom').style.color = bilancio>=0?'var(--green)':'var(--red)';
-    $('k-phantom-sub').textContent = 'bloccati '+(ph.total||0);
-
-    const state = hb.m2_state||'NEUTRO';
-    $('k-state').textContent = state;
-    $('k-state').style.color = state==='AGGRESSIVO'?'var(--green)':state==='DIFENSIVO'?'var(--red)':'var(--text)';
-    $('k-streak').textContent = 'streak '+(hb.m2_loss_streak||0);
-
-    // ALERT BAR
-    const alerts=[];
-    if((hb.m2_loss_streak||0)>=3) alerts.push('⚠️ LOSS STREAK '+hb.m2_loss_streak);
-    if(m2wr<40 && m2t>5) alerts.push('⚠️ WR BASSO '+m2wr.toFixed(0)+'%');
-    if(m2pnl<-50) alerts.push('🔴 DRAWDOWN '+fmtUSD(m2pnl));
-    if((hb.m2_cooldown||0)>0) alerts.push('⏳ COOLDOWN '+(hb.m2_cooldown||0).toFixed(0)+'s');
-    const ab = $('alert-bar');
-    if(alerts.length>0){ ab.style.display='block'; ab.innerHTML=alerts.join('  &nbsp;|&nbsp;  '); }
-    else { ab.style.display='none'; }
-
-    // M2 DIRECTION
-    const dir = hb.m2_direction||'LONG';
-    const db = $('dir-box'), dt = $('dir-txt');
-    dt.textContent = dir==='SHORT'?'🔴 SHORT ↓':'🟢 LONG ↑';
-    db.className = 'dir-box '+(dir==='SHORT'?'dir-short':'dir-long');
-    $('m2-shadow-badge').textContent = hb.m2_shadow_open?'🟢 SHADOW APERTO':'⚪ shadow chiuso';
-    $('m2-shadow-badge').style.color = hb.m2_shadow_open?'var(--green)':'var(--dim)';
-
-    $('m2-wr-detail').textContent = m2wr.toFixed(1)+'%';
-    $('m2-wr-detail').style.color = colorWR(m2wr);
-    $('m2-pnl-detail').textContent = fmtUSD(m2pnl);
-    $('m2-pnl-detail').style.color = colorPnL(m2pnl);
-    $('m2-t-detail').textContent = m2t;
-    $('m2-streak').textContent = hb.m2_loss_streak||0;
-    $('m2-streak').style.color = (hb.m2_loss_streak||0)>=2?'var(--red)':'var(--text)';
-    const cd = hb.m2_cooldown||0;
-    $('m2-cooldown').textContent = cd>0?cd.toFixed(0)+'s':'—';
-    $('m2-cooldown').style.color = cd>0?'var(--yellow)':'var(--dim)';
-
-    const rsi = cs.rsi||50, macd_h = cs.macd_hist||0;
-    $('m2-rsi').textContent = rsi.toFixed(1);
-    $('m2-rsi').style.color = rsi>70?'var(--red)':rsi<30?'var(--green)':'var(--text)';
-    $('m2-macd').textContent = (macd_h>=0?'+':'')+macd_h.toFixed(2);
-    $('m2-macd').style.color = macd_h>=0?'var(--green)':'var(--red)';
-    $('m2-sog-base').textContent = sogBase+' / '+sogMin;
-
-    // Drift bar
-    const driftVeto = cs.drift_veto_threshold||-0.20;
-    $('m2-drift-thr').textContent = (driftVeto*100).toFixed(0)+'%';
-    const telRaw = (hb.telemetry?.raw_events_last_50||[]);
-    const lastDrift = telRaw.length>0 ? (telRaw[telRaw.length-1].drift||0) : 0;
-    const driftPct = Math.max(-0.4,Math.min(0.4,lastDrift));
-    const fillW = ((driftPct+0.4)/0.8)*100;
-    const driftFill = $('drift-fill');
-    driftFill.style.width = fillW+'%';
-    driftFill.style.background = driftPct>0.05?'var(--green)':driftPct<-0.05?'var(--red)':'var(--blue)';
-    $('drift-lbl').textContent = 'drift '+(driftPct>=0?'+':'')+driftPct.toFixed(3)+'%';
-
-    renderLog(hb.m2_log, 'm2-log');
-    renderLog(hb.m2_log, 'm2-log-full');
-
-    // ORACOLO TABLE
-    const orac = hb.oracolo_snapshot||{};
-    const fps = Object.entries(orac).filter(([k])=>!k.startsWith('_'));
-    if(fps.length>0) {
-      const rows = fps
-        .filter(([k,v]) => v.samples > 0.5)
-        .sort((a,b)=>(b[1].samples||0)-(a[1].samples||0))
-        .map(([fp,v]) => {
-          const wr100 = (v.wr*100);
-          const wrCol = colorWR(wr100);
-          const pnlA = v.pnl_avg||0;
-          const earlyPct = v.exit_too_early ? (v.exit_too_early*100).toFixed(0)+'%' : '—';
-          const barW = Math.round(wr100)+'px';
-          const realTag = v.real>0?`<span style="color:var(--green);font-size:9px"> ★${v.real}</span>`:'';
-          const status = wr100>=60?'<span style="color:var(--green)">●</span>':
-                         wr100>=45?'<span style="color:var(--yellow)">◐</span>':
-                         '<span style="color:var(--red)">○</span>';
-          return `<tr>
-            <td style="font-size:9px;color:var(--dim)">${fp.replace('LONG|','').replace('SHORT|','<span style="color:var(--red)">S</span> ')}${realTag}</td>
-            <td><span style="color:${wrCol};font-weight:700">${wr100.toFixed(0)}%</span>
-                <div class="wr-bar" style="width:${Math.round(wr100/2)}px;background:${wrCol}"></div></td>
-            <td style="color:var(--dim)">${v.samples?.toFixed(1)||'0'}</td>
-            <td style="color:${colorPnL(pnlA)}">${pnlA>=0?'+':''}$${Math.abs(pnlA).toFixed(2)}</td>
-            <td style="color:var(--dim)">${earlyPct}</td>
-            <td>${status}</td>
-          </tr>`;
-        }).join('');
-      $('oracolo-body').innerHTML = rows||'<tr><td colspan="6" style="color:var(--dim);text-align:center;padding:8px">Nessun dato</td></tr>';
-    }
-    const divl = hb.matrimoni_divorzio||[];
-    $('divorzi-list').textContent = divl.length>0?divl.join(', '):'nessuno';
-
-    const cp = hb.calibra_params||{};
-    $('calib-params').textContent = cp.seed_threshold?
-      `seed≥${cp.seed_threshold} cap1≥${cp.cap1_soglia_buona} cap3≥${cp.cap3_fp_minimo}`:'--';
-
-    // IA CAPSULE LIST
-    $('ia-l2').textContent = ia.l2||0;
-    $('ia-l3').textContent = ia.l3||0;
-    $('ia-blocks').textContent = ia.blocchi||0;
-    $('ia-boosts').textContent = ia.boost_soglia_usati||0;
-    $('ia-observed').textContent = ia.trade_osservati||0;
-    $('ia-gen-count').textContent = 'gen:'+(ia.generate_totali||0)+' / exp:'+(ia.scadute||0);
-
-    // Carica capsule da API capsule o da ia_stats
-    const capsule = hb.ia_capsule_attive||[];
-    if(capsule.length>0) {
-      $('ia-capsule-list').innerHTML = capsule.map(c=>{
-        const ttl = c.ttl_seconds||0;
-        const ttlStr = ttl>3600?(ttl/3600).toFixed(1)+'h':ttl>60?(ttl/60).toFixed(0)+'m':ttl+'s';
-        const typeClass = {
-          'L2_BLK':'cap-l2-blk','L2_BST':'cap-l2-bst',
-          'L3_STK':'cap-l3-stk','L3_RBLO':'cap-l3-reg','L3_OPP':'cap-l3-opp'
-        }[c.tipo]||'cap-l3-stk';
-        const icon = c.tipo?.includes('BLK')||c.tipo?.includes('RBLO')?'🚫':
-                     c.tipo?.includes('BST')||c.tipo?.includes('OPP')?'🚀':
-                     c.tipo?.includes('STK')?'⚡':'💊';
-        return `<div class="capsule-item ${typeClass}">
-          <span>${icon} ${c.id||c.capsule_id||'?'}</span>
-          <span class="ttl-bar">TTL ${ttlStr} | ${c.tipo||'?'}</span>
-        </div>`;
-      }).join('');
-    } else {
-      $('ia-capsule-list').innerHTML = '<div style="color:var(--dim);font-size:10px;text-align:center;padding:16px 0">Nessuna capsule attiva. Il sistema impara dai trade.</div>';
-    }
-
-    // PHANTOM
-    $('ph-tot').textContent = ph.total||0;
-    $('ph-prot').textContent = ph.protezione||0;
-    $('ph-zav').textContent = ph.zavorra||0;
-    $('ph-saved').textContent = '$'+(ph.pnl_saved||0).toFixed(1);
-    $('ph-miss').textContent = '$'+(ph.pnl_missed||0).toFixed(1);
-    const bil = ph.bilancio||0;
-    $('ph-bil').textContent = (bil>=0?'+':'')+bil.toFixed(1);
-    $('ph-bil').style.color = bil>=0?'var(--green)':'var(--red)';
-    const verd = ph.verdetto||'';
-    const vEl = $('ph-verdict');
-    vEl.textContent = verd||'In attesa dati...';
-    vEl.className = 'verdict-box '+(verd.includes('PROTEZIONE')?'verdict-green':
-                                    verd.includes('ZAVORRA')?'verdict-red':'verdict-yellow');
-    const perLiv = ph.per_livello||{};
-    $('ph-levels').innerHTML = Object.entries(perLiv).map(([k,s])=>{
-      const net = (s.pnl_saved||0)-(s.pnl_missed||0);
-      return `<div style="font-size:9px;padding:2px 0;border-bottom:1px solid var(--border)">
-        <b style="color:var(--yellow)">${k}</b>:
-        blk=${s.blocked||0}
-        <span style="color:var(--green)">+$${(s.pnl_saved||0).toFixed(1)}</span>
-        <span style="color:var(--red)">-$${(s.pnl_missed||0).toFixed(1)}</span>
-        <span style="color:${net>=0?'var(--green)':'var(--red)'}"> net=${net>=0?'+':''}$${net.toFixed(1)}</span>
-      </div>`;
-    }).join('');
-    renderLog(ph.log,'ph-log');
-
-    // LIVE LOG
-    renderLog(hb.live_log,'live-log');
-
-    // TRADES
-    const trades = d.trades||[];
-    if(trades.length>0){
-      $('trades-body').innerHTML = trades.map(t=>{
-        const pnlCls = t.pnl>0?'pnl-pos':'pnl-neg';
-        const pnlTxt = (t.pnl>=0?'+':'')+t.pnl.toFixed(2);
-        const ts2 = new Date(t.timestamp).toLocaleTimeString();
-        const dirTxt = (t.direction||'').includes('SHORT')?
-          '<span style="color:var(--red)">SHORT</span>':
-          '<span style="color:var(--green)">LONG</span>';
-        const typeTxt = t.type==='M2_ENTRY'?'<span style="color:var(--blue)">ENTRY</span>':
-                        t.type==='M2_EXIT'?'<span style="color:var(--text)">EXIT</span>':t.type;
-        return `<tr>
-          <td style="color:var(--dim)">${ts2}</td>
-          <td>${typeTxt}</td>
-          <td>${dirTxt}</td>
-          <td style="color:var(--text)">$${t.price.toFixed(1)}</td>
-          <td class="${pnlCls}">${pnlTxt}</td>
-          <td style="color:var(--dim)">${t.size.toFixed(2)}x</td>
-          <td style="color:var(--dim);font-size:9px">${(t.reason||'').substring(0,22)}</td>
-        </tr>`;
-      }).join('');
-    }
-
-    // GRAFICO LIVE — feed dati e disegno
-    const nowTs = Date.now();
-    if (hb.last_price) {
-      LiveChart.addPrice(hb.last_price, nowTs);
-    }
-    // Shadow aperto/chiuso + direzione
-    LiveChart.setShadow(hb.m2_shadow_open || false, hb.m2_direction || 'LONG');
-
-    // Score corrente per la barra tensione
-    const lastScore  = hb.m2_last_score  || 0;
-    const lastSoglia = hb.m2_last_soglia || hb.m2_soglia_base || 60;
-    LiveChart.setScore(lastScore, lastSoglia);
-
-    // Rileva nuovi eventi dal log M2
-    const m2log = hb.m2_log || [];
-    m2log.forEach(line => {
-      const tsMatch = line.match(/^(\\d{2}:\\d{2}:\\d{2})/);
-      if (!tsMatch) return;
-      const lineTs = new Date().toDateString() + ' ' + tsMatch[1];
-      const ts = new Date(lineTs).getTime();
-      if (line.includes('ENTRY')) {
-        const dir = line.includes('SHORT') ? 'SHORT' : 'LONG';
-        const scoreM = line.match(/score=([\\d.]+)/);
-        const score = scoreM ? parseFloat(scoreM[1]) : 0;
-        LiveChart.addEvent('entry', dir, score, ts);
-      } else if (line.includes('EXIT') && (line.includes('WIN') || line.includes('LOSS'))) {
-        const dir = line.includes('SHORT') ? 'SHORT' : 'LONG';
-        LiveChart.addEvent('exit', dir, 0, ts);
+// ---------------------------------------------------------------------------
+// LOGIN
+// ---------------------------------------------------------------------------
+function doLogin() {
+  const username = document.getElementById('login-user').value.trim();
+  const password = document.getElementById('login-pwd').value.trim();
+  if (!username || !password) { document.getElementById('login-error').textContent = 'Inserisci username e password'; return; }
+  fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password}) })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        document.getElementById('login-overlay').style.display = 'none';
+        document.getElementById('main-app').style.display = 'flex';
+        initApp();
+      } else {
+        document.getElementById('login-error').textContent = d.error || 'Errore login';
       }
     });
+}
 
-    // Aggiorna info chart
-    $('chart-info').textContent = `ultimi 180 tick · aggiornato ${new Date().toLocaleTimeString()}`;
-    const m2cs = hb.m2_campo_stats || {};
-    const scoreNow = m2cs.last_score || 0;
-    const soglNow  = hb.m2_soglia_base || 60;
-    $('chart-score-live').textContent = scoreNow > 0 ?
-      `score: ${scoreNow.toFixed(1)} / soglia: ${soglNow}` : '';
-
-    // Disegna
-    LiveChart.draw();
-
-    // SUPERCERVELLO PANEL
-    SCPanel.update(hb);
-    VeritatisPanel.update(hb);
-
-    // AI BRIDGE PANEL
-    const ba = hb.bridge_active;
-    $('bridge-active-dot').textContent = ba ? '🟢' : '⚫';
-    $('bridge-active-txt').textContent = ba ? 'attivo' : 'offline';
-    $('bridge-active-txt').style.color = ba ? 'var(--green)' : 'var(--dim)';
-    $('bridge-errors').textContent = hb.bridge_errors || 0;
-    $('bridge-errors').style.color = (hb.bridge_errors||0) > 0 ? 'var(--red)' : 'var(--dim)';
-
-    const bts = hb.bridge_last_ts || hb.bridge_last_call;
-    $('bridge-last-ts').textContent = bts ? (bts.length > 8 ? new Date(bts).toLocaleTimeString() : bts) : '—';
-
-    // Analisi testuale
-    const analisi = hb.bridge_analisi || '';
-    $('bridge-analisi').textContent = analisi || 'In attesa prima analisi...';
-    $('bridge-analisi').style.color = analisi ? 'var(--text)' : 'var(--dim)';
-
-    // Prossimo setup
-    const setup = hb.bridge_prossimo || '';
-    $('bridge-prossimo').textContent = setup || '—';
-    $('bridge-prossimo').style.color = setup ? 'var(--green)' : 'var(--dim)';
-
-    // Nota per Roberto
-    const nota = hb.bridge_note || '';
-    if (nota) {
-      $('bridge-note').textContent = nota;
-      $('bridge-note-box').style.display = 'block';
-    } else {
-      $('bridge-note-box').style.display = 'none';
-    }
-
-    // Mercato ora badge
-    const mercato = hb.bridge_mercato_ora || '';
-    const mbadge = $('bridge-mercato-badge');
-    const mercatoStyles = {
-      'FAVOREVOLE':  {bg:'rgba(0,255,136,0.12)', border:'var(--green)',  color:'var(--green)'},
-      'PERICOLOSO':  {bg:'rgba(255,51,85,0.12)',  border:'var(--red)',    color:'var(--red)'},
-      'IN_ATTESA':   {bg:'rgba(255,215,0,0.08)',  border:'var(--yellow)', color:'var(--yellow)'},
-      'NEUTRO':      {bg:'rgba(0,170,255,0.08)',  border:'var(--blue)',   color:'var(--blue)'},
-    };
-    const ms = mercatoStyles[mercato] || {bg:'transparent',border:'var(--dim)',color:'var(--dim)'};
-    mbadge.textContent = mercato || '— MERCATO —';
-    mbadge.style.background = ms.bg;
-    mbadge.style.borderColor = ms.border;
-    mbadge.style.color = ms.color;
-
-    // Alert badge
-    const alert = hb.bridge_alert || '';
-    const abadge = $('bridge-alert-badge');
-    const alertStyles = {
-      'green':  {border:'var(--green)',  color:'var(--green)',  txt:'● OK'},
-      'yellow': {border:'var(--yellow)', color:'var(--yellow)', txt:'⚠ ATTENZIONE'},
-      'red':    {border:'var(--red)',    color:'var(--red)',    txt:'🔴 ALERT'},
-    };
-    const as = alertStyles[alert] || {border:'var(--dim)', color:'var(--dim)', txt:'● —'};
-    abadge.textContent = as.txt;
-    abadge.style.borderColor = as.border;
-    abadge.style.color = as.color;
-
-    // Bridge log
-    renderLog(hb.bridge_log || [], 'bridge-log');
-
-    // SIGNAL TRACKER
-    const st = hb.signal_tracker || {};
-
-      // ── ECONOMIC EDGE ──────────────────────────────────────────────
-      // Calcola hit_economica per ogni contesto dal Signal Tracker
-      // hit_economica = % segnali chiusi con pnl_sim > FEE_SIM ($0.10)
-      const FEE_SIM = 0.10;
-      const stStats = st.stats_n || {};
-      const stTop   = st.top || [];
-      let edgeRows = '';
-
-      // Ordina per hit_economica
-      const edgeData = stTop.map(row => {
-        const ctx    = row.context || '';
-        const n      = row.n || 0;
-        const hit60  = row.hit_60s || 0;
-        const pnlAvg = row.pnl_sim_avg || 0;
-        const delta  = row.avg_delta_60s || 0;
-
-        // Stima hit_economica dal pnl_sim_avg
-        // Se pnl_sim_avg > FEE_SIM → contesto mediamente profittevole
-        // hit_economica stimata: proporzionale al rapporto pnl/fee
-        // (approssimazione finché non abbiamo distribuzione completa)
-        let hitEcon;
-        if (pnlAvg > FEE_SIM * 3)       hitEcon = 0.75;   // chiaramente profittevole
-        else if (pnlAvg > FEE_SIM)       hitEcon = 0.55;   // sopra fee
-        else if (pnlAvg > 0)             hitEcon = 0.35;   // positivo ma marginale
-        else if (pnlAvg > -FEE_SIM)     hitEcon = 0.25;   // quasi zero
-        else                              hitEcon = 0.10;   // negativo
-
-        return { ctx, n, hit60, pnlAvg, delta, hitEcon };
-      }).sort((a, b) => b.hitEcon - a.hitEcon);
-
-      edgeData.forEach(d => {
-        if (d.n < 5) return;
-        const pct  = Math.round(d.hitEcon * 100);
-        const color = d.hitEcon >= 0.50 ? '#00ff88' :
-                      d.hitEcon >= 0.30 ? '#ffaa00' : '#ff4444';
-        const emoji = d.hitEcon >= 0.50 ? '🟢' :
-                      d.hitEcon >= 0.30 ? '🟡' : '🔴';
-        const barW = Math.round(d.hitEcon * 100);
-        const [dir, reg, band] = d.ctx.split('|');
-        const dirColor = dir === 'LONG' ? 'var(--green)' : 'var(--red)';
-
-        edgeRows += `
-          <div style="margin-bottom:8px; padding:6px 8px; background:rgba(255,255,255,0.03); border-radius:4px; border-left:3px solid ${color}">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-              <span style="font-size:10px;">
-                ${emoji} <span style="color:${dirColor};font-weight:bold">${dir}</span>
-                <span style="color:var(--dim)"> ${reg} ${band}</span>
-              </span>
-              <span style="font-size:11px; font-weight:bold; color:${color}">${pct}%</span>
-            </div>
-            <div style="background:rgba(255,255,255,0.08); border-radius:2px; height:4px; margin-bottom:4px;">
-              <div style="width:${barW}%; height:100%; background:${color}; border-radius:2px; transition:width 0.5s;"></div>
-            </div>
-            <div style="font-size:9px; color:var(--dim); display:flex; gap:12px;">
-              <span>n=${d.n}</span>
-              <span>hit=${Math.round(d.hit60*100)}%</span>
-              <span>PnL sim <span style="color:${d.pnlAvg>0?'var(--green)':'var(--red)'}">${d.pnlAvg>0?'+':''}${d.pnlAvg.toFixed(2)}$</span></span>
-              <span>Δ ${d.delta>0?'+':''}${d.delta.toFixed(1)}</span>
-            </div>
-          </div>`;
-      });
-
-      document.getElementById('edge-body').innerHTML =
-        edgeRows || '<div style="color:var(--dim);text-align:center;padding:16px;font-size:10px;">In attesa segnali...</div>';
-      // ── END ECONOMIC EDGE ──────────────────────────────────────────
-    $('st-counts').textContent = `open:${st.open||0} / chiusi:${st.closed||0}`;
-    const stTopRows = st.top || [];
-    if (stTopRows.length > 0) {
-      $('st-body').innerHTML = stTopRows.map(r => {
-        const hit = r.hit_60s || 0;
-        const hitCol = hit >= 0.65 ? 'var(--green)' : hit >= 0.50 ? 'var(--yellow)' : 'var(--red)';
-        const pnl = r.pnl_sim_avg || 0;
-        const pnlCol = pnl > 0 ? 'var(--green)' : 'var(--red)';
-        const delta = r.avg_delta_60s || 0;
-        const parts = r.context.split('|');
-        const regime = parts[0] || '?';
-        const dir    = parts[1] || '?';
-        const band   = parts[2] || '?';
-        return `<tr>
-          <td style="padding:4px 6px;color:var(--dim);font-size:9px">
-            <span style="color:${dir==='LONG'?'var(--green)':'var(--red)'}">${dir}</span>
-            ${regime} ${band}
-          </td>
-          <td style="padding:4px 6px;text-align:center;color:var(--text)">${r.n}</td>
-          <td style="padding:4px 6px;text-align:center;color:${hitCol};font-weight:700">${(hit*100).toFixed(0)}%</td>
-          <td style="padding:4px 6px;text-align:center;color:${delta>=0?'var(--green)':'var(--red)'}">${delta>=0?'+':''}${delta.toFixed(1)}</td>
-          <td style="padding:4px 6px;text-align:center;color:${pnlCol};font-weight:700">${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}</td>
-        </tr>`;
-      }).join('');
-    }
-
-    // SUGGESTIONS
-    $('suggestions-box').innerHTML = (d.suggestions||[]).map(s=>`<span style="margin-right:16px">${s}</span>`).join('');
-
-  }).catch(()=>{
-    $('status-dot').className='status-dot dot-off';
-    $('status-txt').textContent='OFFLINE';
-    $('status-txt').style.color='var(--red)';
+function doLogout() {
+  fetch('/api/logout', { method:'POST' }).then(() => {
+    document.getElementById('login-overlay').style.display = 'flex';
+    document.getElementById('main-app').style.display = 'none';
+    document.getElementById('login-user').value = '';
+    document.getElementById('login-pwd').value = '';
+    document.getElementById('login-error').textContent = '';
+    currentUser = null;
+    moduliAttivi = [];
   });
 }
 
-function sendCmd(cmd){
-  fetch('/trading/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})})
-  .then(r=>r.json()).then(()=>{ const ab=$('alert-bar'); ab.style.display='block'; ab.innerHTML='✅ Comando inviato: '+cmd; setTimeout(()=>{ab.style.display='none'},3000); });
+function initApp() {
+  fetch('/api/me').then(r => r.json()).then(d => {
+    if (!d.logged) { doLogout(); return; }
+    currentUser = d.user;
+    moduliAttivi = d.moduli || [];
+    document.getElementById('user-label').textContent = currentUser.nome + ' (' + currentUser.ruolo + ')';
+    setupRightPanel();
+    loadBrands();
+  });
 }
 
-update();
-setInterval(update, 2000);
+// ---------------------------------------------------------------------------
+// SETUP PANNELLO DX
+// ---------------------------------------------------------------------------
+function setupRightPanel() {
+  const rp = document.getElementById('rightpanel');
+  const hasMods = moduliAttivi.length > 0 || currentUser.ruolo === 'superadmin';
+  if (hasMods) rp.classList.add('visible');
+
+  if (currentUser.ruolo === 'superadmin') {
+    document.getElementById('sa-panel').style.display = 'block';
+    loadSAClienti();
+    document.getElementById('mod-cantieri').style.display = 'block';
+    document.getElementById('mod-bi').style.display = 'block';
+    document.getElementById('mod-commerciali').style.display = 'block';
+  } else {
+    if (moduliAttivi.includes('cantieri')) document.getElementById('mod-cantieri').style.display = 'block';
+    if (moduliAttivi.includes('bi') && (currentUser.ruolo === 'admin')) document.getElementById('mod-bi').style.display = 'block';
+    if (moduliAttivi.includes('commerciali') && (currentUser.ruolo === 'admin')) document.getElementById('mod-commerciali').style.display = 'block';
+  }
+  loadCantieri();
+}
+
+function toggleModule(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle('open');
+}
+
+// ---------------------------------------------------------------------------
+// SUPERADMIN
+// ---------------------------------------------------------------------------
+function loadSAClienti() {
+  fetch('/api/sa/clienti').then(r => r.json()).then(d => {
+    const sel1 = document.getElementById('sa-cliente-sel');
+    const sel2 = document.getElementById('sa-u-cliente');
+    (d.clienti || []).forEach(cl => {
+      const o1 = document.createElement('option'); o1.value = cl.id; o1.textContent = cl.nome; sel1.appendChild(o1);
+      const o2 = document.createElement('option'); o2.value = cl.id; o2.textContent = cl.nome; sel2.appendChild(o2);
+    });
+  });
+}
+
+function loadSAModuli() {
+  const cid = document.getElementById('sa-cliente-sel').value;
+  if (!cid) return;
+  fetch('/api/sa/moduli/' + cid).then(r => r.json()).then(d => {
+    const moduli = d.moduli || {};
+    const names = {'cantieri':'Cantieri','carrello':'Carrello','bi':'BI / Statistiche','commerciali':'Commerciali'};
+    let html = '';
+    Object.keys(names).forEach(k => {
+      const on = moduli[k];
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;">';
+      html += '<span>' + names[k] + '</span>';
+      html += '<button onclick="toggleModulo(' + cid + ',\'' + k + '\',' + (on?'false':'true') + ')" class="btn-sm ' + (on?'btn-green':'btn-gray') + '" style="margin-bottom:0;">' + (on?'ON':'OFF') + '</button>';
+      html += '</div>';
+    });
+    document.getElementById('sa-moduli-list').innerHTML = html;
+  });
+}
+
+function toggleModulo(cid, modulo, attivo) {
+  fetch('/api/sa/moduli/' + cid, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({modulo, attivo}) })
+    .then(r => r.json()).then(d => { if (d.ok) loadSAModuli(); });
+}
+
+function dedupBrands() {
+  if (!confirm('Unificare tutti i brand duplicati (es. Gessi + GESSI → Gessi)? I documenti verranno spostati al brand corretto.')) return;
+  fetch('/api/sa/dedup-brands', { method:'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        document.getElementById('dedup-result').textContent = '✓ ' + d.merged + ' duplicati rimossi. Ricarica la pagina.';
+        setTimeout(() => location.reload(), 2000);
+      }
+    });
+}
+
+function saAddUtente() {
+  const nome = document.getElementById('sa-u-nome').value.trim();
+  const username = document.getElementById('sa-u-username').value.trim();
+  const password = document.getElementById('sa-u-pwd').value.trim();
+  const ruolo = document.getElementById('sa-u-ruolo').value;
+  const cliente_id = document.getElementById('sa-u-cliente').value || null;
+  if (!nome || !username || !password) { alert('Dati incompleti'); return; }
+  fetch('/api/sa/utenti', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({nome, username, password, ruolo, cliente_id}) })
+    .then(r => r.json()).then(d => {
+      if (d.ok) { alert('Utente creato!'); document.getElementById('sa-u-nome').value=''; document.getElementById('sa-u-username').value=''; document.getElementById('sa-u-pwd').value=''; }
+      else alert('Errore: ' + d.error);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// ACCESSORI CONSIGLIATI
+// ---------------------------------------------------------------------------
+function toggleAccessoriSection() {
+  const panel = document.getElementById('accessori-panel');
+  const arrow = document.getElementById('accessori-arrow');
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  arrow.textContent = open ? '▼' : '▲';
+}
+
+function caricaAccessoriProdotto(prodottoId, brand) {
+  if (!prodottoId) return;
+  
+  fetch('/api/abbina/' + encodeURIComponent(prodottoId))
+    .then(r => r.json())
+    .then(d => {
+      if (d.ufficiali && (d.ufficiali.length > 0 || d.alternative.length > 0 || d.esclusi.length > 0)) {
+        document.getElementById('accessori-section').style.display = 'block';
+        renderAccessoriHtml(d.ufficiali, d.alternative, d.esclusi);
+      }
+    })
+    .catch(e => console.error('Errore accessori:', e));
+}
+
+function renderAccessoriHtml(ufficiali, alternative, esclusi) {
+  let html = '';
+
+  if (ufficiali && ufficiali.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#10b981; margin-bottom:6px;">✅ Abbinamenti Ufficiali</div>';
+    ufficiali.forEach(acc => {
+      html += '<div style="background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
+        '<div style="flex:1;">' +
+        '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '</div>' +
+        '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm btn-green" style="margin-bottom:0; white-space:nowrap;">✓ Aggiungi</button>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (alternative && alternative.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#f59e0b; margin-bottom:6px;">🔹 Alternative</div>';
+    alternative.forEach(acc => {
+      html += '<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
+        '<div style="flex:1;">' +
+        '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '</div>' +
+        '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm" style="background:rgba(245,158,11,0.2); color:#f59e0b; margin-bottom:0; white-space:nowrap;">+ Aggiungi</button>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (esclusi && esclusi.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#ef4444; margin-bottom:6px;">❌ Non Compatibili</div>';
+    esclusi.forEach(acc => {
+      html += '<div style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:8px; margin-bottom:4px; opacity:0.6;">' +
+        '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '<div style="font-size:9px; color:#fca5a5; margin-top:3px;">⚠️ Non compatibile con il prodotto principale</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  document.getElementById('accessori-ufficiali').innerHTML = html;
+}
+
+// CARICAMENTO ACCESSORI - vedi mostraModalAbbinamenti() sotto
+
+// ---------------------------------------------------------------------------
+// CANTIERI (fine accessori)
+function loadCantieri() {
+  if (!document.getElementById('mod-cantieri') || document.getElementById('mod-cantieri').style.display === 'none') return;
+  fetch('/api/cantieri').then(r => r.json()).then(d => {
+    const list = d.cantieri || [];
+    document.getElementById('cantieri-count').textContent = list.length;
+    document.getElementById('cantieri-list').innerHTML = list.map(ca =>
+      '<div class="cantiere-item" onclick="openCantiere(' + ca.id + ',\'' + ca.nome.replace(/'/g,'') + '\',\'' + ca.stato + '\')">' +
+      '<span>' + ca.nome + '</span>' +
+      '<span class="stato-badge stato-' + ca.stato + '">' + ca.stato + '</span>' +
+      '</div>'
+    ).join('');
+  });
+}
+
+function addCantiere() {
+  const nome = document.getElementById('new-cantiere').value.trim();
+  if (!nome) { alert('Nome richiesto'); return; }
+  fetch('/api/cantieri', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({nome}) })
+    .then(r => r.json()).then(d => {
+      if (d.ok) { document.getElementById('new-cantiere').value = ''; loadCantieri(); openCantiere(d.id, nome, 'bozza'); }
+      else alert('Errore: ' + d.error);
+    });
+}
+
+function openCantiere(id, nome, stato) {
+  cantiereAttivo = id;
+  document.getElementById('drawer-nome').textContent = nome;
+  document.getElementById('cantiere-stato').value = stato;
+  document.getElementById('cantiere-drawer').classList.add('open');
+  precompilaBrandDrawer();
+  loadRighe();
+}
+
+function precompilaBrandDrawer() {
+  if (!selected || selected.length === 0) return;
+  const inp = document.getElementById('riga-brand-input');
+  const val = document.getElementById('riga-brand-val');
+  if (selected.length === 1) {
+    if (inp) inp.value = selected[0];
+    if (val) val.value = selected[0];
+    aggiornaCampiExtra();
+  } else {
+    // Più brand: mostra quick-select buttons sopra il campo
+    let container = document.getElementById('brand-quick-select');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'brand-quick-select';
+      container.style.cssText = 'display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px;';
+      const brandRow = document.querySelector('.form-row');
+      if (brandRow) brandRow.parentNode.insertBefore(container, brandRow);
+    }
+    container.innerHTML = '<div style="font-size:10px;color:#9ca3af;width:100%;margin-bottom:2px;">Seleziona brand per questa riga:</div>' +
+      selected.map(b =>
+        '<button type="button" onclick="setBrandRiga(\'' + b.replace(/'/g,"\\'") + '\')" ' +
+        'style="padding:3px 8px;font-size:10px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);color:#93c5fd;border-radius:4px;cursor:pointer;margin-bottom:0;">' + b + '</button>'
+      ).join('');
+    // Pre-compila col primo
+    if (inp) inp.value = selected[0];
+    if (val) val.value = selected[0];
+    aggiornaCampiExtra();
+  }
+}
+
+function setBrandRiga(brand) {
+  const inp = document.getElementById('riga-brand-input');
+  const val = document.getElementById('riga-brand-val');
+  if (inp) inp.value = brand;
+  if (val) val.value = brand;
+  // Evidenzia bottone attivo
+  document.querySelectorAll('#brand-quick-select button').forEach(b => {
+    b.style.background = b.textContent === brand ? 'rgba(59,130,245,0.6)' : 'rgba(59,130,245,0.2)';
+    b.style.color = b.textContent === brand ? 'white' : '#93c5fd';
+  });
+  aggiornaCampiExtra();
+}
+
+function closeCantiere() {
+  cantiereAttivo = null;
+  document.getElementById('cantiere-drawer').classList.remove('open');
+}
+
+function updateCantiere() {
+  if (!cantiereAttivo) return;
+  const stato = document.getElementById('cantiere-stato').value;
+  fetch('/api/cantieri/' + cantiereAttivo, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({stato}) })
+    .then(r => r.json()).then(() => loadCantieri());
+}
+
+function deleteCantiere() {
+  if (!cantiereAttivo) return;
+  if (!confirm('Eliminare questo cantiere e tutte le sue righe?')) return;
+  fetch('/api/cantieri/' + cantiereAttivo, { method:'DELETE' })
+    .then(r => r.json()).then(() => { closeCantiere(); loadCantieri(); });
+}
+
+function loadRighe() {
+  if (!cantiereAttivo) return;
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe').then(r => r.json()).then(d => {
+    const righe = d.righe || [];
+    let totale = 0;
+    righe.forEach(r => { totale += (r.importo || 0); });
+    document.getElementById('righe-list').innerHTML = righe.length === 0
+      ? '<div style="color:#6b7280; font-size:11px; text-align:center; padding:12px 0;">Nessun elemento aggiunto</div>'
+      : righe.map(r => {
+          const desc = (r.descrizione || '').replace(/^Da Oracolo\s*[—-]\s*/i, '');
+          const cat = (r.categoria && r.categoria !== 'Da Oracolo') ? r.categoria : '';
+          return '<div class="riga-card">' +
+          '<div class="riga-card-info">' +
+          '<div class="riga-card-brand">' + (r.brand||'—') + '</div>' +
+          '<div class="riga-card-cat">' + (cat ? cat + (desc ? ' — ' : '') : '') + desc + '</div>' +
+          '</div>' +
+          '<div class="riga-card-importo">' + (r.importo ? '€' + r.importo.toFixed(0) : '—') + '</div>' +
+          '<button onclick="deleteRiga(' + r.id + ')" class="btn-red btn-sm" style="margin-bottom:0; padding:3px 7px;">✕</button>' +
+          '</div>';
+        }).join('');
+    const totBar = document.getElementById('totale-bar');
+    if (righe.length > 0) {
+      totBar.style.display = 'flex';
+      document.getElementById('totale-valore').textContent = '€' + totale.toFixed(0);
+    } else {
+      totBar.style.display = 'none';
+    }
+  });
+}
+
+// Mappa brand → categoria materiale
+const BRAND_CATEGORIA = {
+  piastrelle: ['Aparici','Apavisa','Ariostea','Caesar','Casalgrande Padana','Cerasarda','Cottodeste',
+               'Edimax Astor','FAP Ceramiche','FMG','Floorim','Gigacer','Iris','Italgraniti',
+               'Marca Corona','Mirage','Sichenia','Tonalite','Bisazza','Noorth','Tresse'],
+  legno: ['Bauwerk','CP Parquet','Iniziativa Legno','Madegan'],
+  vinilico: ['Gerflor']
+};
+
+function aggiornaCampiExtra() {
+  const brand = document.getElementById('riga-brand-val').value || document.getElementById('riga-brand-input').value;
+  document.getElementById('extra-piastrelle').style.display = 'none';
+  document.getElementById('extra-legno').style.display = 'none';
+  document.getElementById('extra-vinilico').style.display = 'none';
+  if (BRAND_CATEGORIA.piastrelle.includes(brand)) {
+    document.getElementById('extra-piastrelle').style.display = 'block';
+    document.getElementById('riga-categoria').value = 'Pavimenti / Rivestimenti';
+  } else if (BRAND_CATEGORIA.legno.includes(brand)) {
+    document.getElementById('extra-legno').style.display = 'block';
+    document.getElementById('riga-categoria').value = 'Parquet / Legno';
+  } else if (BRAND_CATEGORIA.vinilico.includes(brand)) {
+    document.getElementById('extra-vinilico').style.display = 'block';
+    document.getElementById('riga-categoria').value = 'Pavimento Tecnico';
+  }
+}
+
+function addRiga() {
+  if (!cantiereAttivo) return;
+  const brand = document.getElementById('riga-brand-val').value;
+  const categoria = document.getElementById('riga-categoria').value.trim();
+  let descrizione = document.getElementById('riga-descrizione').value.trim();
+  const importo = parseFloat(document.getElementById('riga-importo').value) || 0;
+  if (!brand && !categoria) { alert('Inserisci almeno brand o categoria'); return; }
+
+  // Raccolta campi extra
+  const extraParts = [];
+  if (document.getElementById('extra-piastrelle').style.display !== 'none') {
+    const fmt = document.getElementById('extra-formato').value.trim();
+    const fin = document.getElementById('extra-finitura').value.trim();
+    const col = document.getElementById('extra-colore').value.trim();
+    if (fmt) extraParts.push('Formato: ' + fmt);
+    if (fin) extraParts.push('Finitura: ' + fin);
+    if (col) extraParts.push('Colore/Tono: ' + col);
+  } else if (document.getElementById('extra-legno').style.display !== 'none') {
+    const ess = document.getElementById('extra-essenza').value.trim();
+    const fin = document.getElementById('extra-legno-finitura').value.trim();
+    const fmt = document.getElementById('extra-legno-formato').value.trim();
+    const ton = document.getElementById('extra-legno-tono').value.trim();
+    if (ess) extraParts.push('Essenza: ' + ess);
+    if (fin) extraParts.push('Finitura: ' + fin);
+    if (fmt) extraParts.push('Formato: ' + fmt);
+    if (ton) extraParts.push('Tono: ' + ton);
+  } else if (document.getElementById('extra-vinilico').style.display !== 'none') {
+    const fmt = document.getElementById('extra-vin-formato').value.trim();
+    const spe = document.getElementById('extra-vin-spessore').value.trim();
+    const eff = document.getElementById('extra-vin-effetto').value.trim();
+    if (fmt) extraParts.push('Formato: ' + fmt);
+    if (spe) extraParts.push('Spessore: ' + spe);
+    if (eff) extraParts.push('Effetto: ' + eff);
+  }
+  if (extraParts.length > 0) {
+    descrizione = (descrizione ? descrizione + ' — ' : '') + extraParts.join(' | ');
+  }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({brand, categoria, descrizione, importo}) })
+    .then(r => r.json()).then(d => {
+      if (d.ok) {
+        document.getElementById('riga-brand-input').value = '';
+        document.getElementById('riga-brand-val').value = '';
+        document.getElementById('riga-categoria').value = '';
+        document.getElementById('riga-descrizione').value = '';
+        document.getElementById('riga-importo').value = '';
+        // Reset campi extra
+        ['extra-formato','extra-finitura','extra-colore','extra-essenza','extra-legno-finitura',
+         'extra-legno-formato','extra-legno-tono','extra-vin-formato','extra-vin-spessore','extra-vin-effetto']
+          .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        document.getElementById('extra-piastrelle').style.display = 'none';
+        document.getElementById('extra-legno').style.display = 'none';
+        document.getElementById('extra-vinilico').style.display = 'none';
+        loadRighe();
+      }
+    });
+}
+
+function deleteRiga(rid) {
+  fetch('/api/cantieri/righe/' + rid, { method:'DELETE' }).then(() => loadRighe());
+}
+
+function generaOffertaCantiere() {
+  if (!cantiereAttivo) return;
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe').then(r => r.json()).then(d => {
+    const righe = d.righe || [];
+    if (righe.length === 0) { alert('Aggiungi prima delle righe al cantiere'); return; }
+    const nome = document.getElementById('drawer-nome').textContent;
+    let totale = 0;
+    const riepilogo = righe.map(r => {
+      totale += (r.importo || 0);
+      const prezzo = r.importo ? ' | Prezzo: €' + r.importo.toFixed(2) : ' | Prezzo: da definire';
+      return '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + prezzo;
+    }).join('\n');
+    const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
+    if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
+    const domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
+      'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
+      'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
+      'La proposta deve:\n' +
+      '1. Avere un testo introduttivo professionale e convincente\n' +
+      '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
+      '3. Mostrare il totale finale in modo chiaro\n' +
+      '4. Chiudersi con una call to action per il cliente\n' +
+      'Usa un tono elegante, orientato al valore e alla qualità.';
+    closeCantiere();
+    askDirect(domanda, brands);
+  });
+}
+
+function askDirect(domanda, brands) {
+  const chat = document.getElementById('chat');
+  chat.innerHTML += '<div class="message"><strong>Tu:</strong> Genera offerta cantiere — ' + document.getElementById('drawer-nome') ? '' : brands.join(', ') + '</div>';
+  const loadingId = 'loading_' + Date.now();
+  chat.innerHTML += '<div class="message" id="' + loadingId + '" style="opacity:0.6;font-style:italic">Oracolo sta elaborando l\'offerta...</div>';
+  chat.scrollTop = chat.scrollHeight;
+  fetch('/api/ask', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ question: domanda, brands: brands, web: webEnabled, access_code: accessCode }) })
+    .then(r => r.json())
+    .then(d => {
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      const formatted = parseMarkdown(d.answer || 'Nessuna risposta');
+      const msgId = 'msg_' + Date.now();
+      const query = encodeURIComponent(brands.join(' '));
+      let html = '<div class="message oracolo-msg" id="' + msgId + '">';
+      html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
+      html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      if (d.images && d.images.length > 0) {
+        html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
+        html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
+        html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
+        d.images.forEach(img => {
+          html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
+          html += '<img src="' + img + '" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.style.display=\'none\'">';
+          html += '</div>';
+        });
+        html += '</div></div>';
+      } else {
+        html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
+      }
+      html += '</div>';
+      chat.innerHTML += html;
+      chat.scrollTop = chat.scrollHeight;
+    })
+    .catch(e => {
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>';
+      chat.scrollTop = chat.scrollHeight;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// BI
+// ---------------------------------------------------------------------------
+function loadBI() {
+  fetch('/api/bi/stats').then(r => r.json()).then(d => {
+    const ps = d.per_stato || {};
+    let html = '<div style="font-size:11px;font-weight:600;color:#9ca3af;margin-bottom:4px;">Per stato</div>';
+    ['bozza','inviata','vinta','persa'].forEach(s => {
+      if (ps[s]) html += '<div class="bi-stat"><span>' + s + '</span><span>' + ps[s] + '</span></div>';
+    });
+    html += '<div class="bi-stat" style="margin-top:4px;"><span>Valore vinto</span><span style="color:#10b981;">€' + (d.valore_vinto||0).toFixed(0) + '</span></div>';
+    html += '<div class="bi-stat"><span>Valore aperto</span><span style="color:#3b82f6;">€' + (d.valore_aperto||0).toFixed(0) + '</span></div>';
+    if (d.per_commerciale && d.per_commerciale.length > 0) {
+      html += '<div style="font-size:11px;font-weight:600;color:#9ca3af;margin-top:8px;margin-bottom:4px;">Per commerciale</div>';
+      d.per_commerciale.forEach(pc => {
+        html += '<div class="bi-stat"><span>' + pc.nome + '</span><span>' + pc.cantieri + ' | €' + pc.valore.toFixed(0) + '</span></div>';
+      });
+    }
+    document.getElementById('bi-stats').innerHTML = html;
+  });
+}
+
+function biCancella() {
+  const da = document.getElementById('bi-da').value;
+  const a = document.getElementById('bi-a').value;
+  if (!da || !a) { alert('Seleziona un range di date'); return; }
+  const stati = [];
+  if (document.getElementById('del-vinta').checked) stati.push('vinta');
+  if (document.getElementById('del-persa').checked) stati.push('persa');
+  if (document.getElementById('del-bozza').checked) stati.push('bozza');
+  if (stati.length === 0) { alert('Seleziona almeno uno stato'); return; }
+  if (!confirm('Cancellare i cantieri selezionati? Operazione irreversibile.')) return;
+  fetch('/api/bi/cancella', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({da, a, stati}) })
+    .then(r => r.json()).then(d => {
+      if (d.ok) { alert('Eliminati ' + d.eliminati + ' cantieri'); loadBI(); loadCantieri(); }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// BRANDS / DROPDOWN
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// MAPPA BRAND → CATEGORIE + FASCIA DI MERCATO
+// ---------------------------------------------------------------------------
+const BRAND_MAP = {
+  // LUXURY
+  'Antoniolupi':    { categorie: ['rubinetteria','lavabi','vasche','accessori bagno','specchi'], fascia: 'luxury' },
+  'Gessi':          { categorie: ['rubinetteria','doccia','vasche','accessori bagno','wellness'], fascia: 'luxury' },
+  'Duscholux':      { categorie: ['box doccia','piatti doccia'], fascia: 'luxury' },
+  'Kaldewei':       { categorie: ['vasche','piatti doccia'], fascia: 'luxury' },
+  'Glamm Fire':     { categorie: ['camini','fuoco'], fascia: 'luxury' },
+  'Tubes':          { categorie: ['radiatori','scaldasalviette'], fascia: 'luxury' },
+  'Vismara Vetro':  { categorie: ['box doccia','vetro','partizioni'], fascia: 'luxury' },
+  'Decor Walther':  { categorie: ['accessori bagno','specchi'], fascia: 'luxury' },
+  'Bisazza':        { categorie: ['mosaico','piastrelle'], fascia: 'luxury' },
+  'Cottodeste':     { categorie: ['piastrelle','pavimenti'], fascia: 'luxury' },
+  'Sunshower':      { categorie: ['wellness','doccia','sauna'], fascia: 'luxury' },
+  'Sunshower Wellness': { categorie: ['wellness','sauna'], fascia: 'luxury' },
+  'Trimline Fires': { categorie: ['camini','fuoco'], fascia: 'luxury' },
+  'Stuv':           { categorie: ['camini','stufe'], fascia: 'luxury' },
+  'Austroflamm':    { categorie: ['camini','stufe'], fascia: 'luxury' },
+  'Valdama':        { categorie: ['lavabi','vasche','sanitari'], fascia: 'luxury' },
+  'Milldue':        { categorie: ['mobili bagno','arredo bagno'], fascia: 'luxury' },
+  'Noorth':         { categorie: ['piastrelle','pavimenti'], fascia: 'luxury' },
+  // PREMIUM
+  'Duravit':        { categorie: ['sanitari','lavabi','vasche','mobili bagno','rubinetteria'], fascia: 'premium' },
+  'Cielo':          { categorie: ['sanitari','lavabi'], fascia: 'premium' },
+  'Cerasa':         { categorie: ['mobili bagno','specchi','sanitari'], fascia: 'premium' },
+  'Colombo':        { categorie: ['accessori bagno','rubinetteria'], fascia: 'premium' },
+  'Grupp Bardelli': { categorie: ['piastrelle','rivestimenti'], fascia: 'premium' },
+  'Gruppo Bardelli':{ categorie: ['piastrelle','rivestimenti'], fascia: 'premium' },
+  'Gruppo Geromin': { categorie: ['vasche','box doccia','idromassaggio'], fascia: 'premium' },
+  'FAP Ceramiche':  { categorie: ['piastrelle','rivestimenti','pavimenti'], fascia: 'premium' },
+  'Ariostea':       { categorie: ['piastrelle','grandi lastre','pavimenti'], fascia: 'premium' },
+  'Mirage':         { categorie: ['piastrelle','pavimenti'], fascia: 'premium' },
+  'FMG':            { categorie: ['piastrelle','pavimenti','grandi lastre'], fascia: 'premium' },
+  'Floorim':        { categorie: ['piastrelle','pavimenti'], fascia: 'premium' },
+  'Gigacer':        { categorie: ['piastrelle','grandi lastre'], fascia: 6 },
+  'Italgraniti':    { categorie: ['piastrelle','pavimenti'], fascia: 'premium' },
+  'Bauwerk':        { categorie: ['parquet','legno'], fascia: 'premium' },
+  'CP Parquet':     { categorie: ['parquet','legno'], fascia: 'premium' },
+  'Iniziativa Legno':{ categorie: ['parquet','legno'], fascia: 'premium' },
+  'Madegan':        { categorie: ['parquet','legno'], fascia: 'premium' },
+  'Gerflor':        { categorie: ['pavimento vinilico','pavimento tecnico'], fascia: 'premium' },
+  'Acquabella':     { categorie: ['piatti doccia','vasche','box doccia'], fascia: 'premium' },
+  'Gridiron':       { categorie: ['accessori bagno','portasalviette'], fascia: 'premium' },
+  'Wedi':           { categorie: ['impermeabilizzazione','sistemi doccia','edilizia'], fascia: 'premium' },
+  'Schluter Systems':{ categorie: ['profili','impermeabilizzazione','piastrelle'], fascia: 'premium' },
+  'Tresse':         { categorie: ['piastrelle','mosaico'], fascia: 'premium' },
+  'Tonalite':       { categorie: ['piastrelle','rivestimenti'], fascia: 'premium' },
+  'Sterneldesign':  { categorie: ['accessori bagno'], fascia: 'premium' },
+  // MID
+  'Altamarea':      { categorie: ['rubinetteria','doccia'], fascia: 'mid' },
+  'Anem':           { categorie: ['rubinetteria','doccia'], fascia: 'mid' },
+  'Aparici':        { categorie: ['piastrelle','rivestimenti'], fascia: 'mid' },
+  'Apavisa':        { categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Artesia':        { categorie: ['vasche','piatti doccia'], fascia: 'mid' },
+  'BGP':            { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Blue Design':    { categorie: ['mobili bagno'], fascia: 'mid' },
+  'Baufloor':       { categorie: ['pavimenti'], fascia: 'mid' },
+  'Caros':          { categorie: ['piastrelle'], fascia: 'mid' },
+  'Caesar':         { categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Casalgrande Padana':{ categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Cerasarda':      { categorie: ['piastrelle','rivestimenti'], fascia: 'mid' },
+  'CSA':            { categorie: ['rubinetteria'], fascia: 'mid' },
+  'Demm':           { categorie: ['accessori bagno'], fascia: 'mid' },
+  'DoorAmeda':      { categorie: ['porte','pareti'], fascia: 'mid' },
+  'Edimax Astor':   { categorie: ['piastrelle','mosaico'], fascia: 'mid' },
+  'Brera':          { categorie: ['sanitari','lavabi'], fascia: 'mid' },
+  'GOman':          { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Ier Hurne':      { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Inklostro Bianco':{ categorie: ['pitture','rivestimenti'], fascia: 'mid' },
+  'Iris':           { categorie: ['piastrelle','sanitari'], fascia: 'mid' },
+  'Linki':          { categorie: ['accessori bagno'], fascia: 'mid' },
+  'Marca Corona':   { categorie: ['piastrelle','rivestimenti'], fascia: 'mid' },
+  'Murexin':        { categorie: ['impermeabilizzazione','massetti','posa'], fascia: 'mid' },
+  'Omegius':        { categorie: ['accessori bagno'], fascia: 'mid' },
+  "Piastrelle d Arredo":{ categorie: ['piastrelle'], fascia: 'mid' },
+  'Profiletec':     { categorie: ['profili','bordi'], fascia: 'mid' },
+  'SDR':            { categorie: ['sanitari'], fascia: 'mid' },
+  'Sichenia':       { categorie: ['piastrelle','pavimenti'], fascia: 'mid' },
+  'Simas':          { categorie: ['sanitari','lavabi'], fascia: 'mid' },
+  'Remer':          { categorie: ['rubinetteria','accessori bagno'], fascia: 'mid' },
+};
+
+const FASCIA_LABEL = {
+  luxury:  { label: 'Luxury',  color: '#f59e0b' },
+  premium: { label: 'Premium', color: '#8b5cf6' },
+  mid:     { label: 'Mid',     color: '#3b82f6' },
+  entry:   { label: 'Entry',   color: '#6b7280' },
+};
+
+function switchTab(tab) {
+  const isBrand = tab === 'brand';
+  document.getElementById('tab-content-brand').style.display = isBrand ? '' : 'none';
+  document.getElementById('tab-content-cat').style.display = isBrand ? 'none' : '';
+  document.getElementById('tab-brand').style.background = isBrand ? '#3b82f6' : 'rgba(59,130,245,0.3)';
+  document.getElementById('tab-cat').style.background = isBrand ? 'rgba(59,130,245,0.3)' : '#3b82f6';
+  if (!isBrand) document.getElementById('search-cat').focus();
+}
+
+function filterPerCategoria() {
+  const sv = document.getElementById('search-cat').value.toLowerCase().trim();
+  const container = document.getElementById('cat-results');
+  if (!sv) { container.innerHTML = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Digita una categoria...</div>'; return; }
+
+  // Trova brand che matchano la categoria cercata
+  const risultati = { luxury: [], premium: [], mid: [], entry: [] };
+  Object.entries(BRAND_MAP).forEach(([brand, info]) => {
+    if (info.categorie && info.categorie.some(c => c.toLowerCase().includes(sv))) {
+      const fascia = info.fascia || 'mid';
+      if (risultati[fascia]) risultati[fascia].push(brand);
+    }
+  });
+
+  const ordine = ['luxury', 'premium', 'mid', 'entry'];
+  let html = '';
+  let totale = 0;
+  ordine.forEach(f => {
+    if (risultati[f].length === 0) return;
+    const fl = FASCIA_LABEL[f];
+    html += '<div style="font-size:9px;font-weight:700;color:' + fl.color + ';text-transform:uppercase;margin:6px 0 3px 0;letter-spacing:0.06em;">' + fl.label + '</div>';
+    risultati[f].forEach(brand => {
+      totale++;
+      const checked = new Set(selected).has(brand) ? 'checked' : '';
+      html += '<div class="brand-item cat-item" style="display:flex;align-items:center;gap:6px;">' +
+        '<input type="checkbox" value="' + brand + '" ' + checked + ' onchange="updateSelected()">' +
+        '<span style="flex:1">' + brand + '</span>' +
+        '<span style="font-size:9px;color:' + fl.color + ';font-weight:600;">' + fl.label + '</span>' +
+        '</div>';
+    });
+  });
+
+  if (totale === 0) {
+    html = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Nessun brand trovato per "' + sv + '"</div>';
+  }
+  container.innerHTML = html;
+}
+
+function loadBrands() {
+  fetch('/api/get-brands').then(r => r.json()).then(d => {
+    BRANDS = d.brands || [];
+    loadGroups();
+  }).catch(e => console.error("Errore brand:", e));
+}
+
+function toggleDropdown() {
+  const dd = document.getElementById('dropdown');
+  if (!dd) return;
+  if (dd.classList.contains('show')) {
+    dd.classList.remove('show');
+  } else {
+    dd.classList.add('show');
+    // Costruisce la lista solo se è vuota
+    const brandsList = document.getElementById('brands-list');
+    if (brandsList && brandsList.querySelectorAll('.brand-item').length === 0) {
+      filterBrands();
+    }
+  }
+}
+
+function filterBrands() {
+  const search = document.getElementById('search');
+  const brandsList = document.getElementById('brands-list');
+  if (!search || !brandsList) return;
+  const sv = search.value.toLowerCase();
+
+  // Se la lista è già popolata, filtra per visibilità senza ricostruire il DOM
+  const existing = brandsList.querySelectorAll('.brand-item');
+  if (existing.length > 0) {
+    existing.forEach(item => {
+      const inp = item.querySelector('input');
+      const val = inp ? inp.value.toLowerCase() : '';
+      item.style.display = val.includes(sv) ? '' : 'none';
+    });
+    return;
+  }
+
+  // Prima costruzione — popola con stato checked corrente
+  const alreadySelected = new Set(selected);
+  brandsList.innerHTML = BRANDS.map(b =>
+    '<div class="brand-item"><input type="checkbox" value="' + b + '" ' +
+    (alreadySelected.has(b) ? 'checked' : '') +
+    ' onchange="updateSelected()">' + b + '</div>'
+  ).join('');
+}
+
+function updateSelected() {
+  selected = [];
+  document.querySelectorAll('.brand-item input:checked').forEach(cb => { selected.push(cb.value); });
+  document.getElementById('selected').innerHTML = selected.map(b => '<span class="badge">' + b + ' x</span>').join('');
+  // Propaga brand selezionato in tutti i campi brand dell'app
+  if (selected.length > 0) {
+    const b = selected[0];
+    // Upload documenti
+    const uploadInp = document.getElementById('upload-brand-input');
+    const uploadVal = document.getElementById('upload-brand-val');
+    if (uploadInp) uploadInp.value = b;
+    if (uploadVal) uploadVal.value = b;
+  }
+  // Se drawer aperto, aggiorna quick-select
+  if (cantiereAttivo) precompilaBrandDrawer();
+}
+
+function toggleWeb() {
+  webEnabled = !webEnabled;
+  const btn = document.getElementById('web-toggle');
+  btn.textContent = webEnabled ? 'ON' : 'OFF';
+  btn.className = webEnabled ? 'toggle-btn toggle-on' : 'toggle-btn toggle-off';
+}
+
+function toggleAccess() {
+  const code = document.getElementById('access-code').value;
+  if (code) { accessCode = code; accessLevel = "private"; document.getElementById('access-status').textContent = 'Accesso: PRIVATO (' + code + ')'; }
+  else { accessCode = null; accessLevel = "public"; document.getElementById('access-status').textContent = 'Accesso: PUBBLICO'; }
+}
+
+function saveGroup() {
+  const name = document.getElementById('group-name').value;
+  if (!name || selected.length === 0) { alert('Nome gruppo e brand richiesti'); return; }
+  groups[name] = selected;
+  localStorage.setItem('oracolo_groups', JSON.stringify(groups));
+  document.getElementById('group-name').value = '';
+  loadGroups();
+}
+
+function loadGroups() {
+  document.getElementById('saved-groups').innerHTML = Object.keys(groups).map(name =>
+    '<div style="padding:4px;background:rgba(59,130,245,0.2);border-radius:4px;margin:3px 0;font-size:11px"><strong>' + name + '</strong> <button onclick="loadGroup(\'' + name + '\')" style="padding:1px 5px;font-size:9px">carica</button> <button onclick="deleteGroup(\'' + name + '\')" style="padding:1px 5px;font-size:9px;background:#ef4444">x</button></div>'
+  ).join('');
+}
+
+function loadGroup(name) {
+  selected = groups[name] || [];
+  updateSelected();
+  document.getElementById('dropdown').classList.remove('show');
+}
+
+function deleteGroup(name) {
+  delete groups[name];
+  localStorage.setItem('oracolo_groups', JSON.stringify(groups));
+  loadGroups();
+}
+
+function setAdminPassword() {
+  if (selected.length === 0) { alert('Seleziona prima un brand'); return; }
+  const brand = selected[0];
+  const pwd = document.getElementById('admin-pwd').value.trim();
+  if (!pwd) { alert('Inserisci una password'); return; }
+  fetch('/api/set-admin-password', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({brand, admin_password: pwd}) })
+    .then(r => r.json()).then(d => {
+      if (d.ok) alert('OK: ' + d.message);
+      else alert('Errore: ' + d.error);
+      document.getElementById('admin-pwd').value = '';
+    });
+}
+
+function addCassetto() {
+  const nome = document.getElementById('new-cassetto').value.trim();
+  if (!nome) { alert('Nome richiesto'); return; }
+  fetch('/api/add-azienda', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({nome}) })
+    .then(r => r.json()).then(d => {
+      if (d.ok) {
+        alert('Cassetto aggiunto!');
+        document.getElementById('new-cassetto').value = '';
+        fetch('/api/get-brands').then(r => r.json()).then(data => { BRANDS = data.brands || []; });
+      } else alert('Errore: ' + d.error);
+    });
+}
+
+function doUpload(input, tipo) {
+  const brand = document.getElementById('upload-brand-val').value;
+  if (!brand) { document.getElementById('upload-status').textContent = 'Seleziona prima un brand!'; document.getElementById('upload-status').style.color = '#ef4444'; input.value=''; return; }
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('upload-status').textContent = 'Caricamento...';
+  document.getElementById('upload-status').style.color = '#9ca3af';
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const filename = tipo === 'excel' ? file.name + ' [EXCEL]' : file.name;
+    fetch('/api/upload-document', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({filename, content: e.target.result, brand, visibility: accessLevel, access_code: accessCode}) })
+      .then(r => r.json()).then(d => {
+        if (d.ok) { document.getElementById('upload-status').textContent = 'Caricato: ' + file.name; document.getElementById('upload-status').style.color = '#10b981'; }
+        else { document.getElementById('upload-status').textContent = 'Errore: ' + d.error; document.getElementById('upload-status').style.color = '#ef4444'; }
+        input.value = '';
+      });
+  };
+  reader.readAsDataURL(file);
+}
+
+function apriGestisciDoc() {
+  document.getElementById('gestisci-doc-panel').style.display = 'flex';
+  document.getElementById('filtro-doc-brand').value = selected.length > 0 ? selected[0] : '';
+  filtraDocumenti();
+}
+
+function chiudiGestisciDoc() {
+  document.getElementById('gestisci-doc-panel').style.display = 'none';
+}
+
+function filtraDocumenti(tutti) {
+  const brand = tutti ? '' : document.getElementById('filtro-doc-brand').value.trim();
+  const url = brand ? '/api/list-documents?brand=' + encodeURIComponent(brand) : '/api/list-documents';
+  const container = document.getElementById('doc-list-panel');
+  container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Caricamento...</div>';
+
+  fetch(url).then(r => r.json()).then(d => {
+    const docs = d.documents || [];
+    if (docs.length === 0) {
+      container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Nessun documento trovato' + (brand ? ' per "' + brand + '"' : '') + '</div>';
+      return;
+    }
+    // Raggruppa per brand
+    const grouped = {};
+    docs.forEach(doc => {
+      const b = doc.brand || '—';
+      if (!grouped[b]) grouped[b] = [];
+      grouped[b].push(doc);
+    });
+
+    let html = '';
+    Object.entries(grouped).sort().forEach(([b, bdocs]) => {
+      html += '<div style="font-size:10px;font-weight:700;color:#60a5fa;text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 6px 0;">' + b + ' <span style="color:#6b7280;font-weight:400;">(' + bdocs.length + ')</span></div>';
+      bdocs.forEach(doc => {
+        const isExcel = doc.filename.includes('[EXCEL]');
+        const tipoHtml = isExcel
+          ? '<span class="doc-tipo-excel">📊 Excel</span>'
+          : '<span class="doc-tipo-doc">📄 Doc</span>';
+        const dataStr = doc.date ? doc.date.substring(0, 16).replace('T', ' ') : '—';
+        const visHtml = doc.visibility === 'private'
+          ? '<span style="font-size:9px;color:#f59e0b;">🔒 Privato</span>'
+          : '<span style="font-size:9px;color:#6b7280;">🌐 Pubblico</span>';
+        const nomeFile = doc.filename.replace(' [EXCEL]', '');
+        html += '<div class="doc-row" id="docrow-' + doc.id + '">' +
+          tipoHtml +
+          '<div style="flex:1;min-width:0;">' +
+          '<div style="font-weight:600;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + nomeFile + '</div>' +
+          '<div style="color:#6b7280;font-size:10px;">' + dataStr + ' · ' + visHtml + '</div>' +
+          '</div>' +
+          '<button onclick="eliminaDocumento(' + doc.id + ',\'' + b.replace(/'/g,"\\'") + '\')" class="btn-red btn-sm" style="margin-bottom:0;white-space:nowrap;">✕ Elimina</button>' +
+          '</div>';
+      });
+    });
+    container.innerHTML = html;
+  });
+}
+
+function eliminaDocumento(id, brand) {
+  if (!confirm('Eliminare questo documento di ' + brand + '?')) return;
+  fetch('/api/delete-document/' + id, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        const row = document.getElementById('docrow-' + id);
+        if (row) { row.style.opacity = '0.3'; row.style.pointerEvents = 'none'; setTimeout(() => row.remove(), 600); }
+      } else {
+        alert('Errore: ' + (d.error || 'sconosciuto'));
+      }
+    });
+}
+
+function generateOfferta() {
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  document.getElementById('question').value = 'Genera una proposta commerciale da presentare al cliente finale, illustrando i vantaggi e le caratteristiche dei brand selezionati: ' + selected.join(', ') + '. Il documento deve essere professionale, orientato al cliente e convincente.';
+  ask();
+}
+function generateAnalisi() {
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  document.getElementById('question').value = 'Crea una scheda analitica da condividere con il cliente sui brand selezionati: ' + selected.join(', ') + '. Evidenzia punti di forza, materiali, design e perché sono la scelta giusta per un progetto di qualità.';
+  ask();
+}
+function generateProposta() {
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  document.getElementById('question').value = 'Prepara una proposta strategica da presentare al cliente per un progetto che utilizzi i brand: ' + selected.join(', ') + '. Includi posizionamento, benefici concreti e suggerimenti di abbinamento.';
+  ask();
+}
+
+function copyRisposta(msgId) {
+  const el = document.getElementById(msgId);
+  if (!el) return;
+  const testo = el.innerText.replace('Copia\n', '').replace('Oracolo:\n', '').trim();
+  navigator.clipboard.writeText(testo).then(() => {
+    const btn = el.querySelector('.copy-btn');
+    if (btn) { btn.textContent = 'Copiato!'; setTimeout(() => { btn.textContent = 'Copia'; }, 2000); }
+  }).catch(() => {
+    const range = document.createRange();
+    range.selectNode(el);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    document.execCommand('copy');
+    window.getSelection().removeAllRanges();
+  });
+}
+
+function parseMarkdown(text) {
+  return text
+    .replace(/### (.+)/g, '<h3 style="color:#60a5fa;margin:10px 0 4px 0;font-size:13px">$1</h3>')
+    .replace(/## (.+)/g, '<h2 style="color:#3b82f6;margin:12px 0 6px 0;font-size:14px">$1</h2>')
+    .replace(/# (.+)/g, '<h1 style="color:#3b82f6;margin:12px 0 6px 0;font-size:15px">$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-\u2013\u2014] (.+)/gm, '<li style="margin-left:16px;margin-bottom:3px">$1</li>')
+    .replace(/(<li.*<\/li>)/gs, '<ul style="margin:6px 0">$1</ul>')
+    .replace(/\n{2,}/g, '</p><p style="margin:6px 0">')
+    .replace(/\n/g, '<br>');
+}
+
+function ask() {
+  if (!selected.length) { alert('Seleziona brand'); return; }
+  const q = document.getElementById('question').value;
+  if (!q) return;
+  document.getElementById('question').value = '';
+  const chat = document.getElementById('chat');
+  chat.innerHTML += '<div class="message"><strong>Tu:</strong> ' + q + '</div>';
+  const loadingId = 'loading_' + Date.now();
+  chat.innerHTML += '<div class="message" id="' + loadingId + '" style="opacity:0.6;font-style:italic">Oracolo sta elaborando...</div>';
+  chat.scrollTop = chat.scrollHeight;
+  fetch('/api/ask', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({question: q, brands: selected, web: webEnabled, access_code: accessCode}) })
+    .then(r => r.json())
+    .then(d => {
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      const formatted = parseMarkdown(d.answer || 'Nessuna risposta');
+      const msgId = 'msg_' + Date.now();
+      let html = '<div class="message oracolo-msg" id="' + msgId + '">';
+      html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
+      html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      const query = encodeURIComponent(selected.join(' ') + ' ' + q);
+      if (d.images && d.images.length > 0) {
+        html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
+        html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
+        html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
+        d.images.forEach(img => {
+          html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
+          html += '<img src="' + img + '" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.style.display=\'none\'">';
+          html += '</div>';
+        });
+        html += '</div></div>';
+      } else {
+        html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
+      }
+      // --- BOTTONE AGGIUNGI AL CARRELLO ---
+      const safeBrand = (selected[0] || '').replace(/'/g, "\\'");
+      html += '<div style="margin-top:10px; border-top:1px solid rgba(16,185,129,0.2); padding-top:8px;">';
+      html += '<button id="btn-carrello-' + msgId + '" onclick="apriFormCarrello(\'' + msgId + '\',\'' + safeBrand + '\')" ' +
+        'style="background:rgba(16,185,129,0.2); border:1px solid rgba(16,185,129,0.5); color:#10b981; padding:5px 12px; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer; margin-bottom:0;">✓ Aggiungi al carrello</button>';
+      html += '</div>';
+      // --- FORM CARRELLO (hidden) — desc verrà riempita da AI dopo apertura ---
+      html += '<div id="form-carrello-' + msgId + '" style="display:none; margin-top:8px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:10px;">';
+      html += '<div style="font-size:10px; color:#10b981; font-weight:700; text-transform:uppercase; margin-bottom:8px;">Aggiungi al carrello</div>';
+      html += '<input type="text" id="fc-codice-' + msgId + '" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:6px; font-size:11px;">';
+      html += '<textarea id="fc-desc-' + msgId + '" rows="2" placeholder="Sintesi in caricamento..." style="width:100%; margin-bottom:6px; font-size:11px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:6px; padding:6px; resize:vertical;"></textarea>';
+      html += '<div style="display:flex; gap:6px;">';
+      html += '<input type="number" id="fc-prezzo-' + msgId + '" placeholder="Prezzo €" style="flex:1; font-size:11px;">';
+      html += '<button onclick="confermaDaChat(\'' + msgId + '\',\'' + safeBrand + '\')" class="btn-green" style="flex:1; margin-bottom:0; font-size:11px;">✓ Conferma</button>';
+      html += '<button onclick="document.getElementById(\'form-carrello-' + msgId + '\').style.display=\'none\'" class="btn-gray" style="flex:none; margin-bottom:0; font-size:11px;">✕</button>';
+      html += '</div></div>';
+      html += '</div>';
+      chat.innerHTML += html;
+      // Salva testo grezzo sul DOM per uso successivo
+      const msgEl = document.getElementById(msgId);
+      if (msgEl) msgEl.dataset.rawAnswer = d.answer || '';
+      chat.scrollTop = chat.scrollHeight;
+    })
+    .catch(e => {
+      const loading = document.getElementById(loadingId);
+      if (loading) loading.remove();
+      chat.innerHTML += '<div class="message" style="color:#ef4444"><strong>Errore:</strong> ' + e + '</div>';
+    });
+}
+
+// ---------------------------------------------------------------------------
+// AGGIUNGI DA CHAT AL CARRELLO
+// ---------------------------------------------------------------------------
+function apriFormCarrello(msgId, brand) {
+  if (!cantiereAttivo) {
+    alert('Apri prima un cantiere dal pannello destra');
+    return;
+  }
+  const form = document.getElementById('form-carrello-' + msgId);
+  if (!form) return;
+  const isOpen = form.style.display !== 'none';
+  form.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) {
+    // Se la textarea è ancora vuota, chiedi sintesi AI
+    const ta = document.getElementById('fc-desc-' + msgId);
+    if (ta && !ta.value.trim()) {
+      const msgEl = document.getElementById(msgId);
+      const rawAnswer = msgEl ? msgEl.dataset.rawAnswer || '' : '';
+      ta.value = 'Sintesi in caricamento...';
+      fetch('/api/arricchisci-prodotto', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ descrizione: rawAnswer, brand: brand })
+      })
+      .then(r => r.json())
+      .then(d => { if (d.ok) ta.value = d.descrizione_ai; else ta.value = rawAnswer.substring(0, 200); })
+      .catch(() => { ta.value = rawAnswer.substring(0, 200); });
+    }
+  }
+}
+
+function confermaDaChat(msgId, brand) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const codice = document.getElementById('fc-codice-' + msgId).value.trim();
+  const descEl = document.getElementById('fc-desc-' + msgId);
+  const prezzoEl = document.getElementById('fc-prezzo-' + msgId);
+  const desc = descEl ? descEl.value.trim() : '';
+  const prezzo = parseFloat(prezzoEl ? prezzoEl.value : '') || 0;
+  if (!desc) { alert('La descrizione è vuota'); return; }
+  const descrizione = codice ? '[' + codice + '] ' + desc : desc;
+  // Brand = sempre quello selezionato nella sidebar
+  const brandEffettivo = (selected && selected.length > 0) ? selected[0] : brand;
+
+  // Disabilita subito il bottone per evitare doppio click
+  const form = document.getElementById('form-carrello-' + msgId);
+  const confirmBtn = form ? form.querySelector('.btn-green') : null;
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '⏳'; }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: brandEffettivo, categoria: '', descrizione: descrizione, importo: prezzo })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      if (form) {
+        form.innerHTML = '<div style="color:#10b981; font-size:11px; font-weight:600; padding:4px 0;">✓ Aggiunto al carrello!</div>';
+        setTimeout(() => { form.style.display = 'none'; }, 2000);
+      }
+      // Disabilita anche il bottone esterno
+      const outerBtn = document.getElementById('btn-carrello-' + msgId);
+      if (outerBtn) { outerBtn.textContent = '✓ Aggiunto'; outerBtn.disabled = true; outerBtn.style.opacity = '0.5'; }
+      loadRighe();
+    } else {
+      if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '✓ Conferma'; }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// EXCEL INTELLIGENTE
+// ---------------------------------------------------------------------------
+let excelRighe = [];  // righe caricate dall'Excel
+
+function toggleExcelPanel() {
+  const panel = document.getElementById('excel-panel');
+  const arrow = document.getElementById('excel-panel-arrow');
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  arrow.textContent = open ? '▼' : '▲';
+}
+
+function caricaAbbinamenti() {
+  const status = document.getElementById('abbinamenti-status');
+  status.textContent = '⏳ Caricamento...';
+  status.style.color = '#9ca3af';
+  
+  // Prendi il brand (default Gessi)
+  const brand = 'Gessi';
+  
+  fetch('/api/carica-abbinamenti-excel/' + encodeURIComponent(brand), {
+    method: 'POST'
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      status.textContent = '✅ ' + d.message;
+      status.style.color = '#10b981';
+    } else {
+      status.textContent = '❌ ' + (d.error || 'Errore');
+      status.style.color = '#ef4444';
+    }
+    setTimeout(() => { status.textContent = ''; }, 4000);
+  })
+  .catch(e => {
+    status.textContent = '❌ ' + e.message;
+    status.style.color = '#ef4444';
+  });
+}
+
+function caricaExcelListino(input) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('excel-status').textContent = 'Lettura Excel...';
+  document.getElementById('excel-status').style.color = '#9ca3af';
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    fetch('/api/parse-excel', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: e.target.result})
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        excelRighe = d.righe;
+        document.getElementById('excel-status').textContent = '✓ ' + d.totale + ' prodotti trovati';
+        document.getElementById('excel-status').style.color = '#10b981';
+        renderExcelRighe();
+      } else {
+        document.getElementById('excel-status').textContent = 'Errore: ' + d.error;
+        document.getElementById('excel-status').style.color = '#ef4444';
+      }
+    })
+    .catch(err => {
+      document.getElementById('excel-status').textContent = 'Errore: ' + err;
+      document.getElementById('excel-status').style.color = '#ef4444';
+    });
+  };
+  reader.readAsDataURL(file);
+  input.value = '';
+}
+
+function renderExcelRighe() {
+  const container = document.getElementById('excel-righe-list');
+  if (!excelRighe.length) { container.innerHTML = ''; return; }
+
+  // Campo ricerca
+  let html = '<input type="text" id="excel-search" placeholder="Filtra prodotti..." ' +
+    'oninput="renderExcelRigheFiltered()" style="width:100%; margin-bottom:8px; font-size:11px;">';
+  html += '<div id="excel-righe-inner"></div>';
+  container.innerHTML = html;
+  renderExcelRigheFiltered();
+}
+
+function renderExcelRigheFiltered() {
+  const searchEl = document.getElementById('excel-search');
+  const sv = searchEl ? searchEl.value.toLowerCase() : '';
+  const filtered = sv
+    ? excelRighe.filter(r => (r.codice + ' ' + r.descrizione).toLowerCase().includes(sv))
+    : excelRighe;
+
+  const inner = document.getElementById('excel-righe-inner');
+  if (!inner) return;
+
+  inner.innerHTML = filtered.slice(0, 50).map((r, i) => {
+    const idx = excelRighe.indexOf(r);
+    const prezzoHtml = r.prezzo !== null && r.prezzo !== undefined
+      ? '<span class="' + (r.prezzo_src === 'excel' ? 'prezzo-excel' : 'prezzo-web') + '">€' +
+        parseFloat(r.prezzo).toFixed(2) + (r.prezzo_src !== 'excel' ? ' ⚠web' : '') + '</span>'
+      : '<span style="color:#6b7280; font-size:10px;">prezzo mancante</span>';
+
+    const aiDesc = r.descrizione_ai
+      ? '<div class="excel-ai-desc">' + r.descrizione_ai + '</div>'
+      : '';
+
+    return '<div class="excel-row" id="excel-row-' + idx + '">' +
+      '<div class="excel-row-header">' +
+      '<span class="excel-codice">' + (r.codice || '—') + '</span>' +
+      '<span class="excel-desc">' + (r.descrizione || '—') + '</span>' +
+      prezzoHtml +
+      '</div>' +
+      aiDesc +
+      '<div class="excel-actions">' +
+      '<button onclick="arricchisciRiga(' + idx + ')" class="btn-sm" style="background:rgba(59,130,245,0.3);color:#93c5fd;margin-bottom:0;">✨ Arricchisci</button>' +
+      '<input type="number" id="prezzo-edit-' + idx + '" placeholder="Modifica €" value="' + (r.prezzo !== null ? r.prezzo : '') + '" ' +
+        'style="width:90px; font-size:10px; padding:3px 6px; flex:none;" ' +
+        'onchange="aggiornaPrezzo(' + idx + ')">' +
+      '<button onclick="aggiungiAlCarrello(' + idx + ')" class="btn-sm btn-green" style="margin-bottom:0;">✓ Carrello</button>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+
+  if (filtered.length > 50) {
+    inner.innerHTML += '<div style="font-size:10px; color:#9ca3af; text-align:center; padding:6px;">Mostrati 50 di ' + filtered.length + ' — usa il filtro per trovare</div>';
+  }
+}
+
+function aggiornaPrezzo(idx) {
+  const input = document.getElementById('prezzo-edit-' + idx);
+  if (!input) return;
+  const val = parseFloat(input.value);
+  if (!isNaN(val)) {
+    excelRighe[idx].prezzo = val;
+    excelRighe[idx].prezzo_src = 'excel';  // manuale = trattato come excel (verde)
+    renderExcelRigheFiltered();
+  }
+}
+
+function arricchisciRiga(idx) {
+  const r = excelRighe[idx];
+  const btn = document.querySelector('#excel-row-' + idx + ' button');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+
+  fetch('/api/arricchisci-prodotto', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: r.codice,
+      descrizione: r.descrizione,
+      prezzo: r.prezzo,
+      brand: selected.length === 1 ? selected[0] : (selected[0] || '')
+    })
+  })
+  .then(res => res.json())
+  .then(d => {
+    if (d.ok) {
+      excelRighe[idx].descrizione_ai = d.descrizione_ai;
+      renderExcelRigheFiltered();
+    }
+  })
+  .catch(() => { if (btn) { btn.textContent = '✨ Arricchisci'; btn.disabled = false; } });
+}
+
+function aggiungiAlCarrello(idx) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const r = excelRighe[idx];
+  const descrizione = r.descrizione_ai || r.descrizione || '';
+  const importo = r.prezzo || 0;
+  const brand = selected.length === 1 ? selected[0] : (selected[0] || '');
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe-da-ai', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      brand: brand,
+      categoria: '',
+      codice: r.codice,
+      descrizione: descrizione,
+      importo: importo
+    })
+  })
+  .then(res => res.json())
+  .then(d => {
+    if (d.ok) {
+      // Feedback visivo sul bottone
+      const btns = document.querySelectorAll('#excel-row-' + idx + ' button');
+      const addBtn = btns[btns.length - 1];
+      if (addBtn) { addBtn.textContent = '✓ Aggiunto!'; addBtn.style.background = '#10b981'; setTimeout(() => { addBtn.textContent = '✓ Carrello'; addBtn.style.background = ''; }, 2000); }
+      loadRighe();
+    }
+  });
+}
+
+function addVoceManuale() {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const desc = document.getElementById('voce-desc').value.trim();
+  const importo = parseFloat(document.getElementById('voce-importo').value) || 0;
+  if (!desc) { alert('Inserisci una descrizione'); return; }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({brand: '', categoria: 'Voce manuale', descrizione: desc, importo: importo})
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      document.getElementById('voce-desc').value = '';
+      document.getElementById('voce-importo').value = '';
+      loadRighe();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// RICERCA RAPIDA LISTINO DALLA CHAT
+// ---------------------------------------------------------------------------
+let cercaRapidaTimer = null;
+
+function cercaRapidaListino(val) {
+  const qsr = document.getElementById('quick-search-results');
+  clearTimeout(cercaRapidaTimer);
+  if (!val || val.length < 3 || !selected.length) {
+    qsr.style.display = 'none';
+    return;
+  }
+  cercaRapidaTimer = setTimeout(() => {
+    fetch('/api/cerca-prodotto', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ query: val, brand: selected[0] })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (!d.prodotti || d.prodotti.length === 0) {
+        qsr.style.display = 'none';
+        return;
+      }
+      const listinoTipoAttuale = listinoTipo || 'cliente';
+      let html = '<div style="padding:6px 10px; font-size:9px; color:#6b7280; border-bottom:1px solid rgba(59,130,245,0.15);">📄 Trovato nel listino Excel — clicca per aggiungere al carrello</div>';
+      d.prodotti.forEach((p, idx) => {
+        const prezzo = listinoTipoAttuale === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : p.prezzo;
+        const prezzoRiv = p.prezzo_rivenditore;
+        const prezzoLabel = prezzo ? '<span style="color:#10b981;font-weight:700;">€' + parseFloat(prezzo).toFixed(0) + '</span>' + (prezzoRiv && listinoTipoAttuale === 'cliente' ? '<span style="color:#f59e0b;font-size:9px;margin-left:4px;">riv.€' + parseFloat(prezzoRiv).toFixed(0) + '</span>' : '') : '<span style="color:#6b7280;">—</span>';
+        const disp = (p.disponibilita||'').toLowerCase().includes('ordine') ? '⏳' : '✓';
+        const dispColor = (p.disponibilita||'').toLowerCase().includes('ordine') ? '#f59e0b' : '#10b981';
+        html += '<div style="padding:8px 10px; border-bottom:1px solid rgba(59,130,245,0.1); display:flex; align-items:center; gap:8px; cursor:pointer;" ' +
+          'onmouseover="this.style.background=\'rgba(59,130,245,0.1)\'" onmouseout="this.style.background=\'\'">' +
+          '<div style="flex:1;">' +
+          '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (p.nome||p.codice) + '</div>' +
+          '<div style="font-size:9px; color:#9ca3af;">' + (p.codice||'') + (p.collezione ? ' · ' + p.collezione : '') + ' <span style="color:' + dispColor + ';">' + disp + '</span></div>' +
+          '</div>' +
+          '<div style="text-align:right;">' + prezzoLabel + '</div>' +
+          '<button onclick="aggiungiDaRicercaRapida(' + idx + ',this)" class="btn-green btn-sm" style="margin-bottom:0;white-space:nowrap;">+ Carrello</button>' +
+          '<button onclick="usaDescrizioneRapida(' + idx + ')" class="btn-sm" style="background:rgba(59,130,245,0.3);color:#93c5fd;margin-bottom:0;">AI ✨</button>' +
+          '</div>';
+      });
+      // Salva risultati per uso nei bottoni
+      window._qsResults = d.prodotti;
+      qsr.innerHTML = html;
+      qsr.style.display = 'block';
+    });
+  }, 350);
+}
+
+function aggiungiDaRicercaRapida(idx, btn) {
+  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
+  const p = window._qsResults[idx];
+  if (!p) return;
+  const listinoTipoAttuale = listinoTipo || 'cliente';
+  const importo = listinoTipoAttuale === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
+  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: selected[0] || '', categoria: p.categoria||'', descrizione, importo })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      if (btn) { btn.textContent = '✓'; btn.style.background = '#10b981'; }
+      loadRighe();
+      setTimeout(() => { document.getElementById('quick-search-results').style.display = 'none'; }, 1000);
+    }
+  });
+}
+
+function usaDescrizioneRapida(idx) {
+  const p = window._qsResults[idx];
+  if (!p) return;
+  document.getElementById('question').value = 'Descrivi commercialmente: ' + (p.nome||p.codice) + ' [' + (p.codice||'') + '] — ' + (p.descrizione||'');
+  document.getElementById('quick-search-results').style.display = 'none';
+  ask();
+}
+
+// Chiudi risultati rapidi se clicco fuori
+document.addEventListener('click', function(e) {
+  const qsr = document.getElementById('quick-search-results');
+  const q = document.getElementById('question');
+  if (qsr && q && !qsr.contains(e.target) && e.target !== q) {
+    qsr.style.display = 'none';
+  }
+});
+
+// ---------------------------------------------------------------------------
+// LISTINO DASHBOARD — flusso 1-click
+// ---------------------------------------------------------------------------
+let listinoData = [];
+let listinoBrand = '';
+let filtroLinea = 'tutti';
+let filtroCategoria = 'tutti';
+let listinoTipo = 'cliente';
+
+function setListinoTipo(tipo) {
+  listinoTipo = tipo;
+  document.getElementById('btn-listino-cliente').style.background = tipo === 'cliente' ? '#3b82f6' : 'rgba(59,130,245,0.2)';
+  document.getElementById('btn-listino-riv').style.background = tipo === 'rivenditore' ? '#f59e0b' : 'rgba(245,158,11,0.2)';
+  document.getElementById('btn-listino-riv').style.color = tipo === 'rivenditore' ? 'white' : '#f59e0b';
+  filtraListino();
+}
+
+// Apre listino automaticamente quando brand selezionato ha un listino caricato
+function apriListino() {
+  if (!selected || selected.length === 0) { alert('Seleziona prima un brand'); return; }
+  listinoBrand = selected[0];
+  filtroLinea = 'tutti';
+  filtroCategoria = 'tutti';
+  document.getElementById('listino-brand-tag').textContent = listinoBrand;
+  document.getElementById('listino-panel').classList.add('open');
+  document.getElementById('listino-search').value = '';
+  caricaListino();
+}
+
+function chiudiListino() {
+  document.getElementById('listino-panel').classList.remove('open');
+}
+
+function caricaListino() {
+  document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Caricamento prodotti...</div>';
+  fetch('/api/listino/' + encodeURIComponent(listinoBrand))
+    .then(r => r.json())
+    .then(d => {
+      listinoData = d.prodotti || [];
+      costruisciFiltriLinea();
+      costruisciFiltriCat();
+      costruisciDomande();
+      filtraListino();
+      const n = listinoData.length;
+      const fonte = d.fonte
+        ? '<span style="color:#10b981;">📄 ' + n + ' prodotti da listino</span>'
+        : '<span style="color:#ef4444;">⚠ Nessun listino caricato per ' + listinoBrand + ' — carica un Excel prima</span>';
+      document.getElementById('listino-count').innerHTML = fonte;
+      
+      // CARICA ABBINAMENTI AUTOMATICAMENTE QUANDO CARICHI LISTINO
+      fetch('/api/carica-abbinamenti-excel/' + encodeURIComponent(listinoBrand), {method:'POST'})
+        .then(r => r.json())
+        .catch(() => {}); // Silenzioso se fallisce
+    });
+}
+
+function costruisciFiltriLinea() {
+  const linee = [...new Set(listinoData.map(p => p.collezione).filter(Boolean))].sort();
+  let html = '<button class="filtro-btn active" onclick="setFiltroLinea(\'tutti\',this)">Tutte le linee</button>';
+  linee.forEach(l => {
+    const n = listinoData.filter(p => p.collezione === l).length;
+    html += '<button class="filtro-btn" onclick="setFiltroLinea(\'' + l.replace(/'/g,"\\'") + '\',this)">' + l + ' <span style="opacity:0.6;">(' + n + ')</span></button>';
+  });
+  document.getElementById('filtri-linea').innerHTML = html;
+}
+
+function costruisciFiltriCat() {
+  const cats = [...new Set(listinoData.map(p => p.categoria).filter(Boolean))].sort();
+  let html = '<button class="filtro-btn active" onclick="setFiltroCategoria(\'tutti\',this)">Tutte le cat.</button>';
+  cats.forEach(c => {
+    html += '<button class="filtro-btn" onclick="setFiltroCategoria(\'' + c.replace(/'/g,"\\'") + '\',this)">' + c + '</button>';
+  });
+  document.getElementById('filtri-cat').innerHTML = html;
+}
+
+function costruisciDomande() {
+  const domande = [
+    'Quali prodotti abbinare per un bagno moderno?',
+    'Cosa è disponibile subito?',
+    'Prodotti entry level sotto €400',
+    'Soluzioni premium per progetto di lusso',
+    'Cosa abbinare a ' + listinoBrand + ' per doccia?',
+    'Differenze tra le collezioni',
+    'Novità e best seller'
+  ];
+  document.getElementById('domande-bar').innerHTML = domande.map(d =>
+    '<button class="domanda-chip" onclick="faiDomandaListino(\'' + d.replace(/'/g,"\\'") + '\')">' + d + '</button>'
+  ).join('');
+}
+
+function setFiltroLinea(val, btn) {
+  filtroLinea = val;
+  document.querySelectorAll('#filtri-linea .filtro-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  filtraListino();
+}
+
+function setFiltroCategoria(val, btn) {
+  filtroCategoria = val;
+  document.querySelectorAll('#filtri-cat .filtro-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  filtraListino();
+}
+
+function filtraListino() {
+  const sv = (document.getElementById('listino-search') ? document.getElementById('listino-search').value : '').toLowerCase();
+  let prodotti = listinoData;
+  if (filtroLinea !== 'tutti') prodotti = prodotti.filter(p => p.collezione === filtroLinea);
+  if (filtroCategoria !== 'tutti') prodotti = prodotti.filter(p => p.categoria === filtroCategoria);
+  if (sv) prodotti = prodotti.filter(p =>
+    (p.nome||'').toLowerCase().includes(sv) ||
+    (p.codice||'').toLowerCase().includes(sv) ||
+    (p.descrizione||'').toLowerCase().includes(sv)
+  );
+
+  if (prodotti.length === 0) {
+    document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Nessun prodotto trovato</div>';
+    return;
+  }
+
+  document.getElementById('prodotti-grid').innerHTML = prodotti.map(p => {
+    const idx = listinoData.indexOf(p);
+    const dispClass = (p.disponibilita||'').toLowerCase().includes('ordine') ? 'su-ordine' : 'disponibile';
+    const dispBadge = (p.disponibilita||'').toLowerCase().includes('ordine') ? 'disp-ord' : 'disp-ok';
+    const dispLabel = (p.disponibilita||'').toLowerCase().includes('ordine') ? '⏳ Su ordine' : '✓ Disponibile';
+
+    // Prezzo principale + secondario
+    const pCliente = p.prezzo;
+    const pRiv = p.prezzo_rivenditore;
+    const pUsato = listinoTipo === 'rivenditore' && pRiv ? pRiv : pCliente;
+    const pSecondario = listinoTipo === 'rivenditore' ? pCliente : pRiv;
+    const clsPrezzo = p.fonte === 'excel' ? 'prodotto-prezzo-excel' : 'prodotto-prezzo-web';
+    const iconWeb = p.fonte !== 'excel' ? ' ⚠' : '';
+
+    let prezzoHtml = pUsato
+      ? '<span class="' + clsPrezzo + '">€' + parseFloat(pUsato).toFixed(0) + iconWeb + '</span>'
+      : '<span style="color:#6b7280;font-size:10px;">—</span>';
+    if (pSecondario) {
+      const lbl = listinoTipo === 'cliente' ? 'riv.' : 'cl.';
+      const clr = listinoTipo === 'cliente' ? '#f59e0b' : '#9ca3af';
+      prezzoHtml += '<span style="font-size:9px;color:' + clr + ';margin-left:6px;">' + lbl + ' €' + parseFloat(pSecondario).toFixed(0) + '</span>';
+    }
+
+    return '<div class="prodotto-card ' + dispClass + '" id="pcard-' + idx + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px;">' +
+      '<span class="prodotto-codice">' + (p.codice||'—') + '</span>' +
+      '<span class="prodotto-disp ' + dispBadge + '">' + dispLabel + '</span>' +
+      '</div>' +
+      '<div class="prodotto-nome">' + (p.nome||'—') + '</div>' +
+      '<div class="prodotto-cat">' + [p.collezione, p.categoria].filter(Boolean).join(' · ') + '</div>' +
+      (p.descrizione ? '<div style="font-size:10px;color:#9ca3af;margin:3px 0;line-height:1.3;">' + p.descrizione + '</div>' : '') +
+      (p.finiture ? '<div style="font-size:9px;color:#6b7280;">🎨 ' + p.finiture + '</div>' : '') +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">' +
+      '<div>' + prezzoHtml + '</div>' +
+      '</div>' +
+      '<div class="prodotto-actions" style="margin-top:8px;">' +
+      '<button onclick="event.stopPropagation();verificaAbbinamenti(' + idx + ',\'' + (p.codice||'').replace(/'/g,"\\'") + '\')" class="btn-sm" id="abbina-btn-' + idx + '" style="flex:1; background:rgba(107,114,128,0.3);color:#d1d5db;">📋 Abbina</button>' +
+      '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
+      '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
+      '</div></div>';
+  }).join('');
+  
+  // Controlla abbinamenti per TUTTI i prodotti visibili
+  prodotti.forEach((p, i) => {
+    const idx = listinoData.indexOf(p);
+    setTimeout(() => verificaAbbinamenti(idx, p.codice), 100 * i);
+  });
+}
+
+function chiediAIprodotto(idx, tipo) {
+  const p = listinoData[idx];
+  if (!p) return;
+  let domanda = '';
+  if (tipo === 'abbinamenti') domanda = 'Cosa abbinare al prodotto ' + (p.nome||p.codice) + ' di ' + listinoBrand + '? Suggerisci prodotti complementari dello stesso brand o di altri brand che trattiamo.';
+  if (tipo === 'descrizione') domanda = 'Crea una descrizione commerciale breve (max 120 caratteri) per: ' + (p.nome||p.codice) + ' — ' + (p.descrizione||'') + '. Prezzo: €' + (p.prezzo||'da definire') + '. Brand: ' + listinoBrand;
+  chiudiListino();
+  document.getElementById('question').value = domanda;
+  ask();
+}
+
+function faiDomandaListino(domanda) {
+  chiudiListino();
+  document.getElementById('question').value = domanda;
+  ask();
+}
+
+function aggiungiAccessorio(accId, accNome) {
+  if (!cantiereAttivo) {
+    alert('Nessun cantiere aperto');
+    return;
+  }
+  
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ 
+      brand: 'Gessi', 
+      categoria: 'Accessori', 
+      descrizione: accNome,
+      importo: 0 // Accessori senza prezzo iniziale
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadRighe(); // Ricarica carrello
+      // Feedback visuale
+      const msg = document.createElement('div');
+      msg.innerHTML = '✓ Accessorio aggiunto!';
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 2000);
+    }
+  });
+}
+
+function aggiungiDaListino(idx) {
+  if (!cantiereAttivo) {
+    if (confirm('Nessun cantiere aperto. Vuoi aprire il pannello cantieri?')) {
+      chiudiListino();
+      document.getElementById('mod-cantieri') && toggleModule('cantieri-body');
+    }
+    return;
+  }
+  const p = listinoData[idx];
+  if (!p) return;
+  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
+  const importo = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
+
+  const btn = document.getElementById('addbtn-' + idx);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ brand: listinoBrand, categoria: p.categoria||'', descrizione, importo })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      if (btn) { btn.textContent = '✓ Aggiunto'; btn.style.background = '#10b981'; }
+      const card = document.getElementById('pcard-' + idx);
+      if (card) card.style.opacity = '0.6';
+      loadRighe();
+      // Carica accessori consigliati
+      const prodottoId = p.codice || '';
+      if (prodottoId) caricaAccessoriProdotto(prodottoId, listinoBrand);
+    } else {
+      if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
+    }
+    
+    // Controlla abbinamenti e colora il bottone
+    verificaAbbinamenti(idx, p.codice);
+  });
+}
+
+function verificaAbbinamenti(idx, codice) {
+  if (!codice) return;
+  
+  // Fetch diretto — controlla se abbinamenti sono nel DB
+  fetch('/api/abbina/' + encodeURIComponent(codice))
+    .then(r => r.json())
+    .then(d => {
+      const btn = document.getElementById('abbina-btn-' + idx);
+      if (!btn) return;
+      
+      // Se ha abbinamenti ufficiali O alternative
+      const hasAbbinamenti = (d.ufficiali && d.ufficiali.length > 0) || 
+                             (d.alternative && d.alternative.length > 0);
+      
+      if (hasAbbinamenti) {
+        // 🔴 ROSSO - Ha abbinamenti
+        btn.style.background = '#ef4444';
+        btn.style.color = 'white';
+        btn.style.cursor = 'pointer';
+        btn.disabled = false;
+        btn.onclick = () => apriModalAbbinamenti(codice, d);
+      } else {
+        // 🔘 Grigio - No abbinamenti
+        btn.style.background = 'rgba(107,114,128,0.3)';
+        btn.style.color = '#d1d5db';
+        btn.style.cursor = 'not-allowed';
+        btn.disabled = true;
+      }
+    })
+    .catch(e => {
+      console.error('Errore verifica:', e);
+      const btn = document.getElementById('abbina-btn-' + idx);
+      if (btn) btn.style.background = 'rgba(107,114,128,0.3)';
+    });
+}
+
+function apriModalAbbinamenti(codice, data) {
+  // Leggi le righe dal server
+  if (!cantiereAttivo) {
+    alert('Apri prima un cantiere');
+    return;
+  }
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe')
+    .then(r => r.json())
+    .then(righeData => {
+      const righeGiaAggiunte = new Set();
+      
+      // Estrai i codici GSS già aggiunti
+      if (righeData.righe) {
+        righeData.righe.forEach(r => {
+          const desc = r.descrizione || '';
+          const match = desc.match(/\[(GSS-[^\]]+)\]/);
+          if (match) {
+            righeGiaAggiunte.add(match[1]);
+          }
+        });
+      }
+
+      mostraModalAbbinamenti(codice, data, righeGiaAggiunte);
+    })
+    .catch(e => {
+      console.error('Errore lettura righe:', e);
+      mostraModalAbbinamenti(codice, data, new Set());
+    });
+}
+
+function mostraModalAbbinamenti(codice, data, righeGiaAggiunte) {
+  const html = `
+    <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;">
+      <div style="background:#0f172a;border:2px solid #3b82f6;border-radius:12px;width:100%;max-width:600px;max-height:80vh;overflow-y:auto;padding:30px;">
+        
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;border-bottom:2px solid #1e40af;padding-bottom:15px;">
+          <h2 style="margin:0;color:#60a5fa;font-size:18px;font-weight:bold;">Abbinamenti: ${codice}</h2>
+          <button onclick="this.closest('[style*=fixed]').remove()" style="background:#ef4444;color:white;border:none;border-radius:50%;width:40px;height:40px;cursor:pointer;font-size:20px;">✕</button>
+        </div>
+        
+        <div style="margin-bottom:20px;">
+          <div style="font-size:12px;color:#60a5fa;font-weight:bold;margin-bottom:12px;text-transform:uppercase;">✓ Abbinamenti Ufficiali</div>
+          ${(data.ufficiali || []).map(acc => {
+            const isChecked = righeGiaAggiunte.has(acc.accessorio_id);
+            return `
+            <div style="background:rgba(16,185,129,${isChecked ? '0.25' : '0.1'});border:2px solid rgba(16,185,129,${isChecked ? '0.8' : '0.3'});border-radius:6px;padding:12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+              <div style="flex:1;display:flex;align-items:center;">
+                <input type="checkbox" ${isChecked ? 'checked' : ''} disabled style="margin-right:10px;width:18px;height:18px;">
+                <div>
+                  <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
+                  <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
+                </div>
+              </div>
+              <button data-accid="${acc.accessorio_id}" onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}', '${acc.nome}', '${codice}')" style="background:${isChecked ? '#10b981' : '#3b82f6'};color:white;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:600;margin-left:10px;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</button>
+            </div>
+            `;
+          }).join('')}
+        </div>
+        
+        ${(data.alternative && data.alternative.length > 0) ? `
+        <div>
+          <div style="font-size:12px;color:#f59e0b;font-weight:bold;margin-bottom:12px;text-transform:uppercase;">★ Abbinamenti Alternativi</div>
+          ${data.alternative.map(acc => {
+            const isChecked = righeGiaAggiunte.has(acc.accessorio_id);
+            return `
+            <div style="background:rgba(245,158,11,${isChecked ? '0.25' : '0.1'});border:2px solid rgba(245,158,11,${isChecked ? '0.8' : '0.3'});border-radius:6px;padding:12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+              <div style="flex:1;display:flex;align-items:center;">
+                <input type="checkbox" ${isChecked ? 'checked' : ''} disabled style="margin-right:10px;width:18px;height:18px;">
+                <div>
+                  <div style="font-weight:600;color:#e0e0e0;">${acc.nome}</div>
+                  <div style="font-size:10px;color:#9ca3af;">${acc.accessorio_id}</div>
+                </div>
+              </div>
+              <button data-accid="${acc.accessorio_id}" onclick="aggiungiAccessorioAlCantiere('${acc.accessorio_id}', '${acc.nome}', '${codice}')" style="background:${isChecked ? '#f59e0b' : '#3b82f6'};color:white;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:600;margin-left:10px;">${isChecked ? '✓ Aggiunto' : 'Aggiungi'}</button>
+            </div>
+            `;
+          }).join('')}
+        </div>
+        ` : ''}
+        
+      </div>
+    </div>
+  `;
+  
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  document.body.appendChild(container);
+}
+
+function rimuoviAccessorioAlCantiere(accId) {
+  // Trova la riga nel carrello con questo accessorio e la rimuove
+  const righeDiv = document.getElementById('righe-list');
+  if (!righeDiv) return;
+  
+  const items = righeDiv.querySelectorAll('[data-descrizione]');
+  items.forEach(item => {
+    const desc = item.getAttribute('data-descrizione');
+    if (desc && desc.includes(accId)) {
+      // Clicca il bottone elimina
+      const deleteBtn = item.querySelector('button[onclick*="eliminaRiga"]');
+      if (deleteBtn) deleteBtn.click();
+    }
+  });
+}
+
+function aggiungiAccessorioAlCantiere(accId, accNome, prodottoCodeice) {
+  console.log('🔵 POST accessorio:', {accId, accNome, cantiereAttivo});
+  
+  if (!cantiereAttivo) {
+    alert('Apri prima un cantiere');
+    return;
+  }
+  
+  const payload = {
+    brand: 'Gessi',
+    categoria: 'Accessori',
+    descrizione: `[${accId}] ${accNome}`,
+    importo: 0
+  };
+  
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  })
+  .then(r => {
+    console.log('📥 Status:', r.status);
+    return r.json();
+  })
+  .then(d => {
+    console.log('📦 Response:', d);
+    if (d.ok) {
+      console.log('✅ Aggiunto - refresh carrello');
+      loadRighe();
+      
+      // Aggiorna bottone
+      const modal = document.querySelector('[style*="position:fixed"]');
+      if (modal) {
+        const btn = modal.querySelector(`button[data-accid="${accId}"]`);
+        if (btn) {
+          btn.textContent = '✓ Aggiunto';
+          btn.style.background = '#10b981';
+          btn.disabled = true;
+        }
+      }
+      
+      // Toast
+      const msg = document.createElement('div');
+      msg.textContent = '✓ ' + accNome;
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:10px 16px;border-radius:4px;z-index:9999;font-size:11px;font-weight:600;';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 1500);
+    } else {
+      alert('Errore: ' + (d.error || 'Non aggiunto'));
+    }
+  })
+  .catch(e => {
+    console.error('❌ Exception:', e);
+    alert('Errore: ' + e.message);
+  });
+}
+
+// Controlla se già loggato
+fetch('/api/me').then(r => r.json()).then(d => {
+  if (d.logged) {
+    document.getElementById('login-overlay').style.display = 'none';
+    document.getElementById('main-app').style.display = 'flex';
+    initApp();
+  }
+});
 </script>
-</body>
-</html>
-"""
 
-@app.route('/')
-def dashboard():
-    return render_template_string(DASHBOARD_HTML)
+<!-- ============================================================================
+     MODAL ABBINAMENTI — HTML/CSS/JavaScript
+     ============================================================================ -->
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# HEALTH MONITOR
-# ═══════════════════════════════════════════════════════════════════════════
-
-HEALTH_HTML = """<!DOCTYPE html>
-<html lang="it">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OVERTOP — System Health</title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&display=swap" rel="stylesheet">
 <style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family: 'Space Mono', monospace; background: #030810; color: #8a9bb0; min-height:100vh; padding:20px 16px; }
-.title { font-family:'Bebas Neue',sans-serif; font-size:13px; letter-spacing:5px; color:#1e3a5f; margin-bottom:20px; text-align:center; }
-.score-wrap { text-align:center; margin-bottom:24px; }
-.score-label { font-size:9px; letter-spacing:3px; color:#1e3a5f; margin-bottom:6px; }
-.score-num { font-family:'Bebas Neue',sans-serif; font-size:72px; line-height:1; transition:color .5s; }
-.score-num.good { color:#00c97a; text-shadow:0 0 30px rgba(0,201,122,0.3); }
-.score-num.warn { color:#f0b429; text-shadow:0 0 30px rgba(240,180,41,0.3); }
-.score-num.bad  { color:#ff3355; text-shadow:0 0 30px rgba(255,51,85,0.3); }
-.score-sub { font-size:10px; color:#1e3a5f; margin-top:4px; letter-spacing:1px; }
-.bar-wrap { display:flex; gap:3px; margin-bottom:24px; height:3px; }
-.bar-seg { flex:1; border-radius:2px; }
-.counters { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:24px; }
-.counter-box { background:#050d1a; border-radius:8px; padding:12px 14px; border:0.5px solid #0a1828; text-align:center; }
-.counter-n { font-family:'Bebas Neue',sans-serif; font-size:36px; line-height:1; }
-.counter-n.green { color:#00c97a; } .counter-n.red { color:#ff3355; }
-.counter-label { font-size:9px; letter-spacing:2px; margin-top:4px; }
-.section-title { font-size:9px; letter-spacing:3px; color:#1e3a5f; margin-bottom:10px; padding-left:2px; }
-.checks { margin-bottom:20px; }
-.check-item { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; margin-bottom:5px; border-radius:6px; border-left:2px solid transparent; }
-.check-item.verde { background:rgba(0,201,122,0.05); border-left-color:#00c97a; }
-.check-item.rosso { background:rgba(255,51,85,0.05); border-left-color:#ff3355; }
-.check-dot { width:6px; height:6px; border-radius:50%; margin-top:5px; flex-shrink:0; }
-.verde .check-dot { background:#00c97a; } .rosso .check-dot { background:#ff3355; }
-.check-text { font-size:11px; line-height:1.6; flex:1; }
-.verde .check-text { color:#4dd9a0; } .rosso .check-text { color:#ff6680; }
-.check-score { font-family:'Bebas Neue',sans-serif; font-size:16px; flex-shrink:0; }
-.verde .check-score { color:rgba(0,201,122,0.4); } .rosso .check-score { color:rgba(255,51,85,0.4); }
-.patch-wrap { background:#050d1a; border-radius:8px; padding:14px; border:0.5px solid #0a1828; margin-bottom:20px; }
-.patch-title { font-size:9px; letter-spacing:3px; color:#1e3a5f; margin-bottom:10px; }
-.patch-item { display:flex; gap:8px; padding:4px 0; border-bottom:0.5px solid #0a1828; font-size:10px; }
-.patch-item:last-child { border-bottom:none; }
-.patch-ts { color:#1e3a5f; flex-shrink:0; } .patch-text { color:#3d5a7a; flex:1; } .patch-result { color:#00c97a; flex-shrink:0; font-size:9px; }
-.goal-wrap { text-align:center; padding:14px; border:0.5px solid #0a1828; border-radius:8px; font-size:10px; color:#1e3a5f; letter-spacing:1px; }
-.goal-wrap span { color:#00c97a; }
-.refresh-info { text-align:center; font-size:9px; color:#1e3a5f; margin-top:12px; }
-</style>
-</head>
-<body>
-<div class="title">OVERTOP — SYSTEM HEALTH MONITOR</div>
-<div class="score-wrap">
-  <div class="score-label">HEALTH SCORE — OBIETTIVO ZERO</div>
-  <div class="score-num" id="scoreNum">...</div>
-  <div class="score-sub" id="scoreSub">caricamento...</div>
-</div>
-<div class="bar-wrap" id="barWrap"></div>
-<div class="counters">
-  <div class="counter-box"><div class="counter-n green" id="countGreen">—</div><div class="counter-label" style="color:#00c97a">CORRETTI</div></div>
-  <div class="counter-box"><div class="counter-n red" id="countRed">—</div><div class="counter-label" style="color:#ff3355">DA FIXARE</div></div>
-</div>
-<div class="checks" id="greenChecks"><div class="section-title">✓ FUNZIONA CORRETTAMENTE</div></div>
-<div class="checks" id="redChecks"><div class="section-title">✗ PROBLEMI RILEVATI</div></div>
-<div class="patch-wrap">
-  <div class="patch-title">PATCH LOG — PROBLEMI RISOLTI</div>
-  <div id="patchLog">
-    <div class="patch-item"><span class="patch-ts">11/04 09:00</span><span class="patch-text">_fuoco_ok chiamata prima della definizione — crash totale</span><span class="patch-result">✓ VERDE</span></div>
-    <div class="patch-item"><span class="patch-ts">11/04 08:00</span><span class="patch-text">DS_CMD heartbeat_lock None — loop errori ogni secondo</span><span class="patch-result">✓ VERDE</span></div>
-    <div class="patch-item"><span class="patch-ts">10/04 12:31</span><span class="patch-text">FLIP LONG in EXPLOSIVE mancante — logica asimmetrica</span><span class="patch-result">✓ VERDE</span></div>
-    <div class="patch-item"><span class="patch-ts">10/04 11:45</span><span class="patch-text">Warmup RSI/drift/regime disallineati — sistema cieco 30min</span><span class="patch-result">✓ VERDE</span></div>
-    <div class="patch-item"><span class="patch-ts">09/04 23:01</span><span class="patch-text">real_samples=0 — EXPLOSIVE_GATE bloccato per sempre</span><span class="patch-result">✓ VERDE</span></div>
-  </div>
-</div>
-<div class="goal-wrap">OBIETTIVO: score <span>ZERO</span> = motore perfetto con qualsiasi mercato</div>
-<div class="refresh-info">aggiornamento automatico ogni 15 secondi</div>
-<script>
-const CHECKS = [
-  {color:'verde', eval:h=>h.m2_wr===1.0&&h.m2_trades>0, text:h=>`WR ${(h.m2_wr*100).toFixed(0)}% sui ${h.m2_trades} trade eseguiti`},
-  {color:'verde', eval:h=>(h.phantom?.pnl_saved||0)>(h.phantom?.pnl_missed||0)*3, text:h=>`Protezione: salvati $${Math.round(h.phantom?.pnl_saved||0)} vs mancati $${Math.round(h.phantom?.pnl_missed||0)}`},
-  {color:'verde', eval:h=>(h.m2_loss_streak||0)===0, text:()=>'Zero loss streak attiva'},
-  {color:'verde', eval:h=>(h.m2_score_components?.macd||0)>=8, text:h=>`MACD score=${h.m2_score_components?.macd}/10`},
-  {color:'verde', eval:h=>Math.max(h.oi_carica||0,h.oi_carica_short||0)>0.80, text:h=>`OI FUOCO carica=${Math.max(h.oi_carica||0,h.oi_carica_short||0).toFixed(2)}`},
-  {color:'verde', eval:h=>(h.m2_score_components?.warmup_rsi||0)>=50, text:()=>'Warmup RSI completo'},
-  {color:'rosso', eval:h=>h.diagnosis?.crash_attivo===true, text:h=>`CRASH M2: ${(h.diagnosis?.errori_recenti||[])[0]||'errore sconosciuto'}`},
-  {color:'rosso', eval:h=>(h.m2_score_components?.warmup_rsi||50)<50, text:h=>`WARMUP RSI incompleto: ${h.m2_score_components?.warmup_rsi||0}/50`},
-  {color:'rosso', eval:h=>(h.m2_score_components?.fp||0)===0, text:()=>'FINGERPRINT score=0'},
-  {color:'rosso', eval:h=>(h.telemetry?.B_direction?.flips_per_hour||0)>8, text:h=>`Direzione instabile: ${(h.telemetry?.B_direction?.flips_per_hour||0).toFixed(0)} flip/ora`},
-  {color:'rosso', eval:h=>h.veritas?.rows?.some(r=>r.verdetto==='SBAGLIATO'&&r.n>500&&r.pnl_avg<-1.5), text:h=>{const r=h.veritas?.rows?.find(r=>r.verdetto==='SBAGLIATO'&&r.n>500&&r.pnl_avg<-1.5);return r?`Veritas: ${r.chiave} sbaglia su ${r.n} casi`:''}},
-  {color:'rosso', eval:h=>h.regime==='RANGING', text:()=>'Regime RANGING — nessun edge'},
-];
-function render(hb) {
-  const active = CHECKS.map(c=>({...c,active:c.eval(hb),txt:c.text(hb)}));
-  const greens = active.filter(c=>c.color==='verde'&&c.active);
-  const reds   = active.filter(c=>c.color==='rosso'&&c.active);
-  const score  = reds.length - greens.length;
-  const sEl = document.getElementById('scoreNum');
-  sEl.textContent = (score>0?'+':'')+score;
-  sEl.className = 'score-num '+(score<=0?'good':score<=3?'warn':'bad');
-  document.getElementById('scoreSub').textContent = score<=0?'Sistema sano':score+' problema'+(score>1?'i':'')+' da correggere';
-  document.getElementById('countGreen').textContent = greens.length;
-  document.getElementById('countRed').textContent   = reds.length;
-  const bar=document.getElementById('barWrap'); bar.innerHTML='';
-  [...greens,...reds].forEach((c,i)=>{const s=document.createElement('div');s.className='bar-seg';s.style.background=i<greens.length?'#00c97a':'#ff3355';bar.appendChild(s);});
-  const gc=document.getElementById('greenChecks'); gc.innerHTML='<div class="section-title">✓ FUNZIONA CORRETTAMENTE</div>';
-  greens.forEach((c,i)=>gc.innerHTML+=`<div class="check-item verde"><div class="check-dot"></div><div class="check-text">${c.txt}</div><div class="check-score">+1</div></div>`);
-  const rc=document.getElementById('redChecks'); rc.innerHTML='<div class="section-title">✗ PROBLEMI RILEVATI</div>';
-  if(!reds.length) rc.innerHTML+='<div style="font-size:10px;color:#00c97a;padding:8px 12px;">✓ Nessun problema</div>';
-  reds.forEach((c,i)=>rc.innerHTML+=`<div class="check-item rosso"><div class="check-dot"></div><div class="check-text">${c.txt}</div><div class="check-score">−1</div></div>`);
+.modal-abbinamenti {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 10000;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    box-sizing: border-box;
 }
-async function load() {
-  try { const r=await fetch('/trading/status'); const d=await r.json(); render(d.heartbeat||d); }
-  catch(e) { document.getElementById('scoreSub').textContent='Errore connessione'; }
-}
-load(); setInterval(load,15000);
-</script>
-</body>
-</html>"""
 
-@app.route('/health')
-def health_monitor():
-    return render_template_string(HEALTH_HTML)
+.modal-abbinamenti.show {
+    display: flex;
+}
+
+.modal-abbinamenti-content {
+    background: #0f172a;
+    border: 2px solid #3b82f6;
+    border-radius: 12px;
+    width: 100%;
+    max-width: 1000px;
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 30px;
+    color: #e0e0e0;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 25px;
+    border-bottom: 2px solid #1e40af;
+    padding-bottom: 15px;
+}
+
+.modal-header h2 {
+    margin: 0;
+    color: #60a5fa;
+    font-size: 24px;
+    font-weight: bold;
+}
+
+.modal-close {
+    background: #ef4444;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    cursor: pointer;
+    font-size: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-close:hover {
+    background: #dc2626;
+}
+
+.prodotto-principale {
+    background: rgba(59, 130, 245, 0.1);
+    border-left: 4px solid #3b82f6;
+    padding: 15px;
+    border-radius: 6px;
+    margin-bottom: 25px;
+}
+
+.accessorio-codice {
+    background: #3b82f6;
+    color: white;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 10px 12px;
+    border-radius: 4px;
+    display: inline-block;
+    margin-bottom: 10px;
+    letter-spacing: 1px;
+    word-break: break-all;
+}
+
+.accessorio-nome {
+    font-size: 15px;
+    font-weight: 600;
+    color: #e0e0e0;
+    margin: 8px 0;
+    line-height: 1.4;
+}
+
+.accessorio-brand {
+    font-size: 12px;
+    color: #94a3b8;
+    margin: 5px 0;
+}
+
+.accessorio-categoria {
+    font-size: 11px;
+    background: rgba(59, 130, 245, 0.2);
+    color: #93c5fd;
+    padding: 4px 8px;
+    border-radius: 3px;
+    display: inline-block;
+    margin: 8px 0;
+}
+
+.abbinamenti-section {
+    margin-bottom: 30px;
+}
+
+.abbinamenti-section h3 {
+    margin: 0 0 15px 0;
+    font-size: 18px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.section-ufficiali h3 {
+    color: #10b981;
+}
+
+.section-ufficiali h3::before {
+    content: "✅";
+    font-size: 20px;
+}
+
+.section-alternative h3 {
+    color: #f59e0b;
+}
+
+.section-alternative h3::before {
+    content: "🔹";
+    font-size: 20px;
+}
+
+.section-esclusi h3 {
+    color: #ef4444;
+}
+
+.section-esclusi h3::before {
+    content: "❌";
+    font-size: 20px;
+}
+
+.abbinamenti-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 15px;
+}
+
+.accessorio-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 16px;
+    transition: all 0.3s ease;
+}
+
+.accessorio-card:hover {
+    border-color: #3b82f6;
+    box-shadow: 0 0 15px rgba(59, 130, 245, 0.3);
+    transform: translateY(-2px);
+}
+
+.accessorio-card.escluso {
+    opacity: 0.6;
+    border-color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.accessorio-card.escluso .accessorio-codice {
+    background: #ef4444;
+}
+
+.accessorio-note {
+    font-size: 12px;
+    color: #cbd5e1;
+    margin: 8px 0;
+    font-style: italic;
+    line-height: 1.3;
+}
+
+.accessorio-vincolo {
+    font-size: 11px;
+    background: rgba(245, 158, 11, 0.2);
+    color: #fcd34d;
+    padding: 6px 8px;
+    border-radius: 3px;
+    margin: 8px 0;
+    border-left: 2px solid #f59e0b;
+}
+
+.accessorio-escluso-motivo {
+    font-size: 11px;
+    background: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+    padding: 6px 8px;
+    border-radius: 3px;
+    margin: 8px 0;
+    border-left: 2px solid #ef4444;
+}
+
+.accessorio-azioni {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.btn-aggiungi {
+    background: #10b981;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    flex: 1;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.btn-aggiungi:hover {
+    background: #059669;
+}
+
+.btn-aggiungi:disabled {
+    background: #6b7280;
+    cursor: not-allowed;
+}
+
+.accessorio-prezzo {
+    font-size: 13px;
+    color: #10b981;
+    font-weight: 600;
+    margin-top: 5px;
+}
+</style>
+
+<div class="modal-abbinamenti" id="modalAbbinamenti">
+    <div class="modal-abbinamenti-content">
+        <div class="modal-header">
+            <h2>Abbinamenti Prodotto</h2>
+            <button class="modal-close" onclick="chiudiModalAbbinamenti()">✕</button>
+        </div>
+        
+        <div class="prodotto-principale" id="prodottoPrincipale"></div>
+        <div class="abbinamenti-section section-ufficiali" id="sezioneUfficiali"></div>
+        <div class="abbinamenti-section section-alternative" id="sezioneAlternative"></div>
+        <div class="abbinamenti-section section-esclusi" id="sezioneEsclusi"></div>
+    </div>
+</div>
+
+<script>
+function mostraAbbinamenti(prodottoId) {
+    fetch(`/api/abbina/${prodottoId}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data.prodotto || !data.prodotto.codice) {
+                alert("Prodotto non trovato");
+                return;
+            }
+            // Aggiorna il drawer a destra INVECE di aprire un modal
+            aggiornaPannelloAccessori(data);
+        })
+        .catch(e => {
+            console.error("Errore:", e);
+            alert("Errore nel caricamento degli abbinamenti");
+        });
+}
+
+function aggiornaPannelloAccessori(data) {
+    const prod = data.prodotto;
+    
+    // Titolo prodotto
+    let html = `<div style="font-size:11px;color:#ef4444;font-weight:bold;margin-bottom:12px;padding:8px;background:rgba(239,68,68,0.1);border-radius:4px;">
+        <div>${prod.codice}</div>
+        <div>${prod.nome}</div>
+    </div>`;
+    
+    // UFFICIALI
+    if (data.ufficiali && data.ufficiali.length > 0) {
+        html += `<div style="font-size:10px;color:#ef4444;font-weight:bold;margin-bottom:6px;">✓ UFFICIALI</div>`;
+        data.ufficiali.forEach(acc => {
+            html += `
+            <div style="padding:8px;margin-bottom:6px;background:rgba(239,68,68,0.1);border-left:2px solid #ef4444;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:10px;color:#10b981;margin-top:4px;">→ Clicca per aggiungere</div>
+            </div>
+            `;
+        });
+    }
+    
+    // ALTERNATIVE
+    if (data.alternative && data.alternative.length > 0) {
+        html += `<div style="font-size:10px;color:#f59e0b;font-weight:bold;margin-top:12px;margin-bottom:6px;">★ ALTERNATIVE</div>`;
+        data.alternative.forEach(acc => {
+            html += `
+            <div style="padding:8px;margin-bottom:6px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:10px;color:#f59e0b;margin-top:4px;">→ Clicca per aggiungere</div>
+            </div>
+            `;
+        });
+    }
+    
+    document.getElementById('sezioneUfficiali').innerHTML = html;
+    document.getElementById('sezioneAlternative').innerHTML = '';
+}
+
+function popolaModalAbbinamenti(data) {
+    const prod = data.prodotto;
+    const htmlProd = `
+        <div class="accessorio-codice">${prod.codice}</div>
+        <div class="accessorio-nome">${prod.nome}</div>
+        <div class="accessorio-brand">Collezione: ${prod.collezione}</div>
+        <div class="accessorio-categoria">Categoria: ${prod.categoria}</div>
+        <div class="accessorio-prezzo">💰 Cliente: €${prod.prezzo_cliente} | Riv: €${prod.prezzo_riv}</div>
+    `;
+    document.getElementById('prodottoPrincipale').innerHTML = htmlProd;
+    
+    if (data.ufficiali.length > 0) {
+        const html = `<h3>Abbinamenti Ufficiali</h3><div class="abbinamenti-grid">${data.ufficiali.map(acc => creaCardAccessorio(acc)).join('')}</div>`;
+        document.getElementById('sezioneUfficiali').innerHTML = html;
+    } else {
+        document.getElementById('sezioneUfficiali').innerHTML = '';
+    }
+    
+    if (data.alternative.length > 0) {
+        const html = `<h3>Abbinamenti Alternativi</h3><div class="abbinamenti-grid">${data.alternative.map(acc => creaCardAccessorio(acc)).join('')}</div>`;
+        document.getElementById('sezioneAlternative').innerHTML = html;
+    } else {
+        document.getElementById('sezioneAlternative').innerHTML = '';
+    }
+    
+    if (data.esclusi.length > 0) {
+        const html = `<h3>Non Compatibili</h3><div class="abbinamenti-grid">${data.esclusi.map(acc => creaCardAccessorio(acc, true)).join('')}</div>`;
+        document.getElementById('sezioneEsclusi').innerHTML = html;
+    } else {
+        document.getElementById('sezioneEsclusi').innerHTML = '';
+    }
+}
+
+function creaCardAccessorio(acc, escluso = false) {
+    const classeCard = escluso ? 'accessorio-card escluso' : 'accessorio-card';
+    const htmlVincolo = acc.vincolo_messaggio ? `<div class="accessorio-vincolo">⚠️ ${acc.vincolo_messaggio}</div>` : '';
+    const htmlMotivo = escluso ? `<div class="accessorio-escluso-motivo">❌ Non compatibile</div>` : '';
+    
+    return `
+        <div class="${classeCard}">
+            <div class="accessorio-codice">${acc.id}</div>
+            <div class="accessorio-nome">${acc.nome}</div>
+            <div class="accessorio-brand">${acc.brand}</div>
+            <div class="accessorio-categoria">${acc.categoria}</div>
+            ${acc.nota_prodotto ? `<div class="accessorio-note">${acc.nota_prodotto}</div>` : ''}
+            ${htmlVincolo}
+            ${htmlMotivo}
+            <div class="accessorio-azioni">
+                <button class="btn-aggiungi" onclick="aggiungiAccessorio('${acc.id}')" ${escluso ? 'disabled' : ''}>
+                    ${escluso ? 'Non disponibile' : '➕ Aggiungi'}
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function aggiungiAccessorio(accessorioId) {
+    console.log("Aggiunto accessorio:", accessorioId);
+    alert("Accessorio aggiunto al cantiere");
+}
+
+document.addEventListener('click', function(event) {
+    const modal = document.getElementById('modalAbbinamenti');
+    if (event.target === modal) {
+        chiudiModalAbbinamenti();
+    }
+});
+</script>
+
+</body>
+</html>''')
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    log(f"[MAIN] 🚀 MISSION CONTROL V6.0 + AI BRIDGE — porta {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=10000)
