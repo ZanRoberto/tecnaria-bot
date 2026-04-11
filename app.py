@@ -1926,6 +1926,8 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     </label>
     <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
     <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
+    <button onclick="caricaAbbinamenti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Abbinamenti dal DB</button>
+    <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
     <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica Immagini Gessi</button>
   </div>
 
