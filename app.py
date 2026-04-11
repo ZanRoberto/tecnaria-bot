@@ -142,6 +142,7 @@ def init_db():
         tipo_relazione TEXT,
         priority INTEGER DEFAULT 99,
         note TEXT,
+        image_url TEXT,
         created_at TEXT,
         FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id),
         UNIQUE(prodotto_padre, accessorio_id)
@@ -840,13 +841,14 @@ def scarica_immagini_gessi():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Leggi i prodotti senza immagine
+        # PARTE 1: PRODOTTI GESSI
+        print("[SCRAPING] === PRODOTTI GESSI ===")
         c.execute("SELECT id, codice, nome FROM products WHERE brand='Gessi' AND (image_url IS NULL OR image_url='')")
         prodotti = c.fetchall()
         
         print(f"[SCRAPING] Trovati {len(prodotti)} prodotti Gessi senza immagine")
         
-        aggiornati = 0
+        aggiornati_prodotti = 0
         for pid, codice, nome in prodotti:
             try:
                 # Cerca su Gessi.it
@@ -879,16 +881,69 @@ def scarica_immagini_gessi():
                             
                             # Salva nel DB
                             c.execute("UPDATE products SET image_url=? WHERE id=?", (data_url, pid))
-                            aggiornati += 1
-                            print(f"✅ {nome}: immagine salvata (base64, {len(img_b64)} chars)")
+                            aggiornati_prodotti += 1
+                            print(f"  ✅ {nome}: base64 salvato")
                         
             except Exception as e:
-                print(f"❌ Errore per {nome}: {str(e)}")
+                print(f"  ❌ Errore per {nome}: {str(e)}")
+                continue
+        
+        # PARTE 2: ACCESSORI (cercati su Google Images)
+        print("[SCRAPING] === ACCESSORI GESSI ===")
+        c.execute("SELECT id, accessorio_id, accessorio_nome FROM product_accessories WHERE brand_accessorio='Gessi' AND (image_url IS NULL OR image_url='')")
+        accessori = c.fetchall()
+        
+        print(f"[SCRAPING] Trovati {len(accessori)} accessori senza immagine")
+        
+        aggiornati_accessori = 0
+        for aid, acc_id, acc_nome in accessori:
+            try:
+                # Cerca su Bing Image Search (più semplice di Google)
+                search_query = f"{acc_nome} Gessi"
+                search_url = f"https://www.bing.com/images/search?q={search_query}"
+                resp = httpx.get(search_url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+                
+                if resp.status_code == 200:
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(resp.content, 'html.parser')
+                    
+                    # Cerca primo <img> nei risultati
+                    img = soup.find('img', {'class': 'mimg'})
+                    if not img:
+                        img = soup.find('img')
+                    
+                    if img and img.get('src'):
+                        img_url = img['src']
+                        if img_url.startswith('data:'):
+                            continue  # Skip data URLs
+                        
+                        # Scarica l'immagine
+                        img_resp = httpx.get(img_url, timeout=10)
+                        if img_resp.status_code == 200:
+                            # Converti in base64
+                            img_b64 = base64.b64encode(img_resp.content).decode('utf-8')
+                            content_type = img_resp.headers.get('content-type', 'image/jpeg')
+                            data_url = f"data:{content_type};base64,{img_b64}"
+                            
+                            # Salva nel DB
+                            c.execute("UPDATE product_accessories SET image_url=? WHERE id=?", (data_url, aid))
+                            aggiornati_accessori += 1
+                            print(f"  ✅ {acc_nome}: base64 salvato")
+                        
+            except Exception as e:
+                print(f"  ❌ Errore per {acc_nome}: {str(e)}")
                 continue
         
         conn.commit()
         conn.close()
-        return {"ok": True, "aggiornati": aggiornati, "totale": len(prodotti)}
+        
+        return {
+            "ok": True, 
+            "prodotti_aggiornati": aggiornati_prodotti, 
+            "prodotti_totali": len(prodotti),
+            "accessori_aggiornati": aggiornati_accessori,
+            "accessori_totali": len(accessori)
+        }
         
     except Exception as e:
         print(f"[SCRAPING ERROR] {str(e)}")
@@ -3087,7 +3142,7 @@ function doUpload(input, tipo) {
 }
 
 function scaricaImmaginiGessi() {
-  if (!confirm('Scarica immagini Gessi? Questo potrebbe richiedere 1-2 minuti...')) return;
+  if (!confirm('Scarica immagini Gessi (prodotti + accessori)? Questo potrebbe richiedere 2-5 minuti...')) return;
   
   const btn = event.target;
   btn.disabled = true;
@@ -3098,12 +3153,13 @@ function scaricaImmaginiGessi() {
     .then(d => {
       btn.disabled = false;
       if (d.ok) {
-        btn.textContent = `✓ ${d.aggiornati}/${d.totale} aggiornate`;
+        const msg = `✓ Prodotti: ${d.prodotti_aggiornati}/${d.prodotti_totali} | Accessori: ${d.accessori_aggiornati}/${d.accessori_totali}`;
+        btn.textContent = msg;
         btn.style.background = '#10b981';
         setTimeout(() => {
           btn.textContent = '🖼️ Scarica Immagini Gessi';
           btn.style.background = '#06b6d4';
-        }, 3000);
+        }, 4000);
       } else {
         btn.textContent = '❌ Errore: ' + d.error;
         btn.style.background = '#ef4444';
