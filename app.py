@@ -836,12 +836,12 @@ def scarica_immagini_gessi():
     """Scrapa immagini da Gessi, le converte in base64 e le salva nel DB"""
     try:
         import base64
-        from io import BytesIO
+        import re
         
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # PARTE 1: PRODOTTI GESSI
+        # PARTE 1: PRODOTTI GESSI - con fallback
         print("[SCRAPING] === PRODOTTI GESSI ===")
         c.execute("SELECT id, codice, nome FROM products WHERE brand='Gessi' AND (image_url IS NULL OR image_url='')")
         prodotti = c.fetchall()
@@ -851,29 +851,21 @@ def scarica_immagini_gessi():
         aggiornati_prodotti = 0
         for pid, codice, nome in prodotti:
             try:
-                # Cerca su Gessi.it
-                search_url = f"https://www.gessi.it/it/ricerca?q={nome}"
-                resp = httpx.get(search_url, timeout=10)
+                # Usa una ricerca semplice con immagini placeholder
+                # Oppure prova a cercare da URL noto di Gessi
+                gessi_url = f"https://www.gessi.it/it/cerca?search={codice}"
+                resp = httpx.get(gessi_url, timeout=10)
                 
                 if resp.status_code == 200:
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(resp.content, 'html.parser')
+                    # Estrai URL immagine con regex
+                    img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', resp.text)
                     
-                    # Cerca immagini nella pagina
-                    img = soup.find('img', {'class': 'product-image'})
-                    if not img:
-                        img = soup.find('img', {'alt': nome})
-                    if not img:
-                        img = soup.find('img')
-                    
-                    if img and img.get('src'):
-                        img_url = img['src']
-                        if not img_url.startswith('http'):
-                            img_url = 'https://www.gessi.it' + img_url
+                    if img_urls:
+                        img_url = img_urls[0]
                         
                         # Scarica l'immagine
                         img_resp = httpx.get(img_url, timeout=10)
-                        if img_resp.status_code == 200:
+                        if img_resp.status_code == 200 and len(img_resp.content) > 1000:
                             # Converti in base64
                             img_b64 = base64.b64encode(img_resp.content).decode('utf-8')
                             content_type = img_resp.headers.get('content-type', 'image/jpeg')
@@ -882,56 +874,50 @@ def scarica_immagini_gessi():
                             # Salva nel DB
                             c.execute("UPDATE products SET image_url=? WHERE id=?", (data_url, pid))
                             aggiornati_prodotti += 1
-                            print(f"  ✅ {nome}: base64 salvato")
+                            print(f"  ✅ {codice}: salvato")
                         
             except Exception as e:
-                print(f"  ❌ Errore per {nome}: {str(e)}")
+                print(f"  ⚠️ {codice}: {str(e)[:50]}")
                 continue
         
-        # PARTE 2: ACCESSORI (cercati su Google Images)
+        # PARTE 2: ACCESSORI - usa immagini placeholder per ora
         print("[SCRAPING] === ACCESSORI GESSI ===")
         c.execute("SELECT id, accessorio_id, accessorio_nome FROM product_accessories WHERE brand_accessorio='Gessi' AND (image_url IS NULL OR image_url='')")
         accessori = c.fetchall()
         
-        print(f"[SCRAPING] Trovati {len(accessori)} accessori senza immagine")
+        print(f"[SCRAPING] Trovati {len(accessori)} accessori")
         
         aggiornati_accessori = 0
         for aid, acc_id, acc_nome in accessori:
             try:
-                # Cerca su Bing Image Search (più semplice di Google)
-                search_query = f"{acc_nome} Gessi"
-                search_url = f"https://www.bing.com/images/search?q={search_query}"
+                # Per gli accessori, usa una ricerca generica
+                search_url = f"https://www.google.com/search?q={acc_nome}+gessi+product&tbm=isch"
                 resp = httpx.get(search_url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
                 
                 if resp.status_code == 200:
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(resp.content, 'html.parser')
+                    # Estrai URL immagini
+                    img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', resp.text)
                     
-                    # Cerca primo <img> nei risultati
-                    img = soup.find('img', {'class': 'mimg'})
-                    if not img:
-                        img = soup.find('img')
-                    
-                    if img and img.get('src'):
-                        img_url = img['src']
-                        if img_url.startswith('data:'):
-                            continue  # Skip data URLs
-                        
-                        # Scarica l'immagine
-                        img_resp = httpx.get(img_url, timeout=10)
-                        if img_resp.status_code == 200:
-                            # Converti in base64
-                            img_b64 = base64.b64encode(img_resp.content).decode('utf-8')
-                            content_type = img_resp.headers.get('content-type', 'image/jpeg')
-                            data_url = f"data:{content_type};base64,{img_b64}"
-                            
-                            # Salva nel DB
-                            c.execute("UPDATE product_accessories SET image_url=? WHERE id=?", (data_url, aid))
-                            aggiornati_accessori += 1
-                            print(f"  ✅ {acc_nome}: base64 salvato")
+                    if img_urls:
+                        for img_url in img_urls[:3]:  # Prova i primi 3
+                            try:
+                                img_resp = httpx.get(img_url, timeout=5)
+                                if img_resp.status_code == 200 and len(img_resp.content) > 500:
+                                    # Converti in base64
+                                    img_b64 = base64.b64encode(img_resp.content).decode('utf-8')
+                                    content_type = img_resp.headers.get('content-type', 'image/jpeg')
+                                    data_url = f"data:{content_type};base64,{img_b64}"
+                                    
+                                    # Salva nel DB
+                                    c.execute("UPDATE product_accessories SET image_url=? WHERE id=?", (data_url, aid))
+                                    aggiornati_accessori += 1
+                                    print(f"  ✅ {acc_id}: salvato")
+                                    break
+                            except:
+                                continue
                         
             except Exception as e:
-                print(f"  ❌ Errore per {acc_nome}: {str(e)}")
+                print(f"  ⚠️ {acc_id}: {str(e)[:50]}")
                 continue
         
         conn.commit()
