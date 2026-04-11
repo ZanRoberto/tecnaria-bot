@@ -838,7 +838,7 @@ def search_images(query, brands):
         return []
 
 def scarica_immagini_gessi():
-    """Scrapa immagini da Gessi, le converte in base64 e le salva nel DB"""
+    """Estrae URL immagini da Gessi.it e le salva nel DB"""
     try:
         import urllib.request
         import urllib.error
@@ -847,67 +847,53 @@ def scarica_immagini_gessi():
         c = conn.cursor()
         
         # PARTE 1: PRODOTTI GESSI
-        print("[SCRAPING] === PRODOTTI GESSI ===")
-        # Cerca prodotti con brand='Gessi' (case-insensitive)
+        print("[IMMAGINI] === PRODOTTI GESSI ===")
         c.execute("SELECT id, codice, nome FROM products WHERE LOWER(brand)='gessi' AND (image_url IS NULL OR image_url='')")
         prodotti = c.fetchall()
         
-        print(f"[SCRAPING] Trovati {len(prodotti)} prodotti Gessi senza immagine")
+        print(f"[IMMAGINI] Trovati {len(prodotti)} prodotti senza immagine")
         
         aggiornati_prodotti = 0
         for pid, codice, nome in prodotti:
             try:
-                # URL noto di Gessi per il prodotto
+                # Cerca su Gessi.it
                 gessi_url = f"https://www.gessi.it/it/cerca?search={codice}"
-                
-                # Scarica con User-Agent
                 req = urllib.request.Request(gessi_url, headers={'User-Agent': 'Mozilla/5.0'})
+                
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     html = resp.read().decode('utf-8', errors='ignore')
                     
-                    # Estrai URL immagine con regex
+                    # Estrai URL immagini con regex
                     img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', html)
                     
                     if img_urls:
-                        img_url = img_urls[0]
-                        
-                        # Scarica l'immagine
-                        try:
-                            req_img = urllib.request.Request(img_url, headers={'User-Agent': 'Mozilla/5.0'})
-                            with urllib.request.urlopen(req_img, timeout=10) as resp_img:
-                                img_data = resp_img.read()
-                                
-                                if len(img_data) > 1000:
-                                    # Converti in base64
-                                    img_b64 = base64.b64encode(img_data).decode('utf-8')
-                                    data_url = f"data:image/jpeg;base64,{img_b64}"
-                                    
-                                    # Salva nel DB
-                                    c.execute("UPDATE products SET image_url=? WHERE id=?", (data_url, pid))
-                                    aggiornati_prodotti += 1
-                                    print(f"  ✅ {codice}: salvato")
-                        except urllib.error.URLError:
-                            pass
+                        # Prendi la prima URL valida (non placeholder)
+                        for img_url in img_urls:
+                            if 'placeholder' not in img_url.lower() and len(img_url) < 300:
+                                # SALVA SOLO L'URL, NON BASE64
+                                c.execute("UPDATE products SET image_url=? WHERE id=?", (img_url, pid))
+                                aggiornati_prodotti += 1
+                                print(f"  ✅ {codice}: {img_url[:80]}")
+                                break
                         
             except Exception as e:
                 print(f"  ⚠️ {codice}: {str(e)[:50]}")
                 continue
         
         # PARTE 2: ACCESSORI
-        print("[SCRAPING] === ACCESSORI GESSI ===")
+        print("[IMMAGINI] === ACCESSORI GESSI ===")
         c.execute("SELECT id, accessorio_id, accessorio_nome FROM product_accessories WHERE LOWER(brand_accessorio)='gessi' AND (image_url IS NULL OR image_url='')")
         accessori = c.fetchall()
         
-        print(f"[SCRAPING] Trovati {len(accessori)} accessori")
+        print(f"[IMMAGINI] Trovati {len(accessori)} accessori")
         
         aggiornati_accessori = 0
         for aid, acc_id, acc_nome in accessori:
             try:
-                # Cerca su Google Images
-                search_query = f"{acc_nome} gessi"
-                search_url = f"https://www.google.com/search?q={search_query}&tbm=isch"
+                # Cerca su Gessi.it
+                gessi_url = f"https://www.gessi.it/it/cerca?search={acc_nome}"
+                req = urllib.request.Request(gessi_url, headers={'User-Agent': 'Mozilla/5.0'})
                 
-                req = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     html = resp.read().decode('utf-8', errors='ignore')
                     
@@ -915,24 +901,13 @@ def scarica_immagini_gessi():
                     img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', html)
                     
                     if img_urls:
-                        for img_url in img_urls[:3]:  # Prova i primi 3
-                            try:
-                                req_img = urllib.request.Request(img_url, headers={'User-Agent': 'Mozilla/5.0'})
-                                with urllib.request.urlopen(req_img, timeout=5) as resp_img:
-                                    img_data = resp_img.read()
-                                    
-                                    if len(img_data) > 500:
-                                        # Converti in base64
-                                        img_b64 = base64.b64encode(img_data).decode('utf-8')
-                                        data_url = f"data:image/jpeg;base64,{img_b64}"
-                                        
-                                        # Salva nel DB
-                                        c.execute("UPDATE product_accessories SET image_url=? WHERE id=?", (data_url, aid))
-                                        aggiornati_accessori += 1
-                                        print(f"  ✅ {acc_id}: salvato")
-                                        break
-                            except urllib.error.URLError:
-                                continue
+                        for img_url in img_urls:
+                            if 'placeholder' not in img_url.lower() and len(img_url) < 300:
+                                # SALVA SOLO L'URL
+                                c.execute("UPDATE product_accessories SET image_url=? WHERE id=?", (img_url, aid))
+                                aggiornati_accessori += 1
+                                print(f"  ✅ {acc_id}: {img_url[:80]}")
+                                break
                         
             except Exception as e:
                 print(f"  ⚠️ {acc_id}: {str(e)[:50]}")
@@ -950,7 +925,7 @@ def scarica_immagini_gessi():
         }
         
     except Exception as e:
-        print(f"[SCRAPING ERROR] {str(e)}")
+        print(f"[IMMAGINI ERROR] {str(e)}")
         import traceback
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
@@ -1929,7 +1904,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
     <button onclick="caricaAbbinamentiEProdotti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Listino + Abbinamenti</button>
     <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
-    <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica Immagini Gessi</button>
+    <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica URL Immagini Gessi</button>
   </div>
 
   <!-- CENTRO -->
@@ -3163,37 +3138,6 @@ function doUpload(input, tipo) {
   reader.readAsDataURL(file);
 }
 
-function scaricaImmaginiGessi() {
-  if (!confirm('Scarica immagini Gessi (prodotti + accessori)? Questo potrebbe richiedere 2-5 minuti...')) return;
-  
-  const btn = event.target;
-  btn.disabled = true;
-  btn.textContent = '⏳ In corso...';
-  
-  fetch('/api/scarica-immagini/Gessi', {method: 'POST'})
-    .then(r => r.json())
-    .then(d => {
-      btn.disabled = false;
-      if (d.ok) {
-        const msg = `✓ Prodotti: ${d.prodotti_aggiornati}/${d.prodotti_totali} | Accessori: ${d.accessori_aggiornati}/${d.accessori_totali}`;
-        btn.textContent = msg;
-        btn.style.background = '#10b981';
-        setTimeout(() => {
-          btn.textContent = '🖼️ Scarica Immagini Gessi';
-          btn.style.background = '#06b6d4';
-        }, 4000);
-      } else {
-        btn.textContent = '❌ Errore: ' + d.error;
-        btn.style.background = '#ef4444';
-      }
-    })
-    .catch(e => {
-      btn.disabled = false;
-      btn.textContent = '❌ Errore';
-      console.error(e);
-    });
-}
-
 function apriGestisciDoc() {
   document.getElementById('gestisci-doc-panel').style.display = 'flex';
   document.getElementById('filtro-doc-brand').value = selected.length > 0 ? selected[0] : '';
@@ -3457,6 +3401,37 @@ function toggleExcelPanel() {
   const open = panel.style.display !== 'none';
   panel.style.display = open ? 'none' : 'block';
   arrow.textContent = open ? '▼' : '▲';
+}
+
+function scaricaImmaginiGessi() {
+  if (!confirm('Scarica URL immagini Gessi (prodotti + accessori)? Questo potrebbe richiedere 1-2 minuti...')) return;
+  
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ In corso...';
+  
+  fetch('/api/scarica-immagini/Gessi', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      if (d.ok) {
+        const msg = `✓ Prodotti: ${d.prodotti_aggiornati}/${d.prodotti_totali} | Accessori: ${d.accessori_aggiornati}/${d.accessori_totali}`;
+        btn.textContent = msg;
+        btn.style.background = '#10b981';
+        setTimeout(() => {
+          btn.textContent = '🖼️ Scarica URL Immagini Gessi';
+          btn.style.background = '#06b6d4';
+        }, 4000);
+      } else {
+        btn.textContent = '❌ Errore: ' + d.error;
+        btn.style.background = '#ef4444';
+      }
+    })
+    .catch(e => {
+      btn.disabled = false;
+      btn.textContent = '❌ Errore';
+      console.error(e);
+    });
 }
 
 function caricaAbbinamentiEProdotti() {
