@@ -89,6 +89,7 @@ def init_db():
         cliente_id INTEGER NOT NULL,
         commerciale_id INTEGER,
         nome TEXT NOT NULL,
+        configurazione_piani JSON,
         stato TEXT DEFAULT 'bozza',
         note TEXT,
         data_creazione TEXT,
@@ -99,9 +100,16 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS cantiere_righe (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         cantiere_id INTEGER NOT NULL,
+        prodotto_codice TEXT,
+        piano TEXT,
+        ambiente TEXT,
+        quantita INTEGER DEFAULT 1,
+        prezzo_unitario REAL,
+        subtotale REAL,
         brand TEXT, categoria TEXT, descrizione TEXT, note TEXT,
         importo REAL DEFAULT 0,
-        FOREIGN KEY (cantiere_id) REFERENCES cantieri(id)
+        FOREIGN KEY (cantiere_id) REFERENCES cantieri(id),
+        FOREIGN KEY (prodotto_codice) REFERENCES products(codice)
     )''')
     
     # TABELLE LAZY LOADING ABBINAMENTI
@@ -4483,6 +4491,112 @@ document.addEventListener('click', function(event) {
 
 </body>
 </html>''')
+
+
+# ============ ENDPOINT V4: LIVELLI/AMBIENTI ============
+
+@app.route('/api/create-cantiere', methods=['POST'])
+def api_create_cantiere():
+    try:
+        data = request.json
+        nome = data.get('nome')
+        config = data.get('configurazione')
+        
+        if not nome or not config:
+            return jsonify({'error': 'Dati incompleti'}), 400
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        now = datetime.now().isoformat()
+        c.execute("INSERT INTO cantieri (cliente_id, commerciale_id, nome, configurazione_piani, data_creazione, data_aggiornamento) VALUES (?,?,?,?,?,?)",
+                  (1, 1, nome, json.dumps(config), now, now))
+        
+        cid = c.lastrowid
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'cantiere_id': cid, 'message': f'Cantiere {nome} creato'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/get-cantiere/<int:cid>', methods=['GET'])
+def api_get_cantiere(cid):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        c.execute('SELECT * FROM cantieri WHERE id = ?', (cid,))
+        cant = dict(c.fetchone() or {})
+        
+        if cant and cant.get('configurazione_piani'):
+            cant['configurazione'] = json.loads(cant['configurazione_piani'])
+        
+        c.execute('SELECT * FROM cantiere_righe WHERE cantiere_id = ? ORDER BY piano, ambiente', (cid,))
+        righe = [dict(r) for r in c.fetchall()]
+        
+        conn.close()
+        return jsonify({'cantiere': cant, 'righe': righe})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/crea-cantiere')
+def crea_cantiere():
+    html = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Crea Cantiere</title>
+<style>
+body {font-family:Arial; background:#f5f5f5; padding:20px;}
+.container {max-width:900px; margin:0 auto; background:white; padding:30px; border-radius:12px;}
+h1 {color:#667eea;}
+.piano-card {background:#f9f9f9; border:2px solid #e0e0e0; padding:20px; margin:15px 0; border-radius:8px;}
+.piano-title {font-size:1.2em; font-weight:bold; color:#667eea;}
+input {width:100%; padding:10px; margin:8px 0; border:1px solid #ddd; border-radius:4px;}
+button {background:#667eea; color:white; padding:10px 20px; border:none; border-radius:4px; cursor:pointer; margin:5px;}
+button:hover {background:#764ba2;}
+.stats {background:#667eea; color:white; padding:15px; border-radius:4px; margin:20px 0;}
+</style>
+</head><body>
+<div class="container">
+<h1>🏗️ Crea Cantiere</h1>
+<form id="form">
+<label>Nome Cantiere:</label>
+<input type="text" id="nome" placeholder="Es: Progetto Bagno Milano" required>
+<div class="stats">
+<div>Piani: <span id="stat-piani">1</span></div>
+<div>Ambienti: <span id="stat-ambienti">0</span></div>
+</div>
+<div id="piani"></div>
+<button type="button" onclick="aggiungiPiano()">➕ Aggiungi Piano</button>
+<button type="submit" style="background:#28a745;">✨ Crea Cantiere</button>
+</form>
+<div id="msg"></div>
+</div>
+<script>
+let piani = {"Piano 1": ["Bagno principale"]};
+function aggiungiPiano() {let n=Object.keys(piani).length; piani["Piano "+(n+1)]=[""]; render();}
+function rimuoviPiano(p) {delete piani[p]; render();}
+function aggiungiAmbiente(p) {piani[p].push(""); render();}
+function rimuoviAmbiente(p,i) {piani[p].splice(i,1); render();}
+function updateAmbiente(p,i,v) {piani[p][i]=v;}
+function updateStats() {document.getElementById('stat-piani').textContent=Object.keys(piani).length; let tot=0; Object.values(piani).forEach(a=>{tot+=a.filter(x=>x.trim()).length}); document.getElementById('stat-ambienti').textContent=tot;}
+function render() {let html=""; Object.entries(piani).forEach(([p,a])=>{html+=`<div class="piano-card"><div class="piano-title">${p} <button type="button" onclick="rimuoviPiano('${p}')">❌</button></div>`; a.forEach((amb,i)=>{html+=`<input type="text" placeholder="Ambiente" value="${amb}" onchange="updateAmbiente('${p}',${i},this.value)" onkeyup="updateAmbiente('${p}',${i},this.value)"><button type="button" onclick="rimuoviAmbiente('${p}',${i})">✕</button>`}); html+=`<button type="button" onclick="aggiungiAmbiente('${p}')">➕ Ambiente</button></div>`;}); document.getElementById('piani').innerHTML=html; updateStats();}
+document.getElementById('form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    let config={}, nome=document.getElementById('nome').value;
+    Object.entries(piani).forEach(([p,a])=>{let v=a.filter(x=>x.trim()); if(v.length>0) config[p]=v;});
+    if(Object.keys(config).length===0) {alert('Aggiungi almeno un ambiente'); return;}
+    let res=await fetch('/api/create-cantiere', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({nome,configurazione:config})});
+    let data=await res.json();
+    document.getElementById('msg').innerHTML=res.ok ? `<p style="color:green">${data.message}</p>` : `<p style="color:red">${data.error}</p>`;
+});
+render();
+</script>
+</body></html>"""
+    return render_template_string(html)
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
