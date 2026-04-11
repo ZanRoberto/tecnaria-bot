@@ -218,6 +218,11 @@ def hash_pwd(pwd):
 def get_session_user():
     return session.get('user')
 
+def is_superadmin():
+    """Verifica se l'utente corrente è superadmin"""
+    u = get_session_user()
+    return u and u.get('ruolo') == 'superadmin'
+
 def require_login(ruoli=None):
     u = get_session_user()
     if not u:
@@ -835,13 +840,13 @@ def search_images(query, brands):
 def scarica_immagini_gessi():
     """Scrapa immagini da Gessi, le converte in base64 e le salva nel DB"""
     try:
-        import base64
-        import re
+        import urllib.request
+        import urllib.error
         
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # PARTE 1: PRODOTTI GESSI - con fallback
+        # PARTE 1: PRODOTTI GESSI
         print("[SCRAPING] === PRODOTTI GESSI ===")
         c.execute("SELECT id, codice, nome FROM products WHERE brand='Gessi' AND (image_url IS NULL OR image_url='')")
         prodotti = c.fetchall()
@@ -851,36 +856,43 @@ def scarica_immagini_gessi():
         aggiornati_prodotti = 0
         for pid, codice, nome in prodotti:
             try:
-                # Usa una ricerca semplice con immagini placeholder
-                # Oppure prova a cercare da URL noto di Gessi
+                # URL noto di Gessi per il prodotto
                 gessi_url = f"https://www.gessi.it/it/cerca?search={codice}"
-                resp = httpx.get(gessi_url, timeout=10)
                 
-                if resp.status_code == 200:
+                # Scarica con User-Agent
+                req = urllib.request.Request(gessi_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    html = resp.read().decode('utf-8', errors='ignore')
+                    
                     # Estrai URL immagine con regex
-                    img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', resp.text)
+                    img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', html)
                     
                     if img_urls:
                         img_url = img_urls[0]
                         
                         # Scarica l'immagine
-                        img_resp = httpx.get(img_url, timeout=10)
-                        if img_resp.status_code == 200 and len(img_resp.content) > 1000:
-                            # Converti in base64
-                            img_b64 = base64.b64encode(img_resp.content).decode('utf-8')
-                            content_type = img_resp.headers.get('content-type', 'image/jpeg')
-                            data_url = f"data:{content_type};base64,{img_b64}"
-                            
-                            # Salva nel DB
-                            c.execute("UPDATE products SET image_url=? WHERE id=?", (data_url, pid))
-                            aggiornati_prodotti += 1
-                            print(f"  ✅ {codice}: salvato")
+                        try:
+                            req_img = urllib.request.Request(img_url, headers={'User-Agent': 'Mozilla/5.0'})
+                            with urllib.request.urlopen(req_img, timeout=10) as resp_img:
+                                img_data = resp_img.read()
+                                
+                                if len(img_data) > 1000:
+                                    # Converti in base64
+                                    img_b64 = base64.b64encode(img_data).decode('utf-8')
+                                    data_url = f"data:image/jpeg;base64,{img_b64}"
+                                    
+                                    # Salva nel DB
+                                    c.execute("UPDATE products SET image_url=? WHERE id=?", (data_url, pid))
+                                    aggiornati_prodotti += 1
+                                    print(f"  ✅ {codice}: salvato")
+                        except urllib.error.URLError:
+                            pass
                         
             except Exception as e:
                 print(f"  ⚠️ {codice}: {str(e)[:50]}")
                 continue
         
-        # PARTE 2: ACCESSORI - usa immagini placeholder per ora
+        # PARTE 2: ACCESSORI
         print("[SCRAPING] === ACCESSORI GESSI ===")
         c.execute("SELECT id, accessorio_id, accessorio_nome FROM product_accessories WHERE brand_accessorio='Gessi' AND (image_url IS NULL OR image_url='')")
         accessori = c.fetchall()
@@ -890,30 +902,35 @@ def scarica_immagini_gessi():
         aggiornati_accessori = 0
         for aid, acc_id, acc_nome in accessori:
             try:
-                # Per gli accessori, usa una ricerca generica
-                search_url = f"https://www.google.com/search?q={acc_nome}+gessi+product&tbm=isch"
-                resp = httpx.get(search_url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+                # Cerca su Google Images
+                search_query = f"{acc_nome} gessi"
+                search_url = f"https://www.google.com/search?q={search_query}&tbm=isch"
                 
-                if resp.status_code == 200:
+                req = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    html = resp.read().decode('utf-8', errors='ignore')
+                    
                     # Estrai URL immagini
-                    img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', resp.text)
+                    img_urls = re.findall(r'https://[^"\'<>\s]+\.(?:jpg|jpeg|png|webp)', html)
                     
                     if img_urls:
                         for img_url in img_urls[:3]:  # Prova i primi 3
                             try:
-                                img_resp = httpx.get(img_url, timeout=5)
-                                if img_resp.status_code == 200 and len(img_resp.content) > 500:
-                                    # Converti in base64
-                                    img_b64 = base64.b64encode(img_resp.content).decode('utf-8')
-                                    content_type = img_resp.headers.get('content-type', 'image/jpeg')
-                                    data_url = f"data:{content_type};base64,{img_b64}"
+                                req_img = urllib.request.Request(img_url, headers={'User-Agent': 'Mozilla/5.0'})
+                                with urllib.request.urlopen(req_img, timeout=5) as resp_img:
+                                    img_data = resp_img.read()
                                     
-                                    # Salva nel DB
-                                    c.execute("UPDATE product_accessories SET image_url=? WHERE id=?", (data_url, aid))
-                                    aggiornati_accessori += 1
-                                    print(f"  ✅ {acc_id}: salvato")
-                                    break
-                            except:
+                                    if len(img_data) > 500:
+                                        # Converti in base64
+                                        img_b64 = base64.b64encode(img_data).decode('utf-8')
+                                        data_url = f"data:image/jpeg;base64,{img_b64}"
+                                        
+                                        # Salva nel DB
+                                        c.execute("UPDATE product_accessories SET image_url=? WHERE id=?", (data_url, aid))
+                                        aggiornati_accessori += 1
+                                        print(f"  ✅ {acc_id}: salvato")
+                                        break
+                            except urllib.error.URLError:
                                 continue
                         
             except Exception as e:
@@ -933,6 +950,8 @@ def scarica_immagini_gessi():
         
     except Exception as e:
         print(f"[SCRAPING ERROR] {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
 def deepseek_ask(prompt):
@@ -2311,6 +2330,9 @@ function doLogin() {
     .then(r => r.json())
     .then(d => {
       if (d.ok) {
+        // Salva il ruolo nel localStorage
+        localStorage.setItem('user_ruolo', d.ruolo || 'commerciale');
+        localStorage.setItem('user_nome', d.nome || 'Utente');
         document.getElementById('login-overlay').style.display = 'none';
         document.getElementById('main-app').style.display = 'flex';
         initApp();
@@ -2329,6 +2351,8 @@ function doLogout() {
     document.getElementById('login-error').textContent = '';
     currentUser = null;
     moduliAttivi = [];
+    localStorage.removeItem('user_ruolo');
+    localStorage.removeItem('user_nome');
   });
 }
 
@@ -2336,6 +2360,15 @@ function initApp() {
   fetch('/api/me').then(r => r.json()).then(d => {
     if (!d.logged) { doLogout(); return; }
     currentUser = d.user;
+    
+    // Se per qualche motivo il ruolo non è corretto, usa il localStorage
+    if (!currentUser.ruolo) {
+      currentUser.ruolo = localStorage.getItem('user_ruolo') || 'commerciale';
+    }
+    if (!currentUser.nome) {
+      currentUser.nome = localStorage.getItem('user_nome') || 'Utente';
+    }
+    
     moduliAttivi = d.moduli || [];
     document.getElementById('user-label').textContent = currentUser.nome + ' (' + currentUser.ruolo + ')';
     setupRightPanel();
