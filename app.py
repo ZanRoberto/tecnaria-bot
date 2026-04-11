@@ -119,6 +119,7 @@ def init_db():
         finiture TEXT,
         fonte TEXT,
         brand TEXT,
+        image_url TEXT,
         created_at TEXT
     )''')
     
@@ -830,6 +831,69 @@ def search_images(query, brands):
         print("[GOOGLE CSE ERROR] " + str(e))
         return []
 
+def scarica_immagini_gessi():
+    """Scrapa immagini da Gessi, le converte in base64 e le salva nel DB"""
+    try:
+        import base64
+        from io import BytesIO
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Leggi i prodotti senza immagine
+        c.execute("SELECT id, codice, nome FROM products WHERE brand='Gessi' AND (image_url IS NULL OR image_url='')")
+        prodotti = c.fetchall()
+        
+        print(f"[SCRAPING] Trovati {len(prodotti)} prodotti Gessi senza immagine")
+        
+        aggiornati = 0
+        for pid, codice, nome in prodotti:
+            try:
+                # Cerca su Gessi.it
+                search_url = f"https://www.gessi.it/it/ricerca?q={nome}"
+                resp = httpx.get(search_url, timeout=10)
+                
+                if resp.status_code == 200:
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(resp.content, 'html.parser')
+                    
+                    # Cerca immagini nella pagina
+                    img = soup.find('img', {'class': 'product-image'})
+                    if not img:
+                        img = soup.find('img', {'alt': nome})
+                    if not img:
+                        img = soup.find('img')
+                    
+                    if img and img.get('src'):
+                        img_url = img['src']
+                        if not img_url.startswith('http'):
+                            img_url = 'https://www.gessi.it' + img_url
+                        
+                        # Scarica l'immagine
+                        img_resp = httpx.get(img_url, timeout=10)
+                        if img_resp.status_code == 200:
+                            # Converti in base64
+                            img_b64 = base64.b64encode(img_resp.content).decode('utf-8')
+                            content_type = img_resp.headers.get('content-type', 'image/jpeg')
+                            data_url = f"data:{content_type};base64,{img_b64}"
+                            
+                            # Salva nel DB
+                            c.execute("UPDATE products SET image_url=? WHERE id=?", (data_url, pid))
+                            aggiornati += 1
+                            print(f"✅ {nome}: immagine salvata (base64, {len(img_b64)} chars)")
+                        
+            except Exception as e:
+                print(f"❌ Errore per {nome}: {str(e)}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        return {"ok": True, "aggiornati": aggiornati, "totale": len(prodotti)}
+        
+    except Exception as e:
+        print(f"[SCRAPING ERROR] {str(e)}")
+        return {"ok": False, "error": str(e)}
+
 def deepseek_ask(prompt):
     if not DEEPSEEK_API_KEY:
         return "Errore: API Key non configurata"
@@ -1362,6 +1426,15 @@ def load_accessories_from_excel_lazy(file_content, brand, conn, c):
     except Exception as e:
         return False, f"❌ Errore: {str(e)}", 0
 
+@app.route('/api/scarica-immagini/<brand>', methods=['POST'])
+def scarica_immagini_brand(brand):
+    """Scrapa e salva immagini dei prodotti nel DB"""
+    if not is_superadmin():
+        return jsonify({"ok": False, "error": "Solo superadmin"}), 403
+    
+    result = scarica_immagini_gessi()
+    return jsonify(result)
+
 @app.route('/api/carica-abbinamenti-excel/<brand>', methods=['POST'])
 def carica_abbinamenti_excel(brand):
     """Carica abbinamenti da file Excel nel DB"""
@@ -1793,6 +1866,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     </label>
     <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
     <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
+    <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica Immagini Gessi</button>
   </div>
 
   <!-- CENTRO -->
@@ -3010,6 +3084,36 @@ function doUpload(input, tipo) {
       });
   };
   reader.readAsDataURL(file);
+}
+
+function scaricaImmaginiGessi() {
+  if (!confirm('Scarica immagini Gessi? Questo potrebbe richiedere 1-2 minuti...')) return;
+  
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ In corso...';
+  
+  fetch('/api/scarica-immagini/Gessi', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      if (d.ok) {
+        btn.textContent = `✓ ${d.aggiornati}/${d.totale} aggiornate`;
+        btn.style.background = '#10b981';
+        setTimeout(() => {
+          btn.textContent = '🖼️ Scarica Immagini Gessi';
+          btn.style.background = '#06b6d4';
+        }, 3000);
+      } else {
+        btn.textContent = '❌ Errore: ' + d.error;
+        btn.style.background = '#ef4444';
+      }
+    })
+    .catch(e => {
+      btn.disabled = false;
+      btn.textContent = '❌ Errore';
+      console.error(e);
+    });
 }
 
 function apriGestisciDoc() {
