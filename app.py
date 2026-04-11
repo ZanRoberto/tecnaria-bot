@@ -848,7 +848,8 @@ def scarica_immagini_gessi():
         
         # PARTE 1: PRODOTTI GESSI
         print("[SCRAPING] === PRODOTTI GESSI ===")
-        c.execute("SELECT id, codice, nome FROM products WHERE brand='Gessi' AND (image_url IS NULL OR image_url='')")
+        # Cerca prodotti con brand='Gessi' (case-insensitive)
+        c.execute("SELECT id, codice, nome FROM products WHERE LOWER(brand)='gessi' AND (image_url IS NULL OR image_url='')")
         prodotti = c.fetchall()
         
         print(f"[SCRAPING] Trovati {len(prodotti)} prodotti Gessi senza immagine")
@@ -894,7 +895,7 @@ def scarica_immagini_gessi():
         
         # PARTE 2: ACCESSORI
         print("[SCRAPING] === ACCESSORI GESSI ===")
-        c.execute("SELECT id, accessorio_id, accessorio_nome FROM product_accessories WHERE brand_accessorio='Gessi' AND (image_url IS NULL OR image_url='')")
+        c.execute("SELECT id, accessorio_id, accessorio_nome FROM product_accessories WHERE LOWER(brand_accessorio)='gessi' AND (image_url IS NULL OR image_url='')")
         accessori = c.fetchall()
         
         print(f"[SCRAPING] Trovati {len(accessori)} accessori")
@@ -1926,7 +1927,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     </label>
     <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
     <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
-    <button onclick="caricaAbbinamenti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Abbinamenti dal DB</button>
+    <button onclick="caricaAbbinamentiEProdotti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Listino + Abbinamenti</button>
     <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
     <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica Immagini Gessi</button>
   </div>
@@ -3458,32 +3459,43 @@ function toggleExcelPanel() {
   arrow.textContent = open ? '▼' : '▲';
 }
 
-function caricaAbbinamenti() {
-  const status = document.getElementById('abbinamenti-status');
-  status.textContent = '⏳ Caricamento...';
-  status.style.color = '#9ca3af';
+function caricaAbbinamentiEProdotti() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ Caricamento...';
   
-  // Prendi il brand (default Gessi)
-  const brand = 'Gessi';
-  
-  fetch('/api/carica-abbinamenti-excel/' + encodeURIComponent(brand), {
-    method: 'POST'
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      status.textContent = '✅ ' + d.message;
-      status.style.color = '#10b981';
-    } else {
-      status.textContent = '❌ ' + (d.error || 'Errore');
-      status.style.color = '#ef4444';
-    }
-    setTimeout(() => { status.textContent = ''; }, 4000);
-  })
-  .catch(e => {
-    status.textContent = '❌ ' + e.message;
-    status.style.color = '#ef4444';
-  });
+  // 1. Carica listino
+  fetch('/api/listino/Gessi')
+    .then(r => r.json())
+    .then(d1 => {
+      const prodotti = d1.ok ? d1.prodotti.length : 0;
+      
+      // 2. Carica abbinamenti
+      return fetch('/api/carica-abbinamenti-excel/Gessi', {method:'POST'})
+        .then(r => r.json())
+        .then(d2 => {
+          const abbinamenti = d2.ok ? d2.count : 0;
+          
+          if (d1.ok && d2.ok) {
+            btn.textContent = `✅ Caricati ${prodotti} prodotti + ${abbinamenti} abbinamenti`;
+            btn.style.background = '#10b981';
+          } else {
+            btn.textContent = `⚠️ ${prodotti} prodotti, ${abbinamenti} abbinamenti`;
+            btn.style.background = '#f59e0b';
+          }
+          
+          setTimeout(() => {
+            btn.textContent = '📋 Carica Listino + Abbinamenti';
+            btn.style.background = '#f59e0b';
+            btn.disabled = false;
+          }, 4000);
+        });
+    })
+    .catch(e => {
+      btn.textContent = '❌ Errore: ' + e.message;
+      btn.style.background = '#ef4444';
+      btn.disabled = false;
+    });
 }
 
 function caricaExcelListino(input) {
