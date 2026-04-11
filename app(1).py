@@ -105,6 +105,23 @@ def init_db():
     )''')
     
     # TABELLE LAZY LOADING ABBINAMENTI
+    c.execute('''CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        codice TEXT UNIQUE NOT NULL,
+        nome TEXT,
+        collezione TEXT,
+        categoria TEXT,
+        prezzo REAL,
+        prezzo_rivenditore REAL,
+        prezzo_scontato REAL,
+        disponibilita TEXT,
+        descrizione TEXT,
+        finiture TEXT,
+        fonte TEXT,
+        brand TEXT,
+        created_at TEXT
+    )''')
+    
     c.execute('''CREATE TABLE IF NOT EXISTS categories_accessori (
         id INTEGER PRIMARY KEY,
         categoria_id TEXT UNIQUE NOT NULL,
@@ -189,9 +206,9 @@ def dedup_brands_on_start():
 
 dedup_brands_on_start()
 
-# ---------------------------------------------------------------------------
-# HELPERS AUTH
-# ---------------------------------------------------------------------------
+def load_gessi_abbinamenti_on_start():
+    """Placeholder — abbinamenti caricheranno da Excel quando l'utente clicca il bottone"""
+    pass
 
 def hash_pwd(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
@@ -1018,10 +1035,10 @@ def get_listino(brand):
     """Restituisce i prodotti dal listino Excel caricato per un brand"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Cerca documenti Excel per questo brand
+    # Cerca documenti Excel per questo brand (case-insensitive)
     c.execute("""SELECT d.content, d.filename FROM documents d
                  JOIN aziende a ON d.azienda_id = a.id
-                 WHERE a.nome = ? AND (d.filename LIKE '%.xlsx' OR d.filename LIKE '%.xls' OR d.filename LIKE '%[EXCEL]%')
+                 WHERE LOWER(a.nome) = LOWER(?) AND (LOWER(d.filename) LIKE '%.xlsx' OR LOWER(d.filename) LIKE '%.xls' OR LOWER(d.filename) LIKE '%excel%')
                  ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
     row = c.fetchone()
     conn.close()
@@ -1079,7 +1096,8 @@ def get_listino(brand):
                 if not raw: return None
                 try: return float(re.sub(r'[^\d.,]','',raw).replace(',','.'))
                 except: return None
-            prodotti.append({
+            
+            prod_dict = {
                 'codice': codice,
                 'nome': getv('nome'),
                 'categoria': getv('categoria'),
@@ -1091,7 +1109,24 @@ def get_listino(brand):
                 'descrizione': getv('descrizione'),
                 'finiture': getv('finiture'),
                 'fonte': 'excel'
-            })
+            }
+            prodotti.append(prod_dict)
+            
+            # SALVA SUBITO IN DB products
+            try:
+                c = conn.cursor()
+                c.execute("""INSERT OR REPLACE INTO products 
+                            (codice, nome, collezione, categoria, prezzo, prezzo_rivenditore, 
+                             prezzo_scontato, disponibilita, descrizione, finiture, fonte, brand, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         (codice, prod_dict['nome'], prod_dict['collezione'], prod_dict['categoria'],
+                          prod_dict['prezzo'], prod_dict['prezzo_rivenditore'], prod_dict['prezzo_scontato'],
+                          prod_dict['disponibilita'], prod_dict['descrizione'], prod_dict['finiture'],
+                          'excel', brand, datetime.now().isoformat()))
+                conn.commit()
+            except Exception as e:
+                print(f"[DB] Errore salvataggio prodotto {codice}: {e}")
+        
         return jsonify({"ok": True, "prodotti": prodotti, "fonte": filename})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "prodotti": []})
@@ -1327,6 +1362,99 @@ def load_accessories_from_excel_lazy(file_content, brand, conn, c):
     except Exception as e:
         return False, f"❌ Errore: {str(e)}", 0
 
+@app.route('/api/carica-abbinamenti-excel/<brand>', methods=['POST'])
+def carica_abbinamenti_excel(brand):
+    """Carica abbinamenti da file Excel nel DB"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Cerca file abbinamenti per questo brand nel DB documents
+        c.execute("""SELECT content, filename FROM documents d
+                     JOIN aziende a ON d.azienda_id = a.id
+                     WHERE LOWER(a.nome) = LOWER(?)
+                     AND (LOWER(d.filename) LIKE '%abbinamenti%' OR LOWER(d.filename) LIKE '%abbina%')
+                     ORDER BY d.upload_date DESC LIMIT 1""", (brand,))
+        
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": f"File abbinamenti non trovato per {brand}"}), 404
+        
+        content_b64, filename = row
+        
+        # Decodifica Excel
+        if ',' in content_b64:
+            content_b64 = content_b64.split(',', 1)[1]
+        
+        raw = base64.b64decode(content_b64)
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        
+        # Trova foglio abbinamenti
+        sheet_name = None
+        for sn in wb.sheetnames:
+            if 'abbina' in sn.lower():
+                sheet_name = sn
+                break
+        
+        if not sheet_name:
+            conn.close()
+            return jsonify({"ok": False, "error": f"Foglio 'ABBINAMENTI' non trovato"}), 400
+        
+        ws = wb[sheet_name]
+        
+        # Pulisci vecchi abbinamenti per questo brand
+        c.execute("DELETE FROM product_accessories WHERE brand_accessorio=?", (brand,))
+        conn.commit()
+        
+        count = 0
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i == 0:  # Skip header
+                continue
+            
+            if not row or not row[0]:  # Skip empty
+                continue
+            
+            prodotto = str(row[0]).strip() if row[0] else None
+            acc_id = str(row[1]).strip() if row[1] else None
+            acc_nome = str(row[2]).strip() if row[2] else ""
+            brand_acc = str(row[3]).strip() if row[3] else brand
+            categoria = str(row[4]).strip() if row[4] else ""
+            tipo = str(row[5]).strip() if row[5] else "ufficiale"
+            priority = int(row[6]) if row[6] else 99
+            note = str(row[7]).strip() if row[7] else ""
+            
+            if not prodotto or not acc_id:
+                continue
+            
+            try:
+                c.execute("""INSERT INTO product_accessories 
+                            (prodotto_padre, accessorio_id, accessorio_nome, brand_accessorio, 
+                             categoria_accessorio, tipo_relazione, priority, note, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         (prodotto, acc_id, acc_nome, brand_acc, categoria, tipo, priority, note, datetime.now().isoformat()))
+                count += 1
+            except Exception as e:
+                print(f"Errore riga {i}: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        if count == 0:
+            return jsonify({"ok": False, "error": "Nessun abbinamento trovato nel file"}), 400
+        
+        return jsonify({
+            "ok": True,
+            "message": f"✅ Caricati {count} abbinamenti",
+            "brand": brand,
+            "filename": filename,
+            "count": count
+        })
+    
+    except Exception as e:
+        conn.close()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route('/api/load-brand-accessories/<brand>', methods=['GET'])
 def load_brand_accessories(brand):
     """Carica SOLO i file Excel del brand selezionato"""
@@ -1334,16 +1462,16 @@ def load_brand_accessories(brand):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Cerca i file Excel del brand
+        # Cerca i file Excel del brand (con parola chiave abbinamenti)
         c.execute("""
             SELECT d.content, d.filename 
             FROM documents d
             JOIN aziende a ON d.azienda_id = a.id
-            WHERE LOWER(a.nome) LIKE ? 
+            WHERE LOWER(a.nome) = LOWER(?)
             AND (d.filename LIKE '%ABBINAMENTI%' OR d.filename LIKE '%abbinamenti%')
             ORDER BY d.upload_date DESC
             LIMIT 1
-        """, (f'%{brand.lower()}%',))
+        """, (brand,))
         
         row = c.fetchone()
         
@@ -1378,13 +1506,75 @@ def load_brand_accessories(brand):
                 "message": msg,
                 "brand": brand
             }), 400
-            
     except Exception as e:
         return jsonify({
             "ok": False,
             "error": str(e),
             "brand": brand
         }), 500
+
+@app.route('/api/abbina/<codice_prodotto>', methods=['GET'])
+def get_abbinamenti_prodotto(codice_prodotto):
+    """Restituisce accessori ufficiali + alternativi per un codice prodotto"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Cerca il prodotto (opzionale — gli abbinamenti si vedono comunque)
+    c.execute("""SELECT codice, nome, collezione, categoria, prezzo FROM products 
+                 WHERE codice = ? LIMIT 1""", (codice_prodotto,))
+    prodotto_row = c.fetchone()
+    
+    prodotto = None
+    if prodotto_row:
+        prodotto = {
+            'codice': prodotto_row[0],
+            'nome': prodotto_row[1],
+            'collezione': prodotto_row[2],
+            'categoria': prodotto_row[3],
+            'prezzo': prodotto_row[4]
+        }
+    
+    # Cerca accessori per questo prodotto (SEMPRE, anche se prodotto non in DB)
+    c.execute("""SELECT accessorio_id, accessorio_nome, brand_accessorio, tipo_relazione, priority, note
+                 FROM product_accessories
+                 WHERE prodotto_padre = ?
+                 ORDER BY tipo_relazione DESC, priority ASC""", (codice_prodotto,))
+    
+    rows = c.fetchall()
+    conn.close()
+    
+    ufficiali = []
+    alternative = []
+    esclusi = []
+    
+    for row in rows:
+        acc = {
+            'accessorio_id': row[0],
+            'nome': row[1],
+            'brand': row[2],
+            'tipo': row[3],
+            'priority': row[4],
+            'note': row[5] if row[5] else ''
+        }
+        if row[3] == 'ufficiale':
+            ufficiali.append(acc)
+        elif row[3] == 'alternativa':
+            alternative.append(acc)
+        elif row[3] == 'escluso':
+            esclusi.append(acc)
+    
+    # Se non ci sono abbinamenti, ritorna 404
+    if len(ufficiali) == 0 and len(alternative) == 0:
+        return jsonify({"ok": False, "error": "Nessun abbinamento trovato"}), 404
+    
+    return jsonify({
+        "ok": True,
+        "prodotto": prodotto,
+        "ufficiali": ufficiali,
+        "alternative": alternative,
+        "esclusi": esclusi,
+        "count": len(ufficiali) + len(alternative)
+    })
 
 # ---------------------------------------------------------------------------
 # FRONTEND
@@ -1459,13 +1649,13 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .brand-dropdown-item { padding: 7px 10px; font-size: 11px; cursor: pointer; color: #e0e0e0; }
 .brand-dropdown-item:hover { background: rgba(59,130,245,0.3); color: white; }
 /* DRAWER CANTIERE */
-.cantiere-drawer { display: none; position: fixed; top: 0; right: 0; width: 520px; height: 100vh; background: #0f172e; border-left: 2px solid rgba(59,130,245,0.4); z-index: 1000; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.5); }
+.cantiere-drawer { display: none; position: fixed; top: 0; right: 0; width: 320px; height: 100vh; background: #0f172e; border-left: 2px solid rgba(59,130,245,0.4); z-index: 1000; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.5); overflow-y: auto; }
 .cantiere-drawer.open { display: flex; }
 .drawer-header { background: rgba(59,130,245,0.15); border-bottom: 1px solid rgba(59,130,245,0.3); padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
 .drawer-title { font-size: 15px; font-weight: 700; color: #60a5fa; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 0; }
-.drawer-section { border-bottom: 1px solid rgba(59,130,245,0.15); padding: 14px 18px; }
-.drawer-section-title { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+.drawer-section { border-bottom: 1px solid rgba(59,130,245,0.15); padding: 10px 12px; }
+.drawer-section-title { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
 .riga-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 8px 12px; margin: 5px 0; display: flex; align-items: center; justify-content: space-between; }
 .riga-card-info { flex: 1; }
 .riga-card-brand { font-size: 12px; font-weight: 600; color: #60a5fa; }
@@ -1488,7 +1678,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .domande-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .domanda-chip { padding: 5px 10px; font-size: 10px; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; border-radius: 20px; cursor: pointer; margin-bottom: 0; }
 .domanda-chip:hover { background: rgba(16,185,129,0.3); }
-.prodotti-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.prodotti-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
 .prodotto-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 8px; padding: 12px; cursor: pointer; transition: border-color 0.2s; }
 .prodotto-card:hover { border-color: rgba(59,130,245,0.6); }
 .prodotto-card.su-ordine { border-left: 3px solid #f59e0b; }
@@ -1800,15 +1990,14 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     </div>
 
     <!-- ACCESSORI CONSIGLIATI -->
-    <div class="drawer-section" id="accessori-section" style="display:none;">
-      <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleAccessoriSection()">
+    <div class="drawer-section" id="accessori-section" style="display:block;">
+      <div class="drawer-section-title">
         🔗 Accessori Consigliati
-        <span id="accessori-arrow" style="float:right; color:#9ca3af;">▼</span>
       </div>
-      <div id="accessori-panel" style="display:block;">
-        <div id="accessori-ufficiali"></div>
-        <div id="accessori-alternative"></div>
-        <div id="accessori-esclusi"></div>
+      <div id="accessori-panel" style="display:block;max-height:300px;overflow-y:auto;">
+        <div id="pannello-titolo" style="padding:8px;background:rgba(59,130,246,0.1);border-left:3px solid #3b82f6;margin-bottom:12px;border-radius:4px;"></div>
+        <div id="sezioneUfficiali"></div>
+        <div id="sezioneAlternative"></div>
       </div>
     </div>
 
@@ -2203,26 +2392,7 @@ function renderAccessoriHtml(ufficiali, alternative, esclusi) {
   document.getElementById('accessori-ufficiali').innerHTML = html;
 }
 
-function aggiungiAccessorioAlCantiere(accessorioId, nome, brand) {
-  if (!cantiereAttivo) { alert('Apri prima un cantiere'); return; }
-  const descrizione = '[' + accessorioId + '] ' + nome;
-  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ brand: brand, categoria: 'Accessorio', descrizione: descrizione, importo: 0 })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      loadRighe();
-      const msg = document.createElement('div');
-      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 16px;border-radius:6px;font-size:12px;z-index:9999;';
-      msg.textContent = '✓ ' + nome + ' aggiunto!';
-      document.body.appendChild(msg);
-      setTimeout(() => msg.remove(), 2000);
-    }
-  });
-}
+// CARICAMENTO ACCESSORI - vedi mostraModalAbbinamenti() sotto
 
 // ---------------------------------------------------------------------------
 // CANTIERI (fine accessori)
@@ -2444,7 +2614,7 @@ function generaOffertaCantiere() {
   if (!cantiereAttivo) return;
   fetch('/api/cantieri/' + cantiereAttivo + '/righe').then(r => r.json()).then(d => {
     const righe = d.righe || [];
-    if (righe.length === 0) { alert('Aggiungi prima delle righe al cantiere'); return; }
+    if (righe.length === 0) { return; }
     const nome = document.getElementById('drawer-nome').textContent;
     let totale = 0;
     const riepilogo = righe.map(r => {
@@ -3107,6 +3277,34 @@ function toggleExcelPanel() {
   arrow.textContent = open ? '▼' : '▲';
 }
 
+function caricaAbbinamenti() {
+  const status = document.getElementById('abbinamenti-status');
+  status.textContent = '⏳ Caricamento...';
+  status.style.color = '#9ca3af';
+  
+  // Prendi il brand (default Gessi)
+  const brand = 'Gessi';
+  
+  fetch('/api/carica-abbinamenti-excel/' + encodeURIComponent(brand), {
+    method: 'POST'
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      status.textContent = '✅ ' + d.message;
+      status.style.color = '#10b981';
+    } else {
+      status.textContent = '❌ ' + (d.error || 'Errore');
+      status.style.color = '#ef4444';
+    }
+    setTimeout(() => { status.textContent = ''; }, 4000);
+  })
+  .catch(e => {
+    status.textContent = '❌ ' + e.message;
+    status.style.color = '#ef4444';
+  });
+}
+
 function caricaExcelListino(input) {
   const file = input.files[0];
   if (!file) return;
@@ -3421,6 +3619,11 @@ function caricaListino() {
         ? '<span style="color:#10b981;">📄 ' + n + ' prodotti da listino</span>'
         : '<span style="color:#ef4444;">⚠ Nessun listino caricato per ' + listinoBrand + ' — carica un Excel prima</span>';
       document.getElementById('listino-count').innerHTML = fonte;
+      
+      // CARICA ABBINAMENTI AUTOMATICAMENTE QUANDO CARICHI LISTINO
+      fetch('/api/carica-abbinamenti-excel/' + encodeURIComponent(listinoBrand), {method:'POST'})
+        .then(r => r.json())
+        .catch(() => {}); // Silenzioso se fallisce
     });
 }
 
@@ -3524,11 +3727,17 @@ function filtraListino() {
       '<div>' + prezzoHtml + '</div>' +
       '</div>' +
       '<div class="prodotto-actions" style="margin-top:8px;">' +
-      '<button onclick="event.stopPropagation();mostraAbbinamenti(\'' + (p.codice||'') + '\')" class="btn-sm" style="background:rgba(16,185,129,0.2);color:#10b981;flex:1;">📋 Abbina</button>' +
+      '<button onclick="event.stopPropagation();verificaAbbinamenti(' + idx + ',\'' + (p.codice||'').replace(/'/g,"\\'") + '\')" class="btn-sm" id="abbina-btn-' + idx + '" style="flex:1; background:rgba(107,114,128,0.3);color:#d1d5db;">📋 Abbina</button>' +
       '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
       '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
       '</div></div>';
   }).join('');
+  
+  // Controlla abbinamenti per TUTTI i prodotti visibili
+  prodotti.forEach((p, i) => {
+    const idx = listinoData.indexOf(p);
+    setTimeout(() => verificaAbbinamenti(idx, p.codice), 100 * i);
+  });
 }
 
 function chiediAIprodotto(idx, tipo) {
@@ -3546,6 +3755,36 @@ function faiDomandaListino(domanda) {
   chiudiListino();
   document.getElementById('question').value = domanda;
   ask();
+}
+
+function aggiungiAccessorio(accId, accNome) {
+  if (!cantiereAttivo) {
+    alert('Nessun cantiere aperto');
+    return;
+  }
+  
+  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ 
+      brand: 'Gessi', 
+      categoria: 'Accessori', 
+      descrizione: accNome,
+      importo: 0 // Accessori senza prezzo iniziale
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadRighe(); // Ricarica carrello
+      // Feedback visuale
+      const msg = document.createElement('div');
+      msg.innerHTML = '✓ Accessorio aggiunto!';
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 2000);
+    }
+  });
 }
 
 function aggiungiDaListino(idx) {
@@ -3582,6 +3821,94 @@ function aggiungiDaListino(idx) {
     } else {
       if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
     }
+    
+    // Controlla abbinamenti e colora il bottone
+    verificaAbbinamenti(idx, p.codice);
+  });
+}
+
+function verificaAbbinamenti(idx, codice) {
+  if (!codice) return;
+  
+  // Fetch diretto — controlla se abbinamenti sono nel DB
+  fetch('/api/abbina/' + encodeURIComponent(codice))
+    .then(r => r.json())
+    .then(d => {
+      const btn = document.getElementById('abbina-btn-' + idx);
+      if (!btn) return;
+      
+      // Se ha abbinamenti ufficiali O alternative
+      const hasAbbinamenti = (d.ufficiali && d.ufficiali.length > 0) || 
+                             (d.alternative && d.alternative.length > 0);
+      
+      if (hasAbbinamenti) {
+        // 🔴 ROSSO - Ha abbinamenti
+        btn.style.background = '#ef4444';
+        btn.style.color = 'white';
+        btn.style.cursor = 'pointer';
+        btn.disabled = false;
+        btn.onclick = () => apriModalAbbinamenti(codice, d);
+      } else {
+        // 🔘 Grigio - No abbinamenti
+        btn.style.background = 'rgba(107,114,128,0.3)';
+        btn.style.color = '#d1d5db';
+        btn.style.cursor = 'not-allowed';
+        btn.disabled = true;
+      }
+    })
+    .catch(e => {
+      console.error('Errore verifica:', e);
+      const btn = document.getElementById('abbina-btn-' + idx);
+      if (btn) btn.style.background = 'rgba(107,114,128,0.3)';
+    });
+}
+
+function apriModalAbbinamenti(codice, data) {
+  if (!cantiereAttivo) {
+    alert('Apri prima un cantiere');
+    return;
+  }
+
+  // Aggiungi DIRETTAMENTE tutti gli abbinamenti ufficiali
+  const abbinamenti = data.ufficiali || [];
+  
+  if (abbinamenti.length === 0) {
+    alert('Nessun abbinamento disponibile');
+    return;
+  }
+
+  console.log('🔵 Aggiungo', abbinamenti.length, 'abbinamenti');
+  
+  let aggiunto = 0;
+  abbinamenti.forEach(acc => {
+    fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        brand: 'Gessi',
+        categoria: 'Accessori',
+        descrizione: `[${acc.accessorio_id}] ${acc.nome}`,
+        importo: 0
+      })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        aggiunto++;
+        console.log(`✅ ${acc.nome}`);
+        if (aggiunto === abbinamenti.length) {
+          loadRighe();
+          const msg = document.createElement('div');
+          msg.textContent = `✓ ${aggiunto} abbinamenti aggiunti`;
+          msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;font-weight:600;';
+          document.body.appendChild(msg);
+          setTimeout(() => msg.remove(), 2000);
+        }
+      } else {
+        console.error('Errore:', acc.accessorio_id, d.error);
+      }
+    })
+    .catch(e => console.error('Exception:', e));
   });
 }
 
@@ -3867,8 +4194,8 @@ function mostraAbbinamenti(prodottoId) {
                 alert("Prodotto non trovato");
                 return;
             }
-            popolaModalAbbinamenti(data);
-            document.getElementById('modalAbbinamenti').classList.add('show');
+            // Aggiorna il drawer a destra INVECE di aprire un modal
+            aggiornaPannelloAccessori(data);
         })
         .catch(e => {
             console.error("Errore:", e);
@@ -3876,8 +4203,45 @@ function mostraAbbinamenti(prodottoId) {
         });
 }
 
-function chiudiModalAbbinamenti() {
-    document.getElementById('modalAbbinamenti').classList.remove('show');
+function aggiornaPannelloAccessori(data) {
+    const prod = data.prodotto;
+    
+    // Titolo prodotto
+    let html = `<div style="font-size:11px;color:#ef4444;font-weight:bold;margin-bottom:12px;padding:8px;background:rgba(239,68,68,0.1);border-radius:4px;">
+        <div>${prod.codice}</div>
+        <div>${prod.nome}</div>
+    </div>`;
+    
+    // UFFICIALI
+    if (data.ufficiali && data.ufficiali.length > 0) {
+        html += `<div style="font-size:10px;color:#ef4444;font-weight:bold;margin-bottom:6px;">✓ UFFICIALI</div>`;
+        data.ufficiali.forEach(acc => {
+            html += `
+            <div style="padding:8px;margin-bottom:6px;background:rgba(239,68,68,0.1);border-left:2px solid #ef4444;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:10px;color:#10b981;margin-top:4px;">→ Clicca per aggiungere</div>
+            </div>
+            `;
+        });
+    }
+    
+    // ALTERNATIVE
+    if (data.alternative && data.alternative.length > 0) {
+        html += `<div style="font-size:10px;color:#f59e0b;font-weight:bold;margin-top:12px;margin-bottom:6px;">★ ALTERNATIVE</div>`;
+        data.alternative.forEach(acc => {
+            html += `
+            <div style="padding:8px;margin-bottom:6px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
+                <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:10px;color:#f59e0b;margin-top:4px;">→ Clicca per aggiungere</div>
+            </div>
+            `;
+        });
+    }
+    
+    document.getElementById('sezioneUfficiali').innerHTML = html;
+    document.getElementById('sezioneAlternative').innerHTML = '';
 }
 
 function popolaModalAbbinamenti(data) {
