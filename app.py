@@ -2761,23 +2761,37 @@ function addCantiere() {
 
 function openCantiere(id, nome, stato) {
   cantiereAttivo = id;
-  document.getElementById('drawer-nome').textContent = nome;
-  document.getElementById('cantiere-stato').value = stato;
-  document.getElementById('cantiere-drawer').classList.add('open');
   
-  // Aggiorna bottone switch modalita
+  // Fetch modalita PRIMA di aprire il drawer
   fetch('/api/cantieri/' + id + '/modalita')
     .then(r => r.json())
     .then(d => {
-      const btn = document.getElementById('btn-switch-modalita');
-      if (btn) {
-        const modalita = d.modalita || 'semplice';
-        btn.textContent = modalita === 'semplice' ? '🔄 PIANI' : '🔄 SEMPLICE';
-      }
+      const modalita = d.modalita || 'semplice';
+      
+      // Chiudi entrambi i drawer prima
+      document.getElementById('cantiere-drawer').classList.remove('open');
+      document.getElementById('cantiere-drawer-piani').classList.remove('open');
+      
+      setTimeout(() => {
+        if (modalita === 'semplice') {
+          // DRAWER SEMPLICE
+          document.getElementById('drawer-nome').textContent = nome;
+          document.getElementById('cantiere-stato').value = stato;
+          document.getElementById('btn-switch-modalita').textContent = '🔄 PIANI';
+          document.getElementById('cantiere-drawer').style.display = 'flex';
+          document.getElementById('cantiere-drawer').classList.add('open');
+          precompilaBrandDrawer();
+          loadRighe();
+        } else {
+          // DRAWER PIANI
+          document.getElementById('drawer-piani-nome').textContent = nome;
+          document.getElementById('btn-switch-indietro').textContent = '🔄 SEMPLICE';
+          document.getElementById('cantiere-drawer-piani').style.display = 'flex';
+          document.getElementById('cantiere-drawer-piani').classList.add('open');
+          loadStrutturaPiani(id);
+        }
+      }, 50);
     });
-  
-  precompilaBrandDrawer();
-  loadRighe();
 }
 
 function switchModalita() {
@@ -2800,29 +2814,18 @@ function switchModalita() {
       .then(r => r.json())
       .then(d => {
         if (d.ok) {
+          // Ricarica il cantiere con la nuova modalita
           const nomeCantiere = document.getElementById('drawer-nome').textContent || 
                                document.getElementById('drawer-piani-nome').textContent;
           const stato = document.getElementById('cantiere-stato').value;
           
-          // Nascondi entrambi i drawer
+          // Chiudi drawer
           document.getElementById('cantiere-drawer').classList.remove('open');
           document.getElementById('cantiere-drawer-piani').classList.remove('open');
           
-          // Aspetta transizione e riapri con modalita corretta
+          // Aspetta transizione
           setTimeout(() => {
-            if (nuova === 'piani') {
-              // Mostra drawer PIANI
-              document.getElementById('drawer-piani-nome').textContent = nomeCantiere;
-              document.getElementById('cantiere-drawer-piani').classList.add('open');
-              loadStrutturaPiani(cantiereAttivo);
-            } else {
-              // Mostra drawer SEMPLICE
-              document.getElementById('drawer-nome').textContent = nomeCantiere;
-              document.getElementById('cantiere-stato').value = stato;
-              document.getElementById('cantiere-drawer').classList.add('open');
-              precompilaBrandDrawer();
-              loadRighe();
-            }
+            openCantiere(cantiereAttivo, nomeCantiere, stato);
           }, 300);
         } else {
           alert('❌ Errore: ' + d.error);
@@ -2959,6 +2962,11 @@ function setBrandRiga(brand) {
 function closeCantiere() {
   cantiereAttivo = null;
   document.getElementById('cantiere-drawer').classList.remove('open');
+  document.getElementById('cantiere-drawer-piani').classList.remove('open');
+  setTimeout(() => {
+    document.getElementById('cantiere-drawer').style.display = 'none';
+    document.getElementById('cantiere-drawer-piani').style.display = 'none';
+  }, 300);
 }
 
 function updateCantiere() {
