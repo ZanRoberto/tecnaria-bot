@@ -243,6 +243,7 @@ def init_db():
         nome TEXT NOT NULL,
         configurazione_piani JSON,
         stato TEXT DEFAULT 'bozza',
+        modalita TEXT DEFAULT 'semplice',
         note TEXT,
         data_creazione TEXT,
         data_aggiornamento TEXT,
@@ -466,8 +467,113 @@ def require_login(ruoli=None):
         return None
     return u
 
-# ---------------------------------------------------------------------------
-# PIANI / STANZE / VOCI - Gestione struttura cantiere
+@app.route('/api/cantieri/<int:cid>/modalita', methods=['GET'])
+def get_modalita_cantiere(cid):
+    """Legge modalita cantiere: 'semplice' o 'piani'"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT modalita FROM cantieri WHERE id = ?", (cid,))
+        row = c.fetchone()
+        conn.close()
+        modalita = row[0] if row else 'semplice'
+        return jsonify({'modalita': modalita}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cantieri/<int:cid>/modalita', methods=['PUT'])
+def set_modalita_cantiere(cid):
+    """Cambia modalita cantiere e converte dati se necessario"""
+    try:
+        data = request.get_json()
+        nuova_modalita = data.get('modalita', 'semplice')
+        
+        if nuova_modalita not in ['semplice', 'piani']:
+            return jsonify({'error': 'Modalita non valida'}), 400
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Leggi modalita attuale
+        c.execute("SELECT modalita FROM cantieri WHERE id = ?", (cid,))
+        row = c.fetchone()
+        modalita_attuale = row[0] if row else 'semplice'
+        
+        # Se cambio da semplice → piani: crea struttura Piano 1 / Stanza unica
+        if modalita_attuale == 'semplice' and nuova_modalita == 'piani':
+            # Crea Piano 1
+            c.execute('''INSERT INTO piani (cantiere_id, numero, nome, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)''',
+                     (cid, 1, 'Piano 1', datetime.now().isoformat(), datetime.now().isoformat()))
+            piano_id = c.lastrowid
+            
+            # Crea Stanza unica
+            c.execute('''INSERT INTO stanze (piano_id, nome, descrizione, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)''',
+                     (piano_id, 'Ambiente principale', '', datetime.now().isoformat(), datetime.now().isoformat()))
+            stanza_id = c.lastrowid
+            
+            # Sposta tutte le righe cantiere_righe → stanza_voci
+            c.execute("SELECT id, brand, categoria, descrizione, importo FROM cantiere_righe WHERE cantiere_id = ?", (cid,))
+            righe = c.fetchall()
+            
+            totale_stanza = 0
+            for rid, brand, categoria, descrizione, importo in righe:
+                importo = importo or 0
+                totale_stanza += importo
+                
+                c.execute('''INSERT INTO stanza_voci 
+                            (stanza_id, tipo, codice, brand, descrizione, quantita, udm,
+                             prezzo_unitario, sconto_percentuale, sconto_fisso, subtotale,
+                             note, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                         ('Da migrazione', categoria or '', brand or '', descrizione or '',
+                          1, 'pezzo', importo, 0, 0, importo, '', datetime.now().isoformat(), datetime.now().isoformat()))
+            
+            # Aggiorna totali
+            c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?",
+                     (totale_stanza, datetime.now().isoformat(), stanza_id))
+            c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?",
+                     (totale_stanza, datetime.now().isoformat(), piano_id))
+        
+        # Se cambio da piani → semplice: appiattisci voci in cantiere_righe
+        elif modalita_attuale == 'piani' and nuova_modalita == 'semplice':
+            # Carica tutte le voci dai piani
+            c.execute('''SELECT sv.brand, sv.descrizione, sv.subtotale 
+                        FROM stanza_voci sv
+                        JOIN stanze s ON sv.stanza_id = s.id
+                        JOIN piani p ON s.piano_id = p.id
+                        WHERE p.cantiere_id = ?''', (cid,))
+            voci = c.fetchall()
+            
+            # Cancella vecchie righe cantiere
+            c.execute("DELETE FROM cantiere_righe WHERE cantiere_id = ?", (cid,))
+            
+            # Inserisci voci come righe cantiere
+            for brand, descrizione, subtotale in voci:
+                c.execute('''INSERT INTO cantiere_righe 
+                            (cantiere_id, brand, categoria, descrizione, note, importo)
+                            VALUES (?, ?, ?, ?, ?, ?)''',
+                         (cid, brand or '', '', descrizione or '', 'Da migrazione piani', subtotale or 0))
+        
+        # Aggiorna modalita
+        c.execute("UPDATE cantieri SET modalita = ?, data_aggiornamento = ? WHERE id = ?",
+                 (nuova_modalita, datetime.now().isoformat(), cid))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'ok': True,
+            'cantiere_id': cid,
+            'modalita': nuova_modalita,
+            'message': f'Convertito a modalita {nuova_modalita}'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# API PIANI / STANZE / VOCI - Gestione struttura cantiere
 # ---------------------------------------------------------------------------
 
 @app.route('/api/config/sconto-mode', methods=['GET'])
@@ -2671,8 +2777,8 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
   </div>
 </div>
 
-<!-- DRAWER DETTAGLIO CANTIERE -->
-<div class="cantiere-drawer" id="cantiere-drawer">
+<!-- DRAWER DETTAGLIO CANTIERE - MODALITA SEMPLICE -->
+<div class="cantiere-drawer" id="cantiere-drawer-semplice">
   <div class="drawer-header">
     <div>
       <div class="drawer-title" id="drawer-nome"></div>
@@ -2804,6 +2910,35 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
   <div class="drawer-footer">
     <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta AI</button>
     <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">Elimina cantiere</button>
+  </div>
+</div>
+
+<!-- DRAWER DETTAGLIO CANTIERE - MODALITA PIANI/STANZE -->
+<div class="cantiere-drawer" id="cantiere-drawer-piani" style="display:none;">
+  <div class="drawer-header">
+    <div>
+      <div class="drawer-title" id="drawer-piani-nome"></div>
+      <div style="font-size:11px; color:#d1d5db; margin-top:2px;">Gestione per Piani/Stanze/Voci</div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button onclick="switchModalita()" id="btn-switch-piani" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap;">🔄 Passa a SEMPLICE</button>
+      <button onclick="closeCantiere()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+    </div>
+  </div>
+
+  <div class="drawer-body">
+    <!-- PANNELLO PIANI/STANZE/VOCI -->
+    <div id="pannello-piani" style="flex:1; overflow-y:auto; padding:12px;">
+      <div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">
+        ⏳ Caricamento struttura piani...
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer-footer">
+    <button onclick="aggiungiPianoModal()" class="btn-green" style="flex:1; font-size:11px; margin-bottom:0;">➕ Piano</button>
+    <button onclick="generaOffertaDaPiani()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta</button>
+    <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">✕ Elimina</button>
   </div>
 </div>
 
@@ -3147,11 +3282,114 @@ function addCantiere() {
 
 function openCantiere(id, nome, stato) {
   cantiereAttivo = id;
+  
+  // 🔴 DECIDI QUALE DRAWER CARICARE
+  fetch('/api/cantieri/' + id + '/modalita')
+    .then(r => r.json())
+    .then(d => {
+      const modalita = d.modalita || 'semplice';
+      
+      // Nascondi entrambi i drawer
+      const ds = document.getElementById('cantiere-drawer-semplice');
+      const dp = document.getElementById('cantiere-drawer-piani');
+      if (ds) ds.classList.remove('open');
+      if (dp) dp.classList.remove('open');
+      
+      if (modalita === 'piani') {
+        // ✅ MODALITA PIANI
+        if (dp) {
+          dp.classList.add('open');
+          caricaDrawerPiani(id, nome);
+        }
+      } else {
+        // ✅ MODALITA SEMPLICE (default)
+        if (ds) {
+          ds.classList.add('open');
+          caricaDrawerSemplice(id, nome, stato);
+        }
+      }
+    })
+    .catch(e => {
+      console.error('Errore modalita:', e);
+      // Fallback: carica semplice
+      const ds = document.getElementById('cantiere-drawer-semplice');
+      if (ds) {
+        ds.classList.add('open');
+        caricaDrawerSemplice(id, nome, stato);
+      }
+    });
+}
+
+function caricaDrawerSemplice(id, nome, stato) {
+  // Carica il drawer SEMPLICE (attuale)
   document.getElementById('drawer-nome').textContent = nome;
   document.getElementById('cantiere-stato').value = stato;
-  document.getElementById('cantiere-drawer').classList.add('open');
   precompilaBrandDrawer();
   loadRighe();
+  aggiornaBottoneSwitchModalita('semplice');
+}
+
+function caricaDrawerPiani(id, nome) {
+  // Carica il drawer PIANI/STANZE
+  if (!document.getElementById('drawer-piani-nome')) return;
+  document.getElementById('drawer-piani-nome').textContent = nome;
+  loadStrutturaPiani(id);
+  aggiornaBottoneSwitchModalita('piani');
+}
+
+function aggiornaBottoneSwitchModalita(modalita) {
+  const btnSemplice = document.getElementById('btn-switch-semplice');
+  const btnPiani = document.getElementById('btn-switch-piani');
+  if (btnSemplice) {
+    if (modalita === 'semplice') {
+      btnSemplice.textContent = '✓ MODALITA SEMPLICE';
+      btnSemplice.style.background = '#3b82f6';
+      if (btnPiani) { btnPiani.textContent = '🔄 Passa a PIANI'; btnPiani.style.background = 'rgba(59,130,245,0.3)'; }
+    } else {
+      if (btnPiani) { btnPiani.textContent = '✓ MODALITA PIANI'; btnPiani.style.background = '#3b82f6'; }
+      btnSemplice.textContent = '🔄 Passa a SEMPLICE';
+      btnSemplice.style.background = 'rgba(59,130,245,0.3)';
+    }
+  }
+}
+
+function switchModalita() {
+  if (!cantiereAttivo) return;
+  
+  fetch('/api/cantieri/' + cantiereAttivo + '/modalita')
+    .then(r => r.json())
+    .then(d => {
+      const modalitaAttuale = d.modalita || 'semplice';
+      const nuova = modalitaAttuale === 'semplice' ? 'piani' : 'semplice';
+      
+      const msg = `Convertire a modalità ${nuova.toUpperCase()}?\n\nI dati verranno preservati e convertiti automaticamente.`;
+      if (!confirm(msg)) return;
+      
+      fetch('/api/cantieri/' + cantiereAttivo + '/modalita', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ modalita: nuova })
+      })
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok) {
+          const ds = document.getElementById('cantiere-drawer-semplice');
+          const dp = document.getElementById('cantiere-drawer-piani');
+          const nomeCantiere = (document.getElementById('drawer-nome') ? document.getElementById('drawer-nome').textContent : '') ||
+                              (document.getElementById('drawer-piani-nome') ? document.getElementById('drawer-piani-nome').textContent : '');
+          const stato = document.getElementById('cantiere-stato') ? document.getElementById('cantiere-stato').value : 'bozza';
+          
+          if (ds) ds.classList.remove('open');
+          if (dp) dp.classList.remove('open');
+          
+          setTimeout(() => {
+            openCantiere(cantiereAttivo, nomeCantiere, stato);
+          }, 300);
+        } else {
+          alert('❌ Errore: ' + d.error);
+        }
+      });
+    });
 }
 
 function precompilaBrandDrawer() {
@@ -3199,7 +3437,10 @@ function setBrandRiga(brand) {
 
 function closeCantiere() {
   cantiereAttivo = null;
-  document.getElementById('cantiere-drawer').classList.remove('open');
+  const ds = document.getElementById('cantiere-drawer-semplice');
+  const dp = document.getElementById('cantiere-drawer-piani');
+  if (ds) ds.classList.remove('open');
+  if (dp) dp.classList.remove('open');
 }
 
 function updateCantiere() {
@@ -5024,8 +5265,108 @@ function apriModalAbbinamenti(codice, data) {
   });
 }
 
-// Controlla se già loggato
-fetch('/api/me').then(r => r.json()).then(d => {
+function loadStrutturaPiani(cantiere_id) {
+  const pannello = document.getElementById('pannello-piani');
+  pannello.innerHTML = '<div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">⏳ Caricamento...</div>';
+  
+  fetch('/api/cantieri/' + cantiere_id + '/struttura')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) {
+        pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ Errore: ' + d.error + '</div>';
+        return;
+      }
+      
+      const piani = d.piani || [];
+      let html = '';
+      
+      if (piani.length === 0) {
+        html = '<div style="color:#d1d5db; padding:12px; text-align:center;font-size:11px;">Nessun piano creato. Clicca "➕ Piano" per aggiungerne uno.</div>';
+      } else {
+        piani.forEach(p => {
+          html += `<div style="background:rgba(59,130,245,0.15); border:1px solid rgba(59,130,245,0.3); border-radius:6px; margin-bottom:10px; padding:12px;">
+            <div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:8px;">
+              Piano ${p.numero}: ${p.nome}
+              <span style="float:right; font-size:11px; color:#10b981;">€${p.totale_piano.toFixed(2)}</span>
+            </div>`;
+          
+          const stanze = p.stanze || [];
+          stanze.forEach(s => {
+            html += `<div style="background:rgba(30,41,59,0.6); border-left:3px solid #8b5cf6; border-radius:4px; padding:8px; margin:6px 0; font-size:11px;">
+              <div style="color:#d1d5db; font-weight:bold; display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span>${s.nome}</span>
+                <span style="color:#10b981;">€${s.totale_stanza.toFixed(2)}</span>
+              </div>`;
+            
+            const voci = s.voci || [];
+            voci.forEach(v => {
+              html += `<div style="padding:4px 0; font-size:10px; color:#e5e7eb; display:flex; justify-content:space-between; border-bottom:1px solid rgba(59,130,245,0.1);">
+                <span>[${v.codice||'—'}] ${v.descrizione}</span>
+                <span style="color:#93c5fd;">€${v.subtotale.toFixed(2)}</span>
+              </div>`;
+            });
+            
+            html += `</div>`;
+          });
+          
+          html += `</div>`;
+        });
+      }
+      
+      pannello.innerHTML = html;
+    })
+    .catch(e => {
+      pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ ' + e + '</div>';
+    });
+}
+
+function aggiungiPianoModal() {
+  if (!cantiereAttivo) return;
+  const nome = prompt('Nome del piano (es. Piano 1, Primo livello):');
+  if (!nome) return;
+  
+  fetch('/api/cantieri/' + cantiereAttivo + '/piani', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ numero: 1, nome: nome })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadStrutturaPiani(cantiereAttivo);
+    }
+  });
+}
+
+function generaOffertaDaPiani() {
+  if (!cantiereAttivo) return;
+  
+  fetch('/api/cantieri/' + cantiereAttivo + '/struttura')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok || !d.piani || d.piani.length === 0) {
+        alert('Nessun piano con voci');
+        return;
+      }
+      
+      let descrizione = '';
+      d.piani.forEach(p => {
+        descrizione += `\n\nPIANO: ${p.nome}\n`;
+        p.stanze.forEach(s => {
+          descrizione += `  Stanza: ${s.nome}\n`;
+          s.voci.forEach(v => {
+            descrizione += `    - ${v.descrizione} (€${v.subtotale.toFixed(2)})\n`;
+          });
+        });
+      });
+      
+      closeCantiere();
+      document.getElementById('question').value = `Genera una proposta per il cantiere con la seguente struttura per piani:${descrizione}\n\nCrea un documento professionale e ben organizzato.`;
+      ask();
+    });
+}
+
+// Carica il resto del codice JavaScript...
   if (d.logged) {
     document.getElementById('login-overlay').style.display = 'none';
     document.getElementById('main-app').style.display = 'flex';
