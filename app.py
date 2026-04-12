@@ -22,7 +22,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "tecnaria2024").strip()
+SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "tecnaria2024")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "").strip()
 
