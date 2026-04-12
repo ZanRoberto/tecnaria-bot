@@ -349,56 +349,6 @@ def init_db():
         FOREIGN KEY(offerta_id) REFERENCES offerte(id)
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS piani (
-        id INTEGER PRIMARY KEY,
-        cantiere_id INTEGER,
-        numero INTEGER,
-        nome TEXT,
-        totale_piano REAL DEFAULT 0,
-        created_at TEXT,
-        updated_at TEXT,
-        FOREIGN KEY(cantiere_id) REFERENCES cantieri(id)
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS stanze (
-        id INTEGER PRIMARY KEY,
-        piano_id INTEGER,
-        nome TEXT,
-        descrizione TEXT,
-        totale_stanza REAL DEFAULT 0,
-        created_at TEXT,
-        updated_at TEXT,
-        FOREIGN KEY(piano_id) REFERENCES piani(id)
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS stanza_voci (
-        id INTEGER PRIMARY KEY,
-        stanza_id INTEGER,
-        tipo TEXT,
-        codice TEXT,
-        brand TEXT,
-        descrizione TEXT,
-        quantita INTEGER DEFAULT 1,
-        udm TEXT,
-        prezzo_unitario REAL,
-        sconto_percentuale REAL DEFAULT 0,
-        sconto_fisso REAL DEFAULT 0,
-        subtotale REAL,
-        note TEXT,
-        immagine_b64 TEXT,
-        created_at TEXT,
-        updated_at TEXT,
-        FOREIGN KEY(stanza_id) REFERENCES stanze(id)
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS config_sistema (
-        id INTEGER PRIMARY KEY,
-        chiave TEXT UNIQUE,
-        valore TEXT,
-        descrizione TEXT,
-        updated_at TEXT
-    )''')
-    
     # Cliente default Covolo
     c.execute("INSERT OR IGNORE INTO clienti (nome, slug) VALUES ('Covolo SRL', 'covolo')")
     conn.commit()
@@ -412,11 +362,6 @@ def init_db():
     for brand in BRANDS_LIST:
         c.execute('INSERT OR IGNORE INTO aziende (nome) VALUES (?)', (brand,))
     conn.commit()
-    # Config default
-    c.execute('''INSERT OR IGNORE INTO config_sistema (chiave, valore, descrizione, updated_at)
-                VALUES (?, ?, ?, ?)''',
-             ('SCONTO_MODE', '1', 'Modalità sconto: 1=per riga, 2=generale', datetime.now().isoformat()))
-    conn.commit()
     conn.close()
 
 app = Flask(__name__)
@@ -425,24 +370,21 @@ init_db()
 
 def dedup_brands_on_start():
     """Unifica brand duplicati case-insensitive all'avvio"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
-        dups = c.fetchall()
-        for lower_name, ids_str, names_str in dups:
-            ids = [int(x) for x in ids_str.split(',')]
-            names = names_str.split(',')
-            canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
-            canonical_id = ids[names.index(canonical_name)]
-            for i, bid in enumerate(ids):
-                if bid != canonical_id:
-                    c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
-                    c.execute("DELETE FROM aziende WHERE id=?", (bid,))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"⚠️ Dedup brands warning (non-bloccante): {e}")
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
+    dups = c.fetchall()
+    for lower_name, ids_str, names_str in dups:
+        ids = [int(x) for x in ids_str.split(',')]
+        names = names_str.split(',')
+        canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
+        canonical_id = ids[names.index(canonical_name)]
+        for i, bid in enumerate(ids):
+            if bid != canonical_id:
+                c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
+                c.execute("DELETE FROM aziende WHERE id=?", (bid,))
+    conn.commit()
+    conn.close()
 
 dedup_brands_on_start()
 
@@ -5227,382 +5169,6 @@ def delete_immagine_endpoint(brand, codice):
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 # ============================================================================
-# ENDPOINT PIANI / STANZE / VOCI - Gestione struttura cantiere
-# ============================================================================
-
-@app.route('/api/config/sconto-mode', methods=['GET'])
-def get_sconto_mode_endpoint():
-    """Legge modalità sconto configurata"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT valore FROM config_sistema WHERE chiave = 'SCONTO_MODE'")
-        row = c.fetchone()
-        conn.close()
-        sconto_mode = int(row[0]) if row else 1
-        return jsonify({'sconto_mode': sconto_mode}), 200
-    except:
-        return jsonify({'sconto_mode': 1}), 200
-
-@app.route('/api/config/sconto-mode', methods=['PUT'])
-def set_sconto_mode_endpoint():
-    """Admin configura modalità sconto"""
-    try:
-        data = request.get_json()
-        sconto_mode = data.get('sconto_mode', 1)
-        
-        if sconto_mode not in [1, 2]:
-            return jsonify({'error': 'Valore non valido (1 o 2)'}), 400
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''UPDATE config_sistema SET valore = ?, updated_at = ?
-                    WHERE chiave = 'SCONTO_MODE'
-                    ''', (str(sconto_mode), datetime.now().isoformat()))
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'sconto_mode': sconto_mode}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/cantieri/<int:cid>/piani', methods=['POST'])
-def crea_piano_endpoint(cid):
-    """Crea un piano nel cantiere"""
-    try:
-        data = request.get_json()
-        numero = data.get('numero', 1)
-        nome = data.get('nome', f'Piano {numero}')
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute('''INSERT INTO piani (cantiere_id, numero, nome, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)''',
-                 (cid, numero, nome, datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        piano_id = c.lastrowid
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'piano_id': piano_id, 'numero': numero, 'nome': nome}), 201
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/piani/<int:pid>/stanze', methods=['POST'])
-def crea_stanza_endpoint(pid):
-    """Crea una stanza in un piano"""
-    try:
-        data = request.get_json()
-        nome = data.get('nome', 'Nuova stanza')
-        descrizione = data.get('descrizione', '')
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute('''INSERT INTO stanze (piano_id, nome, descrizione, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)''',
-                 (pid, nome, descrizione, datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        stanza_id = c.lastrowid
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'stanza_id': stanza_id, 'nome': nome}), 201
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stanze/<int:sid>/voci', methods=['POST'])
-def aggiungi_voce_endpoint(sid):
-    """Aggiungi voce (brand o manuale) a stanza"""
-    try:
-        data = request.get_json()
-        tipo = data.get('tipo', 'brand')  # 'brand' o 'manuale'
-        codice = data.get('codice', '')
-        brand = data.get('brand', '')
-        descrizione = data.get('descrizione', '')
-        quantita = data.get('quantita', 1)
-        udm = data.get('udm', 'pezzo')
-        prezzo_unitario = data.get('prezzo_unitario', 0)
-        sconto_perc = data.get('sconto_percentuale', 0)
-        sconto_fisso = data.get('sconto_fisso', 0)
-        note = data.get('note', '')
-        immagine_b64 = data.get('immagine_b64')
-        
-        # Calcola sconto totale voce
-        sconto_totale = 0
-        if sconto_perc > 0:
-            sconto_totale = (prezzo_unitario * sconto_perc) / 100
-        else:
-            sconto_totale = sconto_fisso
-        
-        subtotale = (prezzo_unitario - sconto_totale) * quantita
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute('''INSERT INTO stanza_voci 
-                    (stanza_id, tipo, codice, brand, descrizione, quantita, udm, 
-                     prezzo_unitario, sconto_percentuale, sconto_fisso, subtotale, 
-                     note, immagine_b64, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                 (sid, tipo, codice, brand, descrizione, quantita, udm,
-                  prezzo_unitario, sconto_perc, sconto_fisso, subtotale,
-                  note, immagine_b64, datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        voce_id = c.lastrowid
-        
-        # Aggiorna totale stanza
-        c.execute("SELECT SUM(subtotale) FROM stanza_voci WHERE stanza_id = ?", (sid,))
-        totale_stanza = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?",
-                 (totale_stanza, datetime.now().isoformat(), sid))
-        
-        # Aggiorna totale piano
-        c.execute('''SELECT piano_id FROM stanze WHERE id = ?''', (sid,))
-        piano_id = c.fetchone()[0]
-        
-        c.execute("SELECT SUM(totale_stanza) FROM stanze WHERE piano_id = ?", (piano_id,))
-        totale_piano = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?",
-                 (totale_piano, datetime.now().isoformat(), piano_id))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'voce_id': voce_id,
-            'subtotale': round(subtotale, 2),
-            'totale_stanza': round(totale_stanza, 2),
-            'totale_piano': round(totale_piano, 2)
-        }), 201
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stanza_voci/<int:vid>', methods=['PUT'])
-def modifica_voce_endpoint(vid):
-    """Modifica voce (prezzo, quantità, sconto, descrizione)"""
-    try:
-        data = request.get_json()
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Carica voce
-        c.execute('''SELECT stanza_id, prezzo_unitario, quantita FROM stanza_voci WHERE id = ?''', (vid,))
-        row = c.fetchone()
-        if not row:
-            conn.close()
-            return jsonify({'error': 'Voce non trovata'}), 404
-        
-        stanza_id, _, _ = row
-        
-        # Aggiorna campi
-        prezzo = data.get('prezzo_unitario')
-        quantita = data.get('quantita')
-        sconto_perc = data.get('sconto_percentuale')
-        sconto_fisso = data.get('sconto_fisso')
-        descrizione = data.get('descrizione')
-        note = data.get('note')
-        
-        update_fields = []
-        params = []
-        
-        if prezzo is not None:
-            update_fields.append('prezzo_unitario = ?')
-            params.append(prezzo)
-        if quantita is not None:
-            update_fields.append('quantita = ?')
-            params.append(quantita)
-        if sconto_perc is not None:
-            update_fields.append('sconto_percentuale = ?')
-            params.append(sconto_perc)
-        if sconto_fisso is not None:
-            update_fields.append('sconto_fisso = ?')
-            params.append(sconto_fisso)
-        if descrizione is not None:
-            update_fields.append('descrizione = ?')
-            params.append(descrizione)
-        if note is not None:
-            update_fields.append('note = ?')
-            params.append(note)
-        
-        if update_fields:
-            update_fields.append('updated_at = ?')
-            params.append(datetime.now().isoformat())
-            params.append(vid)
-            
-            sql = f"UPDATE stanza_voci SET {', '.join(update_fields)} WHERE id = ?"
-            c.execute(sql, params)
-        
-        # Ricalcola subtotale e totali
-        c.execute('''SELECT prezzo_unitario, quantita, sconto_percentuale, sconto_fisso 
-                    FROM stanza_voci WHERE id = ?''', (vid,))
-        pu, qty, sc_perc, sc_fisso = c.fetchone()
-        
-        sconto_tot = 0
-        if sc_perc > 0:
-            sconto_tot = (pu * sc_perc) / 100
-        else:
-            sconto_tot = sc_fisso
-        
-        subtotale = (pu - sconto_tot) * qty
-        
-        c.execute("UPDATE stanza_voci SET subtotale = ? WHERE id = ?", (subtotale, vid))
-        
-        # Aggiorna totale stanza
-        c.execute("SELECT SUM(subtotale) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
-        totale_stanza = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?",
-                 (totale_stanza, datetime.now().isoformat(), stanza_id))
-        
-        # Aggiorna totale piano
-        c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
-        piano_id = c.fetchone()[0]
-        
-        c.execute("SELECT SUM(totale_stanza) FROM stanze WHERE piano_id = ?", (piano_id,))
-        totale_piano = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?",
-                 (totale_piano, datetime.now().isoformat(), piano_id))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'voce_id': vid,
-            'subtotale': round(subtotale, 2),
-            'totale_stanza': round(totale_stanza, 2),
-            'totale_piano': round(totale_piano, 2)
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stanza_voci/<int:vid>', methods=['DELETE'])
-def rimuovi_voce_endpoint(vid):
-    """Rimuovi voce da stanza"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute("SELECT stanza_id FROM stanza_voci WHERE id = ?", (vid,))
-        row = c.fetchone()
-        if not row:
-            conn.close()
-            return jsonify({'error': 'Voce non trovata'}), 404
-        
-        stanza_id = row[0]
-        
-        c.execute("DELETE FROM stanza_voci WHERE id = ?", (vid,))
-        
-        # Aggiorna totale stanza
-        c.execute("SELECT SUM(subtotale) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
-        totale_stanza = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?",
-                 (totale_stanza, datetime.now().isoformat(), stanza_id))
-        
-        # Aggiorna totale piano
-        c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
-        piano_id = c.fetchone()[0]
-        
-        c.execute("SELECT SUM(totale_stanza) FROM stanze WHERE piano_id = ?", (piano_id,))
-        totale_piano = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?",
-                 (totale_piano, datetime.now().isoformat(), piano_id))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'totale_stanza': round(totale_stanza, 2)}), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/cantieri/<int:cid>/struttura', methods=['GET'])
-def leggi_struttura_cantiere_endpoint(cid):
-    """Legge TUTTA la struttura: piani/stanze/voci con totali"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Piani
-        c.execute('''SELECT id, numero, nome, totale_piano FROM piani 
-                    WHERE cantiere_id = ? ORDER BY numero''', (cid,))
-        piani_data = []
-        totale_generale = 0
-        
-        for piano_id, numero, nome, tot_piano in c.fetchall():
-            tot_piano = tot_piano or 0
-            totale_generale += tot_piano
-            
-            # Stanze di questo piano
-            c.execute('''SELECT id, nome, descrizione, totale_stanza FROM stanze 
-                        WHERE piano_id = ? ORDER BY id''', (piano_id,))
-            stanze_data = []
-            
-            for stanza_id, stanza_nome, descr, tot_stanza in c.fetchall():
-                tot_stanza = tot_stanza or 0
-                
-                # Voci di questa stanza
-                c.execute('''SELECT id, tipo, codice, brand, descrizione, quantita, udm,
-                                   prezzo_unitario, sconto_percentuale, sconto_fisso, subtotale
-                            FROM stanza_voci WHERE stanza_id = ? ORDER BY id''', (stanza_id,))
-                voci_data = []
-                
-                for (v_id, tipo, cod, brand, desc, qty, udm_val,
-                     prezzo, sc_perc, sc_fisso, subtot) in c.fetchall():
-                    voci_data.append({
-                        'id': v_id,
-                        'tipo': tipo,
-                        'codice': cod,
-                        'brand': brand,
-                        'descrizione': desc,
-                        'quantita': qty,
-                        'udm': udm_val,
-                        'prezzo_unitario': prezzo,
-                        'sconto_percentuale': sc_perc,
-                        'sconto_fisso': sc_fisso,
-                        'subtotale': subtot
-                    })
-                
-                stanze_data.append({
-                    'id': stanza_id,
-                    'nome': stanza_nome,
-                    'descrizione': descr,
-                    'totale_stanza': round(tot_stanza, 2),
-                    'voci': voci_data
-                })
-            
-            piani_data.append({
-                'id': piano_id,
-                'numero': numero,
-                'nome': nome,
-                'totale_piano': round(tot_piano, 2),
-                'stanze': stanze_data
-            })
-        
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'cantiere_id': cid,
-            'piani': piani_data,
-            'totale_generale': round(totale_generale, 2)
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ============================================================================
 # ENDPOINT OFFERTE - Creazione, Esportazione, Gestione Stato
 # ============================================================================
 
@@ -5794,6 +5360,7 @@ def cambia_stato_offerta_endpoint(offerta_id):
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/offerte/<int:offerta_id>/sconto', methods=['PUT'])
 def applica_sconto_endpoint(offerta_id):
