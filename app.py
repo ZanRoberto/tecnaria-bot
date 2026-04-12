@@ -424,6 +424,24 @@ except Exception as e:
     print(f"[WARNING] dedup_brands_on_start() error (non-blocking): {e}", file=sys.stderr, flush=True)
 
 print("[LOG] All startup checks passed! Ready to start.", file=sys.stderr, flush=True)
+print("[LOG] Starting endpoint registration...", file=sys.stderr, flush=True)
+
+# Aggiungi hook per catturare errori durante registration
+original_route = app.route
+def route_with_logging(*args, **kwargs):
+    def decorator(f):
+        route_path = args[0] if args else "unknown"
+        print(f"[ENDPOINT] Registering: {route_path} -> {f.__name__}", file=sys.stderr, flush=True)
+        try:
+            return original_route(*args, **kwargs)(f)
+        except Exception as e:
+            print(f"[ERROR] Failed to register {route_path}: {e}", file=sys.stderr, flush=True)
+            raise
+    return decorator
+
+app.route = route_with_logging
+
+print("[LOG] Endpoint registration hook installed", file=sys.stderr, flush=True)
 
 def load_gessi_abbinamenti_on_start():
     """Placeholder — abbinamenti caricheranno da Excel quando l'utente clicca il bottone"""
