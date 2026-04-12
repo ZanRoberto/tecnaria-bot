@@ -7,7 +7,7 @@ ORACOLO COVOLO - SISTEMA COMPLETO V2
 """
 import os, json, sqlite3, re, hashlib, secrets, base64, io
 from datetime import datetime
-from flask import Flask, render_template_string, request, jsonify, session
+from flask import Flask, render_template_string, request, jsonify, session, send_file
 import httpx
 import urllib.request
 import urllib.error
@@ -305,6 +305,48 @@ def init_db():
         nota TEXT,
         created_at TEXT,
         FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS offerte (
+        id INTEGER PRIMARY KEY,
+        numero_offerta TEXT UNIQUE,
+        versione INTEGER DEFAULT 0,
+        data_creazione TEXT,
+        cantiere_id INTEGER,
+        cliente_id INTEGER,
+        stato TEXT DEFAULT 'bozza',
+        sconto_percentuale REAL DEFAULT 0,
+        sconto_fisso REAL DEFAULT 0,
+        totale_lordo REAL,
+        totale_sconto REAL DEFAULT 0,
+        totale_cliente REAL,
+        totale_rivenditore REAL,
+        data_invio TEXT,
+        data_accettazione TEXT,
+        note_commerciale TEXT,
+        json_strutturato TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(cantiere_id) REFERENCES cantieri(id),
+        FOREIGN KEY(cliente_id) REFERENCES clienti(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS offerte_righe (
+        id INTEGER PRIMARY KEY,
+        offerta_id INTEGER,
+        codice_covolo TEXT,
+        codice_fornitore TEXT,
+        brand TEXT,
+        categoria TEXT,
+        descrizione TEXT,
+        quantita INTEGER,
+        udm TEXT,
+        prezzo_cliente REAL,
+        prezzo_rivenditore REAL,
+        immagine_b64 TEXT,
+        disponibilita_magazzino INTEGER,
+        note TEXT,
+        FOREIGN KEY(offerta_id) REFERENCES offerte(id)
     )''')
     
     # Cliente default Covolo
@@ -2048,11 +2090,13 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
   <div class="main">
     <div class="title">Oracolo Covolo</div>
     <div class="btn-3pulsanti" id="btn-3pulsanti">
+      <button class="btn-green" onclick="creaOfferta()">📄 CREA OFFERTA</button>
       <button class="btn-green" onclick="generateOfferta()">OFFERTA</button>
       <button class="btn-green" onclick="generateAnalisi()">ANALISI</button>
       <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
       <button style="background:#8b5cf6;" onclick="apriListino()">📋 LISTINO</button>
     </div>
+    <div id="offerta-info" style="font-size:10px; color:#10b981; margin:4px 0; padding:4px; background:rgba(16,185,129,0.1); border-radius:4px; display:none;"></div>
     <div class="chat-area" id="chat"></div>
     <div class="input-area">
       <input type="text" id="question" placeholder="Domanda libera o cerca prodotto..." onkeypress="if(event.key==='Enter') ask()" oninput="cercaRapidaListino(this.value)" style="flex: 1;">
@@ -3391,6 +3435,141 @@ function eliminaDocumento(id, brand) {
         alert('Errore: ' + (d.error || 'sconosciuto'));
       }
     });
+}
+
+// ==================== OFFERTE ====================
+function creaOfferta() {
+  if (!cantiereAttivo) { alert('Apri un cantiere prima'); return; }
+  
+  fetch(`/api/offerte/crea/${cantiereAttivo}`, { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        const infoDiv = document.getElementById('offerta-info');
+        infoDiv.innerHTML = `✅ ${d.numero_offerta} | €${d.totale.toFixed(2)} | ` +
+          `<a href="javascript:scaricaOffertaJSON(${d.offerta_id})" style="color:#10b981; text-decoration:underline;">📋 JSON</a> | ` +
+          `<a href="javascript:apriModalSconto()" style="color:#f59e0b; text-decoration:underline;">💰 Sconto</a> | ` +
+          `<a href="javascript:creaVariazioneOfferta()" style="color:#8b5cf6; text-decoration:underline;">📄 Variazione</a>`;
+        infoDiv.style.display = 'block';
+        window.offerta_attiva_id = d.offerta_id;
+        window.offerta_attiva_numero = d.numero_offerta;
+      } else {
+        alert('❌ ' + d.error);
+      }
+    })
+    .catch(e => alert('Errore: ' + e));
+}
+
+function scaricaOffertaJSON(offerta_id) {
+  if (!offerta_id && window.offerta_attiva_id) offerta_id = window.offerta_attiva_id;
+  if (!offerta_id) { alert('Crea offerta prima'); return; }
+  
+  fetch(`/api/offerte/${offerta_id}/json`)
+    .then(r => r.json())
+    .then(json => {
+      const jsonStr = JSON.stringify(json, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `offerta_${json.numero_offerta}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    })
+    .catch(e => alert('Errore download: ' + e));
+}
+
+function cambiaStatoOfferta(offerta_id, nuovo_stato) {
+  if (!offerta_id && window.offerta_attiva_id) offerta_id = window.offerta_attiva_id;
+  
+  fetch(`/api/offerte/${offerta_id}/stato`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stato: nuovo_stato })
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        const infoDiv = document.getElementById('offerta-info');
+        infoDiv.innerHTML = `✅ Offerta ${nuovo_stato.toUpperCase()}: ${window.offerta_attiva_numero}`;
+        infoDiv.style.display = 'block';
+      } else {
+        alert('❌ ' + d.error);
+      }
+    })
+    .catch(e => alert('Errore: ' + e));
+}
+
+function apriModalSconto() {
+  if (!window.offerta_attiva_id) { alert('Crea offerta prima'); return; }
+  
+  const html = `
+    <div style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:10000; display:flex; align-items:center; justify-content:center; padding:20px;" id="modal-sconto">
+      <div style="background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:24px; max-width:400px; color:#e5e7eb;">
+        <div style="font-size:16px; font-weight:bold; margin-bottom:16px;">💰 Applica Sconto Offerta</div>
+        
+        <div style="margin-bottom:12px;">
+          <label style="display:block; font-size:12px; margin-bottom:4px;">Sconto Percentuale %</label>
+          <input type="number" id="sc-perc" placeholder="10" min="0" max="100" style="width:100%; padding:8px; background:#1e293b; border:1px solid #475569; color:white; border-radius:4px;">
+        </div>
+        
+        <div style="margin-bottom:12px;">
+          <label style="display:block; font-size:12px; margin-bottom:4px;">O Sconto Fisso €</label>
+          <input type="number" id="sc-fisso" placeholder="50" min="0" style="width:100%; padding:8px; background:#1e293b; border:1px solid #475569; color:white; border-radius:4px;">
+        </div>
+        
+        <div style="display:flex; gap:8px; margin-top:16px;">
+          <button onclick="applicaScontoOfferta()" style="flex:1; padding:8px; background:#10b981; color:white; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">✅ Applica</button>
+          <button onclick="document.getElementById('modal-sconto').remove()" style="flex:1; padding:8px; background:#6b7280; color:white; border:none; border-radius:4px; cursor:pointer;">✕ Chiudi</button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function applicaScontoOfferta() {
+  const offerta_id = window.offerta_attiva_id;
+  const sc_perc = parseFloat(document.getElementById('sc-perc').value) || 0;
+  const sc_fisso = parseFloat(document.getElementById('sc-fisso').value) || 0;
+  
+  fetch(`/api/offerte/${offerta_id}/sconto`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sconto_percentuale: sc_perc, sconto_fisso: sc_fisso })
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        document.getElementById('modal-sconto').remove();
+        const infoDiv = document.getElementById('offerta-info');
+        infoDiv.innerHTML = `💰 Sconto applicato: € ${d.sconto_applicato.toFixed(2)} | Totale: € ${d.totale_netto.toFixed(2)} | <a href="javascript:scaricaOffertaJSON(${offerta_id})" style="color:#10b981; text-decoration:underline;">📋 JSON aggiornato</a>`;
+        infoDiv.style.display = 'block';
+      } else {
+        alert('❌ ' + d.error);
+      }
+    })
+    .catch(e => alert('Errore: ' + e));
+}
+
+function creaVariazioneOfferta() {
+  if (!window.offerta_attiva_id) { alert('Crea offerta prima'); return; }
+  
+  fetch(`/api/offerte/${window.offerta_attiva_id}/crea-variazione`, { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        const infoDiv = document.getElementById('offerta-info');
+        infoDiv.innerHTML = `✅ Variazione creata: ${d.numero_offerta} | <a href="javascript:scaricaOffertaJSON(${d.offerta_variazione_id})" style="color:#10b981; text-decoration:underline;">📋 JSON</a> | <a href="javascript:apriModalSconto()" style="color:#f59e0b; text-decoration:underline;">💰 Applica sconto</a>`;
+        infoDiv.style.display = 'block';
+        window.offerta_attiva_id = d.offerta_variazione_id;
+        window.offerta_attiva_numero = d.numero_offerta;
+      } else {
+        alert('❌ ' + d.error);
+      }
+    })
+    .catch(e => alert('Errore: ' + e));
 }
 
 function generateOfferta() {
@@ -4989,6 +5168,554 @@ def delete_immagine_endpoint(brand, codice):
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
+# ============================================================================
+# ENDPOINT OFFERTE - Creazione, Esportazione, Gestione Stato
+# ============================================================================
 
-if __name__ == '__main__':
+def genera_numero_offerta(cantiere_id):
+    """Genera numero offerta univoco: OFF-YYYYMMDD-XXXX"""
+    from datetime import datetime
+    data = datetime.now().strftime('%Y%m%d')
+    return f"OFF-{data}-{cantiere_id:04d}"
+
+@app.route('/api/offerte/crea/<int:cid>', methods=['POST'])
+def crea_offerta_endpoint(cid):
+    """Crea OFFERTA da cantiere: salva numero, stato, JSON strutturato"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Carica cantiere
+        c.execute('SELECT nome FROM cantieri WHERE id = ?', (cid,))
+        cant = c.fetchone()
+        if not cant:
+            conn.close()
+            return jsonify({'error': 'Cantiere non trovato'}), 404
+        
+        nome_cantiere = cant[0]
+        
+        # Carica righe cantiere
+        c.execute('''SELECT id, brand, categoria, descrizione, importo 
+                    FROM cantiere_righe WHERE cantiere_id = ? ORDER BY id''', (cid,))
+        righe = c.fetchall()
+        
+        # Estrai dati per JSON e totali
+        totale_cliente = 0
+        righe_json = []
+        
+        for rid, brand, categoria, descrizione, importo in righe:
+            importo = importo or 0
+            totale_cliente += importo
+            
+            # Estrai codice da [CODICE] nella descrizione
+            codice = descrizione.split(']')[0].lstrip('[') if '[' in descrizione else '—'
+            
+            # Carica immagine thumbnail se esiste
+            c.execute("SELECT thumbnail_base64 FROM product_images WHERE brand = ? AND codice = ? LIMIT 1",
+                     (brand, codice))
+            img_row = c.fetchone()
+            immagine_b64 = img_row[0] if img_row else None
+            
+            riga_json = {
+                "id": rid,
+                "codice_covolo": codice,
+                "brand": brand,
+                "categoria": categoria,
+                "descrizione": descrizione,
+                "prezzo_cliente": importo,
+                "immagine_b64": immagine_b64
+            }
+            righe_json.append(riga_json)
+        
+        # Genera numero offerta
+        numero_offerta = genera_numero_offerta(cid)
+        
+        # JSON strutturato per GAMMAAI
+        json_offerta = {
+            "numero_offerta": numero_offerta,
+            "versione": 0,
+            "data_creazione": datetime.now().isoformat(),
+            "cantiere": nome_cantiere,
+            "cantiere_id": cid,
+            "totale_lordo": round(totale_cliente, 2),
+            "sconto_percentuale": 0,
+            "sconto_fisso": 0,
+            "totale_sconto": 0,
+            "totale_netto": round(totale_cliente, 2),
+            "totale_cliente": round(totale_cliente, 2),
+            "righe": righe_json
+        }
+        
+        # Salva OFFERTA nel DB
+        c.execute('''INSERT INTO offerte 
+                    (numero_offerta, versione, data_creazione, cantiere_id, cliente_id, stato, 
+                     sconto_percentuale, sconto_fisso, totale_lordo, totale_sconto,
+                     totale_cliente, totale_rivenditore, json_strutturato, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                 (numero_offerta,
+                  0,
+                  datetime.now().isoformat(),
+                  cid,
+                  1,  # Cliente Covolo default
+                  'bozza',
+                  0,  # sconto_percentuale default
+                  0,  # sconto_fisso default
+                  totale_cliente,
+                  0,  # totale_sconto default
+                  totale_cliente,
+                  0,  # Rivenditore da calcolare
+                  json.dumps(json_offerta),
+                  datetime.now().isoformat(),
+                  datetime.now().isoformat()))
+        
+        offerta_id = c.lastrowid
+        
+        # Salva righe OFFERTA
+        for riga in righe_json:
+            c.execute('''INSERT INTO offerte_righe 
+                        (offerta_id, codice_covolo, brand, categoria, descrizione, 
+                         quantita, udm, prezzo_cliente, prezzo_rivenditore)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                     (offerta_id,
+                      riga['codice_covolo'],
+                      riga['brand'],
+                      riga['categoria'],
+                      riga['descrizione'],
+                      1,
+                      'pezzo',
+                      riga['prezzo_cliente'],
+                      0))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'ok': True,
+            'offerta_id': offerta_id,
+            'numero_offerta': numero_offerta,
+            'stato': 'bozza',
+            'totale': totale_cliente
+        }), 201
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/offerte/<int:offerta_id>/json', methods=['GET'])
+def esporta_offerta_json_endpoint(offerta_id):
+    """Esporta JSON offerta per GAMMAAI"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Carica offerta
+        c.execute('SELECT json_strutturato FROM offerte WHERE id = ?', (offerta_id,))
+        row = c.fetchone()
+        conn.close()
+        
+        if not row:
+            return jsonify({'error': 'Offerta non trovata'}), 404
+        
+        json_offerta = json.loads(row[0])
+        return jsonify(json_offerta), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/offerte/<int:offerta_id>/stato', methods=['PUT'])
+def cambia_stato_offerta_endpoint(offerta_id):
+    """Cambia stato offerta: bozza → inviata → accettata → rifiutata"""
+    try:
+        data = request.get_json()
+        nuovo_stato = data.get('stato')
+        
+        if nuovo_stato not in ['bozza', 'inviata', 'accettata', 'rifiutata']:
+            return jsonify({'error': 'Stato non valido'}), 400
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Determina quale timestamp aggiornare
+        timestamp_field = None
+        if nuovo_stato == 'inviata':
+            timestamp_field = 'data_invio'
+        elif nuovo_stato == 'accettata':
+            timestamp_field = 'data_accettazione'
+        
+        update_sql = f'''UPDATE offerte 
+                        SET stato = ?, updated_at = ?'''
+        params = [nuovo_stato, datetime.now().isoformat()]
+        
+        if timestamp_field:
+            update_sql += f', {timestamp_field} = ?'
+            params.append(datetime.now().isoformat())
+        
+        update_sql += ' WHERE id = ?'
+        params.append(offerta_id)
+        
+        c.execute(update_sql, params)
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': True, 'offerta_id': offerta_id, 'stato': nuovo_stato}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/offerte/<int:offerta_id>/stato', methods=['PUT'])
+def cambia_stato_offerta_endpoint(offerta_id):
+    """Cambia stato offerta: bozza → inviata → accettata → rifiutata"""
+    try:
+        data = request.get_json()
+        nuovo_stato = data.get('stato')
+        
+        if nuovo_stato not in ['bozza', 'inviata', 'accettata', 'rifiutata']:
+            return jsonify({'error': 'Stato non valido'}), 400
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Determina quale timestamp aggiornare
+        timestamp_field = None
+        if nuovo_stato == 'inviata':
+            timestamp_field = 'data_invio'
+        elif nuovo_stato == 'accettata':
+            timestamp_field = 'data_accettazione'
+        
+        update_sql = f'''UPDATE offerte 
+                        SET stato = ?, updated_at = ?'''
+        params = [nuovo_stato, datetime.now().isoformat()]
+        
+        if timestamp_field:
+            update_sql += f', {timestamp_field} = ?'
+            params.append(datetime.now().isoformat())
+        
+        update_sql += ' WHERE id = ?'
+        params.append(offerta_id)
+        
+        c.execute(update_sql, params)
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': True, 'offerta_id': offerta_id, 'stato': nuovo_stato}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/offerte/<int:offerta_id>/sconto', methods=['PUT'])
+def applica_sconto_endpoint(offerta_id):
+    """Applica sconto % o fisso e ricalcola totali"""
+    try:
+        data = request.get_json()
+        sconto_perc = data.get('sconto_percentuale', 0)
+        sconto_fisso = data.get('sconto_fisso', 0)
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Carica offerta
+        c.execute('''SELECT numero_offerta, versione, totale_lordo, json_strutturato 
+                    FROM offerte WHERE id = ?''', (offerta_id,))
+        row = c.fetchone()
+        
+        if not row:
+            conn.close()
+            return jsonify({'error': 'Offerta non trovata'}), 404
+        
+        num_off, versione, totale_lordo, json_str = row
+        
+        # Calcola sconto
+        if sconto_perc > 0:
+            importo_sconto = (totale_lordo * sconto_perc) / 100
+        else:
+            importo_sconto = sconto_fisso
+        
+        totale_netto = totale_lordo - importo_sconto
+        
+        # Aggiorna offerta
+        c.execute('''UPDATE offerte 
+                    SET sconto_percentuale = ?, sconto_fisso = ?, 
+                        totale_sconto = ?, totale_cliente = ?, updated_at = ?
+                    WHERE id = ?''',
+                 (sconto_perc, sconto_fisso, round(importo_sconto, 2), 
+                  round(totale_netto, 2), datetime.now().isoformat(), offerta_id))
+        
+        # Aggiorna JSON
+        json_offerta = json.loads(json_str)
+        json_offerta['sconto_percentuale'] = sconto_perc
+        json_offerta['sconto_fisso'] = sconto_fisso
+        json_offerta['totale_lordo'] = totale_lordo
+        json_offerta['totale_sconto'] = round(importo_sconto, 2)
+        json_offerta['totale_netto'] = round(totale_netto, 2)
+        json_offerta['totale_cliente'] = round(totale_netto, 2)
+        
+        c.execute('''UPDATE offerte SET json_strutturato = ? WHERE id = ?''',
+                 (json.dumps(json_offerta), offerta_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'ok': True,
+            'offerta_id': offerta_id,
+            'totale_lordo': totale_lordo,
+            'sconto_applicato': round(importo_sconto, 2),
+            'totale_netto': round(totale_netto, 2)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/offerte/<int:offerta_id>/crea-variazione', methods=['POST'])
+def crea_variazione_offerta_endpoint(offerta_id):
+    """Crea variazione offerta (copia con versione incrementata)"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Carica offerta originale
+        c.execute('''SELECT numero_offerta, versione, cantiere_id, cliente_id,
+                            totale_lordo, sconto_percentuale, sconto_fisso, 
+                            totale_sconto, totale_cliente, json_strutturato
+                    FROM offerte WHERE id = ?''', (offerta_id,))
+        row = c.fetchone()
+        
+        if not row:
+            conn.close()
+            return jsonify({'error': 'Offerta non trovata'}), 404
+        
+        num_off_orig, ver_orig, cant_id, cli_id, tot_lordo, sc_perc, sc_fisso, tot_sco, tot_cli, json_str = row
+        
+        # Crea numero variazione
+        nuova_versione = (ver_orig or 0) + 1
+        numero_variazione = f"{num_off_orig}_V{nuova_versione}"
+        
+        # Copia JSON e aggiorna numero/versione
+        json_offerta = json.loads(json_str)
+        json_offerta['numero_offerta'] = numero_variazione
+        json_offerta['versione'] = nuova_versione
+        json_offerta['data_creazione'] = datetime.now().isoformat()
+        
+        # Crea nuova offerta
+        c.execute('''INSERT INTO offerte 
+                    (numero_offerta, versione, data_creazione, cantiere_id, cliente_id,
+                     stato, sconto_percentuale, sconto_fisso, totale_lordo, 
+                     totale_sconto, totale_cliente, json_strutturato, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                 (numero_variazione, nuova_versione, datetime.now().isoformat(),
+                  cant_id, cli_id, 'bozza', sc_perc, sc_fisso, tot_lordo,
+                  tot_sco, tot_cli, json.dumps(json_offerta),
+                  datetime.now().isoformat(), datetime.now().isoformat()))
+        
+        offerta_variazione_id = c.lastrowid
+        
+        # Copia righe
+        c.execute('''SELECT codice_covolo, codice_fornitore, brand, categoria, descrizione,
+                            quantita, udm, prezzo_cliente, prezzo_rivenditore, nota
+                    FROM offerte_righe WHERE offerta_id = ?''', (offerta_id,))
+        righe = c.fetchall()
+        
+        for riga in righe:
+            c.execute('''INSERT INTO offerte_righe 
+                        (offerta_id, codice_covolo, codice_fornitore, brand, categoria, 
+                         descrizione, quantita, udm, prezzo_cliente, prezzo_rivenditore, nota)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                     (offerta_variazione_id,) + riga)
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'ok': True,
+            'offerta_variazione_id': offerta_variazione_id,
+            'numero_offerta': numero_variazione,
+            'versione': nuova_versione
+        }), 201
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/offerte/<int:offerta_id>', methods=['GET'])
+def leggi_offerta_endpoint(offerta_id):
+    """Legge dettagli offerta (per gestionale)"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        c.execute('''SELECT id, numero_offerta, data_creazione, stato, totale_cliente, 
+                            json_strutturato FROM offerte WHERE id = ?''', (offerta_id,))
+        row = c.fetchone()
+        conn.close()
+        
+        if not row:
+            return jsonify({'error': 'Offerta non trovata'}), 404
+        
+        oid, num_off, data_crea, stato, totale, json_str = row
+        json_offerta = json.loads(json_str)
+        
+        return jsonify({
+            'id': oid,
+            'numero_offerta': num_off,
+            'data_creazione': data_crea,
+            'stato': stato,
+            'totale_cliente': totale,
+            'offerta': json_offerta
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
+# GENERAZIONE PDF OFFERTE
+# ============================================================================
+
+@app.route('/api/cantieri/<int:cid>/pdf', methods=['GET'])
+def genera_offerta_pdf_endpoint(cid):
+    """Genera PDF offerta per cantiere"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Carica cantiere
+        c.execute('SELECT nome FROM cantieri WHERE id = ?', (cid,))
+        cant = c.fetchone()
+        if not cant:
+            return jsonify({'error': 'Cantiere non trovato'}), 404
+        
+        nome_cantiere = cant[0]
+        
+        # Carica righe
+        c.execute('SELECT id, brand, categoria, descrizione, importo FROM cantiere_righe WHERE cantiere_id = ? ORDER BY id', (cid,))
+        righe = [dict(zip(['id','brand','categoria','descrizione','importo'], r)) for r in c.fetchall()]
+        conn.close()
+        
+        if not righe:
+            return jsonify({'error': 'Cantiere vuoto'}), 400
+        
+        # Genera PDF usando reportlab
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.lib.colors import HexColor, black
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        import os
+        
+        output_path = f"/tmp/offerta_{nome_cantiere}_{cid}.pdf"
+        
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=A4,
+            rightMargin=1.5*cm,
+            leftMargin=1.5*cm,
+            topMargin=1.5*cm,
+            bottomMargin=1.5*cm
+        )
+        
+        story = []
+        styles = getSampleStyleSheet()
+        
+        # Header con logo
+        logo_path = "/mnt/user-data/uploads/COVOLO2.png"
+        if os.path.exists(logo_path):
+            from reportlab.platypus import Image as RLImage
+            img_logo = RLImage(logo_path, width=3*cm, height=3*cm)
+            story.append(img_logo)
+            story.append(Spacer(1, 0.3*cm))
+        
+        # Titolo
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=28,
+            textColor=black,
+            spaceAfter=6,
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold'
+        )
+        story.append(Paragraph("PROPOSTA COMMERCIALE", title_style))
+        
+        # Data e numero
+        num_offerta = f"OFF-{datetime.now().strftime('%Y%m%d')}-{cid:04d}"
+        info_style = ParagraphStyle('Info', parent=styles['Normal'], fontSize=10, alignment=TA_CENTER)
+        story.append(Paragraph(f"Offerta: {num_offerta} | Data: {datetime.now().strftime('%d/%m/%Y')}", info_style))
+        story.append(Spacer(1, 0.5*cm))
+        
+        # Nome cantiere
+        cantiere_style = ParagraphStyle('Cantiere', parent=styles['Normal'], fontSize=14, 
+                                       textColor=HexColor("#EF4444"), alignment=TA_CENTER, fontName='Helvetica-Bold')
+        story.append(Paragraph(f"CANTIERE: {nome_cantiere.upper()}", cantiere_style))
+        story.append(Spacer(1, 0.8*cm))
+        
+        # Intro
+        intro_text = "Gentile Cliente, con piacere presentiamo una selezione di prodotti di alta qualità per il Suo prestigioso progetto."
+        intro_style = ParagraphStyle('Intro', parent=styles['Normal'], fontSize=11, alignment=TA_LEFT, spaceAfter=12)
+        story.append(Paragraph(intro_text, intro_style))
+        story.append(Spacer(1, 0.5*cm))
+        
+        # Page break
+        story.append(PageBreak())
+        
+        # Tabella prodotti
+        section_title = ParagraphStyle('SectionTitle', parent=styles['Heading2'], fontSize=13,
+                                      textColor=HexColor("#3B82F6"), fontName='Helvetica-Bold', spaceAfter=8)
+        story.append(Paragraph("DETTAGLIO OFFERTA", section_title))
+        
+        table_data = [['CODICE', 'BRAND', 'DESCRIZIONE', 'PREZZO', 'SUBTOTALE']]
+        totale = 0
+        
+        for riga in righe:
+            codice = riga['descrizione'].split(']')[0].lstrip('[') if '[' in riga['descrizione'] else '—'
+            desc = riga['descrizione'][:35] + ('...' if len(riga['descrizione']) > 35 else '')
+            prezzo = riga['importo'] or 0
+            totale += prezzo
+            
+            table_data.append([
+                codice,
+                riga['brand'] or '—',
+                desc,
+                f"€ {prezzo:.2f}",
+                f"€ {prezzo:.2f}"
+            ])
+        
+        # Riga totale
+        table_data.append(['', '', '', 'TOTALE', f'€ {totale:.2f}'])
+        
+        table = Table(table_data, colWidths=[1.5*cm, 1.8*cm, 4.5*cm, 1.8*cm, 1.8*cm])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), HexColor("#3B82F6")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), 'white'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('GRID', (0, 0), (-1, -2), 1, HexColor("#CCCCCC")),
+            ('BACKGROUND', (0, -1), (-1, -1), HexColor("#EF4444")),
+            ('TEXTCOLOR', (0, -1), (-1, -1), 'white'),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, -1), (-1, -1), 11),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [HexColor("#F9FAFB"), 'white']),
+        ]))
+        
+        story.append(table)
+        story.append(Spacer(1, 1*cm))
+        
+        # Footer
+        footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, 
+                                     textColor=HexColor("#999999"), alignment=TA_CENTER)
+        story.append(Paragraph(
+            f"Proposta generata il {datetime.now().strftime('%d/%m/%Y %H:%M')} | "
+            f"Numero Offerta: {num_offerta}<br/>"
+            f"Per informazioni contattare il Consulente Covolo",
+            footer_style
+        ))
+        
+        # Build PDF
+        doc.build(story)
+        
+        # Invia file
+        return send_file(output_path, as_attachment=True, download_name=f"OFFERTA_{nome_cantiere}.pdf")
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+
     app.run(host='0.0.0.0', port=10000)
