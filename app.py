@@ -15,6 +15,11 @@ try:
 except ImportError:
     OPENPYXL_OK = False
 
+# AGGIUNTE PER IMMAGINI
+import urllib.request
+import urllib.error
+from PIL import Image
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
@@ -238,6 +243,108 @@ def require_login(ruoli=None):
     if ruoli and u['ruolo'] not in ruoli:
         return None
     return u
+
+
+# ============================================================================
+# GESTIONE IMMAGINI AUTOMATICA - Ricerca Google Images + Thumbnail
+# ============================================================================
+
+def scrape_google_images(brand, codice, max_results=6):
+    """Scarica 6 URL di immagini da Google Images"""
+    try:
+        query = f"{brand} {codice}"
+        google_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&tbm=isch"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        req = urllib.request.Request(google_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+        
+        img_urls = []
+        pattern1 = r'src="(https?://[^"]+?\.(?:jpg|jpeg|png|webp))'
+        matches = re.findall(pattern1, html, re.IGNORECASE)
+        img_urls.extend(matches)
+        pattern2 = r'data-src="(https?://[^"]+?\.(?:jpg|jpeg|png|webp))'
+        matches = re.findall(pattern2, html, re.IGNORECASE)
+        img_urls.extend(matches)
+        
+        img_urls = list(set(img_urls))
+        img_urls = [url for url in img_urls if 'google.com' not in url and 'gstatic.com' not in url and len(url) < 500 and url.count('?') < 3]
+        img_urls = img_urls[:max_results]
+        
+        if not img_urls:
+            return {'ok': False, 'error': f'Nessuna immagine trovata', 'urls': []}
+        
+        return {'ok': True, 'urls': img_urls, 'count': len(img_urls), 'query': query}
+    except Exception as e:
+        return {'ok': False, 'error': str(e), 'urls': []}
+
+def download_immagini_con_thumbnail(urls, max_size=(120, 120)):
+    """Scarica immagini e crea thumbnail base64"""
+    risultati = []
+    for url in urls:
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=8) as response:
+                img_data = response.read()
+            img = Image.open(io.BytesIO(img_data))
+            if img.mode in ('RGBA', 'LA', 'P'):
+                rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'RGBA':
+                    rgb_img.paste(img, mask=img.split()[-1])
+                else:
+                    rgb_img.paste(img)
+                img = rgb_img
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=75)
+            buf.seek(0)
+            thumbnail_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+            risultati.append({'url': url, 'thumbnail_base64': thumbnail_b64, 'size': len(thumbnail_b64), 'error': None})
+        except Exception as e:
+            risultati.append({'url': url, 'thumbnail_base64': None, 'size': 0, 'error': str(e)[:50]})
+    
+    ok_results = [r for r in risultati if r['error'] is None]
+    return {'ok': len(ok_results) > 0, 'risultati': ok_results, 'falliti': len(risultati) - len(ok_results), 'totale': len(risultati)}
+
+def salva_immagine_scelta(brand, codice, image_url, thumbnail_base64):
+    """Salva URL immagine e thumbnail nel DB"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().isoformat()
+        c.execute("""CREATE TABLE IF NOT EXISTS product_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brand TEXT NOT NULL,
+            codice TEXT NOT NULL,
+            image_url TEXT NOT NULL,
+            thumbnail_base64 TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE(brand, codice))""")
+        c.execute("""INSERT OR REPLACE INTO product_images
+            (brand, codice, image_url, thumbnail_base64, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)""", (brand, codice, image_url, thumbnail_base64, now, now))
+        conn.commit()
+        conn.close()
+        return {'ok': True, 'message': f'✅ Immagine salvata per {brand} {codice}'}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+def get_immagine_dal_db(brand, codice):
+    """Recupera immagine dal DB"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT image_url, thumbnail_base64 FROM product_images WHERE brand = ? AND codice = ?", (brand, codice))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return {'url': row[0], 'thumbnail_base64': row[1]}
+        return None
+    except Exception as e:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # API AUTH
@@ -1718,7 +1825,7 @@ button { padding: 8px 12px; background: #3b82f6; color: white; border: none; bor
 button:hover { opacity: 0.85; }
 .btn-green { background: #10b981; }
 .btn-red { background: #ef4444; }
-.btn-gray { background: #e5e7eb; }
+.btn-gray { background: #6b7280; }
 .btn-purple { background: #8b5cf6; }
 .btn-sm { padding: 4px 8px; font-size: 10px; margin-bottom: 0; }
 .dropdown { background: rgba(30,41,59,0.95); border: 1px solid rgba(59,130,245,0.5); border-radius: 6px; padding: 8px; max-height: 220px; overflow-y: auto; display: none; margin-bottom: 8px; }
@@ -1734,13 +1841,13 @@ button:hover { opacity: 0.85; }
 .message img { max-width: 100%; max-height: 180px; margin-top: 6px; border-radius: 4px; }
 .input-area { display: flex; gap: 8px; }
 input[type=text], input[type=password], input[type=number], select, textarea { padding: 8px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 11px; }
-input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7eb; }
+input[type=text]::placeholder, input[type=password]::placeholder { color: #6b7280; }
 .title { color: #3b82f6; font-size: 20px; font-weight: 700; margin-bottom: 12px; }
 .btn-3pulsanti { display: flex; gap: 6px; margin-bottom: 10px; }
 .btn-3pulsanti button { flex: 1; padding: 7px; font-size: 10px; }
 .toggle-btn { width: 100%; padding: 7px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; margin-bottom: 6px; font-size: 11px; }
 .toggle-on { background: #10b981; color: white; }
-.toggle-off { background: #e5e7eb; color: white; }
+.toggle-off { background: #6b7280; color: white; }
 .module-box { background: rgba(30,41,59,0.6); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
 .module-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; cursor: pointer; }
 .module-header:hover { background: rgba(59,130,245,0.1); }
@@ -1750,7 +1857,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 .cantiere-item { background: rgba(59,130,245,0.1); border-radius: 4px; padding: 6px 8px; margin: 4px 0; font-size: 11px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
 .cantiere-item:hover { background: rgba(59,130,245,0.2); }
 .stato-badge { padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; }
-.stato-bozza { background: #e5e7eb; color: white; }
+.stato-bozza { background: #6b7280; color: white; }
 .stato-inviata { background: #3b82f6; color: white; }
 .stato-vinta { background: #10b981; color: white; }
 .stato-persa { background: #ef4444; color: white; }
@@ -1772,11 +1879,11 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 .drawer-title { font-size: 15px; font-weight: 700; color: #60a5fa; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 0; }
 .drawer-section { border-bottom: 1px solid rgba(59,130,245,0.15); padding: 10px 12px; }
-.drawer-section-title { font-size: 10px; font-weight: 700; color: #e5e7eb; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+.drawer-section-title { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
 .riga-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 8px 12px; margin: 5px 0; display: flex; align-items: center; justify-content: space-between; }
 .riga-card-info { flex: 1; }
 .riga-card-brand { font-size: 12px; font-weight: 600; color: #60a5fa; }
-.riga-card-cat { font-size: 11px; color: #d1d5db; }
+.riga-card-cat { font-size: 11px; color: #9ca3af; }
 .riga-card-importo { font-size: 13px; font-weight: 700; color: #10b981; margin: 0 12px; white-space: nowrap; }
 .totale-bar { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); border-radius: 6px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
 .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
@@ -1790,7 +1897,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 .listino-search { flex: 1; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; padding: 8px 12px; font-size: 12px; }
 .listino-body { flex: 1; overflow-y: auto; padding: 12px 18px; }
 .filtri-bar { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-.filtro-btn { padding: 4px 10px; font-size: 10px; border-radius: 20px; border: 1px solid rgba(59,130,245,0.3); background: transparent; color: #d1d5db; cursor: pointer; margin-bottom: 0; }
+.filtro-btn { padding: 4px 10px; font-size: 10px; border-radius: 20px; border: 1px solid rgba(59,130,245,0.3); background: transparent; color: #9ca3af; cursor: pointer; margin-bottom: 0; }
 .filtro-btn.active { background: rgba(59,130,245,0.4); color: white; border-color: #3b82f6; }
 .domande-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .domanda-chip { padding: 5px 10px; font-size: 10px; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; border-radius: 20px; cursor: pointer; margin-bottom: 0; }
@@ -1800,9 +1907,9 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 .prodotto-card:hover { border-color: rgba(59,130,245,0.6); }
 .prodotto-card.su-ordine { border-left: 3px solid #f59e0b; }
 .prodotto-card.disponibile { border-left: 3px solid #10b981; }
-.prodotto-codice { font-size: 9px; color: #e5e7eb; font-family: monospace; margin-bottom: 3px; }
+.prodotto-codice { font-size: 9px; color: #6b7280; font-family: monospace; margin-bottom: 3px; }
 .prodotto-nome { font-size: 12px; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; }
-.prodotto-cat { font-size: 10px; color: #d1d5db; margin-bottom: 6px; }
+.prodotto-cat { font-size: 10px; color: #9ca3af; margin-bottom: 6px; }
 .prodotto-prezzo-excel { color: #10b981; font-weight: 700; font-size: 13px; }
 .prodotto-prezzo-web { color: #ef4444; font-weight: 700; font-size: 13px; }
 .prodotto-prezzo-sc { color: #f59e0b; font-size: 11px; text-decoration: line-through; margin-left: 4px; }
@@ -1818,7 +1925,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 /* EXCEL PANEL */
 .excel-row { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.15); border-radius: 6px; padding: 8px 10px; margin: 4px 0; font-size: 11px; }
 .excel-row-header { display: flex; align-items: center; gap: 8px; }
-.excel-codice { color: #d1d5db; font-size: 10px; font-family: monospace; }
+.excel-codice { color: #9ca3af; font-size: 10px; font-family: monospace; }
 .excel-desc { flex: 1; color: #e0e0e0; font-size: 11px; }
 .prezzo-excel { color: #10b981; font-weight: 700; font-size: 12px; }
 .prezzo-web { color: #ef4444; font-weight: 700; font-size: 12px; }
@@ -1889,7 +1996,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <h2>Accesso privato</h2>
     <input type="password" id="access-code" placeholder="Codice accesso..." style="width: 100%; margin-bottom: 6px;">
     <button onclick="toggleAccess()" style="width: 100%;">Attiva</button>
-    <div style="font-size: 10px; color: #d1d5db; margin-top: 4px;" id="access-status">Accesso: PUBBLICO</div>
+    <div style="font-size: 10px; color: #9ca3af; margin-top: 4px;" id="access-status">Accesso: PUBBLICO</div>
     <h2 style="margin-top: 10px;">Web search</h2>
     <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()">ON</button>
     <h2>Upload documenti</h2>
@@ -1908,10 +2015,10 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
       Upload Excel <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
     </label>
-    <div id="upload-status" style="font-size:10px; color:#d1d5db; margin-top:2px;"></div>
+    <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
     <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
     <button onclick="caricaAbbinamentiEProdotti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Listino + Abbinamenti</button>
-    <div id="abbinamenti-status" style="font-size:10px; color:#d1d5db; margin-top:2px;"></div>
+    <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
     <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica URL Immagini Gessi</button>
   </div>
 
@@ -1965,7 +2072,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 
     <!-- GRIGLIA PRODOTTI -->
     <div class="listino-body">
-      <div id="listino-count" style="font-size:10px; color:#e5e7eb; margin-bottom:8px;"></div>
+      <div id="listino-count" style="font-size:10px; color:#6b7280; margin-bottom:8px;"></div>
       <div class="prodotti-grid" id="prodotti-grid"></div>
     </div>
   </div>
@@ -2008,7 +2115,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
             <div id="sa-moduli-list" style="font-size:11px;"></div>
           </div>
           <div style="border-top: 1px solid rgba(59,130,245,0.2); padding-top: 8px; margin-top: 4px;">
-            <div style="font-size: 11px; font-weight: 600; color: #d1d5db; margin-bottom: 6px;">Nuovo utente</div>
+            <div style="font-size: 11px; font-weight: 600; color: #9ca3af; margin-bottom: 6px;">Nuovo utente</div>
             <input type="text" id="sa-u-nome" placeholder="Nome..." style="width:100%; margin-bottom:4px;">
             <input type="text" id="sa-u-username" placeholder="Username..." style="width:100%; margin-bottom:4px;">
             <input type="password" id="sa-u-pwd" placeholder="Password..." style="width:100%; margin-bottom:4px;">
@@ -2034,7 +2141,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <div class="module-box" id="mod-cantieri" style="display:none;">
       <div class="module-header" onclick="toggleModule('cantieri-body')">
         <span class="module-title">Cantieri</span>
-        <span id="cantieri-count" style="font-size:10px; color:#d1d5db;">0</span>
+        <span id="cantieri-count" style="font-size:10px; color:#9ca3af;">0</span>
       </div>
       <div class="module-body" id="cantieri-body">
         <div style="display: flex; gap: 4px; margin-bottom: 8px;">
@@ -2049,15 +2156,15 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <div class="module-box" id="mod-bi" style="display:none;">
       <div class="module-header" onclick="toggleModule('bi-body'); loadBI();">
         <span class="module-title">BI / Statistiche</span>
-        <span style="font-size:10px; color:#d1d5db;">admin</span>
+        <span style="font-size:10px; color:#9ca3af;">admin</span>
       </div>
       <div class="module-body" id="bi-body">
         <div id="bi-stats"></div>
         <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
-          <div style="font-size:11px; font-weight:600; color:#d1d5db; margin-bottom:6px;">Pulizia archivio</div>
+          <div style="font-size:11px; font-weight:600; color:#9ca3af; margin-bottom:6px;">Pulizia archivio</div>
           <input type="date" id="bi-da" style="width:100%; margin-bottom:4px;">
           <input type="date" id="bi-a" style="width:100%; margin-bottom:4px;">
-          <div style="font-size:10px; color:#d1d5db; margin-bottom:4px;">Stati da eliminare:</div>
+          <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">Stati da eliminare:</div>
           <label style="font-size:10px; display:block;"><input type="checkbox" value="vinta" id="del-vinta"> Vinte</label>
           <label style="font-size:10px; display:block;"><input type="checkbox" value="persa" id="del-persa"> Perse</label>
           <label style="font-size:10px; display:block; margin-bottom:6px;"><input type="checkbox" value="bozza" id="del-bozza"> Bozze</label>
@@ -2070,7 +2177,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <div class="module-box" id="mod-commerciali" style="display:none;">
       <div class="module-header" onclick="toggleModule('comm-body')">
         <span class="module-title">Commerciali</span>
-        <span style="font-size:10px; color:#d1d5db;">admin</span>
+        <span style="font-size:10px; color:#9ca3af;">admin</span>
       </div>
       <div class="module-body" id="comm-body">
         <div id="comm-list" style="font-size:11px;"></div>
@@ -2085,7 +2192,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
   <div class="drawer-header">
     <div>
       <div class="drawer-title" id="drawer-nome"></div>
-      <div style="font-size:11px; color:#d1d5db; margin-top:2px;">Gestione offerta</div>
+      <div style="font-size:11px; color:#9ca3af; margin-top:2px;">Gestione offerta</div>
     </div>
     <div style="display:flex; gap:8px; align-items:center;">
       <select id="cantiere-stato" style="font-size:11px; padding:5px 8px;" onchange="updateCantiere()">
@@ -2104,7 +2211,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
       <div class="drawer-section-title">Elementi nel carrello</div>
       <div id="righe-list"></div>
       <div class="totale-bar" id="totale-bar" style="display:none;">
-        <span style="font-size:12px; color:#d1d5db;">Totale offerta</span>
+        <span style="font-size:12px; color:#9ca3af;">Totale offerta</span>
         <span style="font-size:15px; font-weight:700; color:#10b981;" id="totale-valore">€0</span>
       </div>
     </div>
@@ -2181,7 +2288,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <div class="drawer-section">
       <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleExcelPanel()">
         ⚡ Importa da Excel / Voce libera
-        <span id="excel-panel-arrow" style="float:right; color:#d1d5db;">▼</span>
+        <span id="excel-panel-arrow" style="float:right; color:#9ca3af;">▼</span>
       </div>
       <div id="excel-panel" style="display:none;">
         <!-- Upload Excel -->
@@ -2190,7 +2297,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
             📊 Carica Excel prodotti
             <input type="file" id="excel-listino" accept=".xlsx,.xls" style="display:none" onchange="caricaExcelListino(this)">
           </label>
-          <div id="excel-status" style="font-size:10px; color:#d1d5db; margin-bottom:6px;"></div>
+          <div id="excel-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px;"></div>
         </div>
 
         <!-- Lista righe Excel -->
@@ -2200,7 +2307,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
         <div style="border-top:1px solid rgba(59,130,245,0.15); margin: 10px 0 8px 0;"></div>
 
         <!-- Voce manuale libera -->
-        <div style="font-size:10px; color:#d1d5db; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Voce manuale (trasporto, manodopera, ecc.)</div>
+        <div style="font-size:10px; color:#9ca3af; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Voce manuale (trasporto, manodopera, ecc.)</div>
         <input type="text" id="voce-desc" placeholder="Descrizione voce..." style="width:100%; margin-bottom:6px;">
         <div class="form-row">
           <input type="number" id="voce-importo" placeholder="Importo €" style="flex:1;">
@@ -2487,7 +2594,7 @@ function renderAccessoriHtml(ufficiali, alternative, esclusi) {
       html += '<div style="background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
         '<div style="flex:1;">' +
         '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
-        '<div style="font-size:10px; color:#d1d5db;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
         '</div>' +
         '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm btn-green" style="margin-bottom:0; white-space:nowrap;">✓ Aggiungi</button>' +
         '</div>';
@@ -2502,7 +2609,7 @@ function renderAccessoriHtml(ufficiali, alternative, esclusi) {
       html += '<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
         '<div style="flex:1;">' +
         '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
-        '<div style="font-size:10px; color:#d1d5db;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
         '</div>' +
         '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm" style="background:rgba(245,158,11,0.2); color:#f59e0b; margin-bottom:0; white-space:nowrap;">+ Aggiungi</button>' +
         '</div>';
@@ -2516,7 +2623,7 @@ function renderAccessoriHtml(ufficiali, alternative, esclusi) {
     esclusi.forEach(acc => {
       html += '<div style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:8px; margin-bottom:4px; opacity:0.6;">' +
         '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
-        '<div style="font-size:10px; color:#d1d5db;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
         '<div style="font-size:9px; color:#fca5a5; margin-top:3px;">⚠️ Non compatibile con il prodotto principale</div>' +
         '</div>';
     });
@@ -2581,7 +2688,7 @@ function precompilaBrandDrawer() {
       const brandRow = document.querySelector('.form-row');
       if (brandRow) brandRow.parentNode.insertBefore(container, brandRow);
     }
-    container.innerHTML = '<div style="font-size:10px;color:#d1d5db;width:100%;margin-bottom:2px;">Seleziona brand per questa riga:</div>' +
+    container.innerHTML = '<div style="font-size:10px;color:#9ca3af;width:100%;margin-bottom:2px;">Seleziona brand per questa riga:</div>' +
       selected.map(b =>
         '<button type="button" onclick="setBrandRiga(\'' + b.replace(/'/g,"\\'") + '\')" ' +
         'style="padding:3px 8px;font-size:10px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);color:#93c5fd;border-radius:4px;cursor:pointer;margin-bottom:0;">' + b + '</button>'
@@ -2632,7 +2739,7 @@ function loadRighe() {
     let totale = 0;
     righe.forEach(r => { totale += (r.importo || 0); });
     document.getElementById('righe-list').innerHTML = righe.length === 0
-      ? '<div style="color:#e5e7eb; font-size:11px; text-align:center; padding:12px 0;">Nessun elemento aggiunto</div>'
+      ? '<div style="color:#6b7280; font-size:11px; text-align:center; padding:12px 0;">Nessun elemento aggiunto</div>'
       : righe.map(r => {
           const desc = (r.descrizione || '').replace(/^Da Oracolo\s*[—-]\s*/i, '');
           const cat = (r.categoria && r.categoria !== 'Da Oracolo') ? r.categoria : '';
@@ -2792,7 +2899,7 @@ function askDirect(domanda, brands) {
       html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
-        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
+        html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
         html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
         d.images.forEach(img => {
           html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
@@ -2821,14 +2928,14 @@ function askDirect(domanda, brands) {
 function loadBI() {
   fetch('/api/bi/stats').then(r => r.json()).then(d => {
     const ps = d.per_stato || {};
-    let html = '<div style="font-size:11px;font-weight:600;color:#d1d5db;margin-bottom:4px;">Per stato</div>';
+    let html = '<div style="font-size:11px;font-weight:600;color:#9ca3af;margin-bottom:4px;">Per stato</div>';
     ['bozza','inviata','vinta','persa'].forEach(s => {
       if (ps[s]) html += '<div class="bi-stat"><span>' + s + '</span><span>' + ps[s] + '</span></div>';
     });
     html += '<div class="bi-stat" style="margin-top:4px;"><span>Valore vinto</span><span style="color:#10b981;">€' + (d.valore_vinto||0).toFixed(0) + '</span></div>';
     html += '<div class="bi-stat"><span>Valore aperto</span><span style="color:#3b82f6;">€' + (d.valore_aperto||0).toFixed(0) + '</span></div>';
     if (d.per_commerciale && d.per_commerciale.length > 0) {
-      html += '<div style="font-size:11px;font-weight:600;color:#d1d5db;margin-top:8px;margin-bottom:4px;">Per commerciale</div>';
+      html += '<div style="font-size:11px;font-weight:600;color:#9ca3af;margin-top:8px;margin-bottom:4px;">Per commerciale</div>';
       d.per_commerciale.forEach(pc => {
         html += '<div class="bi-stat"><span>' + pc.nome + '</span><span>' + pc.cantieri + ' | €' + pc.valore.toFixed(0) + '</span></div>';
       });
@@ -2944,7 +3051,7 @@ const FASCIA_LABEL = {
   luxury:  { label: 'Luxury',  color: '#f59e0b' },
   premium: { label: 'Premium', color: '#8b5cf6' },
   mid:     { label: 'Mid',     color: '#3b82f6' },
-  entry:   { label: 'Entry',   color: '#e5e7eb' },
+  entry:   { label: 'Entry',   color: '#6b7280' },
 };
 
 function switchTab(tab) {
@@ -2959,7 +3066,7 @@ function switchTab(tab) {
 function filterPerCategoria() {
   const sv = document.getElementById('search-cat').value.toLowerCase().trim();
   const container = document.getElementById('cat-results');
-  if (!sv) { container.innerHTML = '<div style="font-size:10px;color:#e5e7eb;padding:4px 0;">Digita una categoria...</div>'; return; }
+  if (!sv) { container.innerHTML = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Digita una categoria...</div>'; return; }
 
   // Trova brand che matchano la categoria cercata
   const risultati = { luxury: [], premium: [], mid: [], entry: [] };
@@ -2989,7 +3096,7 @@ function filterPerCategoria() {
   });
 
   if (totale === 0) {
-    html = '<div style="font-size:10px;color:#e5e7eb;padding:4px 0;">Nessun brand trovato per "' + sv + '"</div>';
+    html = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Nessun brand trovato per "' + sv + '"</div>';
   }
   container.innerHTML = html;
 }
@@ -3131,7 +3238,7 @@ function doUpload(input, tipo) {
   const file = input.files[0];
   if (!file) return;
   document.getElementById('upload-status').textContent = 'Caricamento...';
-  document.getElementById('upload-status').style.color = '#d1d5db';
+  document.getElementById('upload-status').style.color = '#9ca3af';
   const reader = new FileReader();
   reader.onload = function(e) {
     const filename = tipo === 'excel' ? file.name + ' [EXCEL]' : file.name;
@@ -3160,12 +3267,12 @@ function filtraDocumenti(tutti) {
   const brand = tutti ? '' : document.getElementById('filtro-doc-brand').value.trim();
   const url = brand ? '/api/list-documents?brand=' + encodeURIComponent(brand) : '/api/list-documents';
   const container = document.getElementById('doc-list-panel');
-  container.innerHTML = '<div style="color:#e5e7eb;font-size:11px;padding:12px 0;">Caricamento...</div>';
+  container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Caricamento...</div>';
 
   fetch(url).then(r => r.json()).then(d => {
     const docs = d.documents || [];
     if (docs.length === 0) {
-      container.innerHTML = '<div style="color:#e5e7eb;font-size:11px;padding:12px 0;">Nessun documento trovato' + (brand ? ' per "' + brand + '"' : '') + '</div>';
+      container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Nessun documento trovato' + (brand ? ' per "' + brand + '"' : '') + '</div>';
       return;
     }
     // Raggruppa per brand
@@ -3178,7 +3285,7 @@ function filtraDocumenti(tutti) {
 
     let html = '';
     Object.entries(grouped).sort().forEach(([b, bdocs]) => {
-      html += '<div style="font-size:10px;font-weight:700;color:#60a5fa;text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 6px 0;">' + b + ' <span style="color:#e5e7eb;font-weight:400;">(' + bdocs.length + ')</span></div>';
+      html += '<div style="font-size:10px;font-weight:700;color:#60a5fa;text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 6px 0;">' + b + ' <span style="color:#6b7280;font-weight:400;">(' + bdocs.length + ')</span></div>';
       bdocs.forEach(doc => {
         const isExcel = doc.filename.includes('[EXCEL]');
         const tipoHtml = isExcel
@@ -3187,13 +3294,13 @@ function filtraDocumenti(tutti) {
         const dataStr = doc.date ? doc.date.substring(0, 16).replace('T', ' ') : '—';
         const visHtml = doc.visibility === 'private'
           ? '<span style="font-size:9px;color:#f59e0b;">🔒 Privato</span>'
-          : '<span style="font-size:9px;color:#e5e7eb;">🌐 Pubblico</span>';
+          : '<span style="font-size:9px;color:#6b7280;">🌐 Pubblico</span>';
         const nomeFile = doc.filename.replace(' [EXCEL]', '');
         html += '<div class="doc-row" id="docrow-' + doc.id + '">' +
           tipoHtml +
           '<div style="flex:1;min-width:0;">' +
           '<div style="font-weight:600;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + nomeFile + '</div>' +
-          '<div style="color:#e5e7eb;font-size:10px;">' + dataStr + ' · ' + visHtml + '</div>' +
+          '<div style="color:#6b7280;font-size:10px;">' + dataStr + ' · ' + visHtml + '</div>' +
           '</div>' +
           '<button onclick="eliminaDocumento(' + doc.id + ',\'' + b.replace(/'/g,"\\'") + '\')" class="btn-red btn-sm" style="margin-bottom:0;white-space:nowrap;">✕ Elimina</button>' +
           '</div>';
@@ -3287,7 +3394,7 @@ function ask() {
       const query = encodeURIComponent(selected.join(' ') + ' ' + q);
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
-        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
+        html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
         html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
         d.images.forEach(img => {
           html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
@@ -3331,6 +3438,141 @@ function ask() {
 // ---------------------------------------------------------------------------
 // AGGIUNGI DA CHAT AL CARRELLO
 // ---------------------------------------------------------------------------
+
+// ============================================================================
+// RICERCA IMMAGINI AUTOMATICA - Funzioni JavaScript
+// ============================================================================
+
+function cercaImmaginiAuto(brand, codice, idxProdotto) {
+  const btn = document.getElementById(`cerca-img-btn-${idxProdotto}`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Ricerca...'; btn.style.opacity = '0.6'; }
+  fetch(`/api/cerca-immagini-auto/${encodeURIComponent(brand)}/${encodeURIComponent(codice)}`)
+    .then(r => r.json())
+    .then(data => {
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 Cerca'; btn.style.opacity = '1'; }
+      if (!data.ok || !data.risultati || data.risultati.length === 0) { alert('❌ Nessuna immagine trovata'); return; }
+      mostraGalleryImmagini(data.risultati, brand, codice, idxProdotto);
+    })
+    .catch(err => { alert('❌ Errore: ' + err); if (btn) { btn.disabled = false; btn.textContent = '🔍 Cerca'; btn.style.opacity = '1'; } });
+}
+
+function mostraGalleryImmagini(risultati, brand, codice, idxProdotto) {
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
+  const container = document.createElement('div');
+  container.style.cssText = 'background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:100%;max-width:900px;max-height:85vh;overflow-y:auto;padding:24px;color:#e5e7eb;';
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid rgba(59,130,245,0.3);';
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size:18px;font-weight:600;color:#60a5fa;';
+  title.textContent = `🔍 Ricerca: ${brand} ${codice}`;
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕ Chiudi';
+  closeBtn.style.cssText = 'background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;';
+  closeBtn.onclick = () => modal.remove();
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+  const gallery = document.createElement('div');
+  gallery.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:24px;';
+  risultati.forEach((result, idx) => {
+    const card = document.createElement('div');
+    card.style.cssText = 'cursor:pointer;border-radius:8px;overflow:hidden;border:2px solid rgba(59,130,245,0.2);transition:all 0.3s;position:relative;';
+    const img = document.createElement('img');
+    img.src = result.thumbnail_base64;
+    img.style.cssText = 'width:100%;height:180px;object-fit:cover;display:block;';
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0);display:flex;align-items:center;justify-content:center;transition:all 0.3s;font-size:32px;';
+    card.appendChild(img);
+    card.appendChild(overlay);
+    card.onmouseover = () => {
+      card.style.borderColor = '#3b82f6';
+      card.style.boxShadow = '0 0 15px rgba(59,130,245,0.4)';
+      overlay.style.background = 'rgba(59,130,245,0.3)';
+      overlay.textContent = '✓';
+    };
+    card.onmouseout = () => {
+      card.style.borderColor = 'rgba(59,130,245,0.2)';
+      card.style.boxShadow = 'none';
+      overlay.style.background = 'rgba(0,0,0,0)';
+      overlay.textContent = '';
+    };
+    card.onclick = () => {
+      salvaImmagineScelta(brand, codice, result.url, result.thumbnail_base64, idxProdotto);
+      modal.remove();
+    };
+    gallery.appendChild(card);
+  });
+  const info = document.createElement('div');
+  info.style.cssText = 'background:rgba(59,130,245,0.1);border-left:3px solid #3b82f6;padding:12px;border-radius:6px;font-size:12px;color:#d1d5db;line-height:1.5;';
+  info.innerHTML = `<strong>📌 Clicca sulla foto che ti piace</strong><br>Trovate ${risultati.length} immagini · Scegliere la migliore`;
+  container.appendChild(header);
+  container.appendChild(gallery);
+  container.appendChild(info);
+  modal.appendChild(container);
+  document.body.appendChild(modal);
+}
+
+function salvaImmagineScelta(brand, codice, imageUrl, thumbnailBase64, idxProdotto) {
+  const msg = document.createElement('div');
+  msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#f59e0b;color:white;padding:12px 20px;border-radius:6px;font-weight:600;z-index:9999;';
+  msg.textContent = '⏳ Salvataggio immagine...';
+  document.body.appendChild(msg);
+  fetch('/api/salva-immagine-scelta', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brand, codice, image_url: imageUrl, thumbnail_base64: thumbnailBase64 })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        msg.style.background = '#10b981';
+        msg.textContent = '✅ ' + data.message;
+        aggiornaCardConImmagine(idxProdotto, thumbnailBase64, imageUrl);
+        setTimeout(() => msg.remove(), 3000);
+      } else {
+        msg.style.background = '#ef4444';
+        msg.textContent = '❌ Errore: ' + data.error;
+        setTimeout(() => msg.remove(), 4000);
+      }
+    })
+    .catch(err => {
+      msg.style.background = '#ef4444';
+      msg.textContent = '❌ Errore salvataggio';
+      setTimeout(() => msg.remove(), 4000);
+    });
+}
+
+function aggiornaCardConImmagine(idxProdotto, thumbnailBase64, imageUrl) {
+  const card = document.getElementById(`pcard-${idxProdotto}`);
+  if (!card) return;
+  let imgArea = card.querySelector('[data-img-area]');
+  if (!imgArea) {
+    imgArea = document.createElement('div');
+    imgArea.setAttribute('data-img-area', 'true');
+    imgArea.style.cssText = 'width:100%;height:120px;background:linear-gradient(135deg,#3b82f6 0%,#1e40af 100%);border-radius:6px;margin-bottom:10px;display:flex;align-items:center;justify-content:center;position:relative;cursor:pointer;overflow:hidden;';
+    const img = document.createElement('img');
+    img.src = thumbnailBase64;
+    img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+    img.title = 'Clicca per vedere grande';
+    img.onclick = (e) => { e.stopPropagation(); window.open(imageUrl, '_blank'); };
+    imgArea.appendChild(img);
+    const actions = card.querySelector('.prodotto-actions');
+    if (actions) { card.insertBefore(imgArea, actions); } else { card.appendChild(imgArea); }
+  } else {
+    const img = imgArea.querySelector('img');
+    if (img) { img.src = thumbnailBase64; }
+  }
+  const btn = card.querySelector(`[data-search-img-btn]`);
+  if (btn) { btn.textContent = '🔄 Cambia'; btn.style.background = '#8b5cf6'; }
+}
+
+@keyframes fadeInOut {
+  0% { opacity: 1; transform: translateY(0); }
+  90% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-20px); }
+}
+
+
 function apriFormCarrello(msgId, brand) {
   if (!cantiereAttivo) {
     alert('Apri prima un cantiere dal pannello destra');
@@ -3485,7 +3727,7 @@ function caricaExcelListino(input) {
   const file = input.files[0];
   if (!file) return;
   document.getElementById('excel-status').textContent = 'Lettura Excel...';
-  document.getElementById('excel-status').style.color = '#d1d5db';
+  document.getElementById('excel-status').style.color = '#9ca3af';
   const reader = new FileReader();
   reader.onload = function(e) {
     fetch('/api/parse-excel', {
@@ -3541,7 +3783,7 @@ function renderExcelRigheFiltered() {
     const prezzoHtml = r.prezzo !== null && r.prezzo !== undefined
       ? '<span class="' + (r.prezzo_src === 'excel' ? 'prezzo-excel' : 'prezzo-web') + '">€' +
         parseFloat(r.prezzo).toFixed(2) + (r.prezzo_src !== 'excel' ? ' ⚠web' : '') + '</span>'
-      : '<span style="color:#e5e7eb; font-size:10px;">prezzo mancante</span>';
+      : '<span style="color:#6b7280; font-size:10px;">prezzo mancante</span>';
 
     const aiDesc = r.descrizione_ai
       ? '<div class="excel-ai-desc">' + r.descrizione_ai + '</div>'
@@ -3565,7 +3807,7 @@ function renderExcelRigheFiltered() {
   }).join('');
 
   if (filtered.length > 50) {
-    inner.innerHTML += '<div style="font-size:10px; color:#d1d5db; text-align:center; padding:6px;">Mostrati 50 di ' + filtered.length + ' — usa il filtro per trovare</div>';
+    inner.innerHTML += '<div style="font-size:10px; color:#9ca3af; text-align:center; padding:6px;">Mostrati 50 di ' + filtered.length + ' — usa il filtro per trovare</div>';
   }
 }
 
@@ -3681,18 +3923,18 @@ function cercaRapidaListino(val) {
         return;
       }
       const listinoTipoAttuale = listinoTipo || 'cliente';
-      let html = '<div style="padding:6px 10px; font-size:9px; color:#e5e7eb; border-bottom:1px solid rgba(59,130,245,0.15);">📄 Trovato nel listino Excel — clicca per aggiungere al carrello</div>';
+      let html = '<div style="padding:6px 10px; font-size:9px; color:#6b7280; border-bottom:1px solid rgba(59,130,245,0.15);">📄 Trovato nel listino Excel — clicca per aggiungere al carrello</div>';
       d.prodotti.forEach((p, idx) => {
         const prezzo = listinoTipoAttuale === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : p.prezzo;
         const prezzoRiv = p.prezzo_rivenditore;
-        const prezzoLabel = prezzo ? '<span style="color:#10b981;font-weight:700;">€' + parseFloat(prezzo).toFixed(0) + '</span>' + (prezzoRiv && listinoTipoAttuale === 'cliente' ? '<span style="color:#f59e0b;font-size:9px;margin-left:4px;">riv.€' + parseFloat(prezzoRiv).toFixed(0) + '</span>' : '') : '<span style="color:#e5e7eb;">—</span>';
+        const prezzoLabel = prezzo ? '<span style="color:#10b981;font-weight:700;">€' + parseFloat(prezzo).toFixed(0) + '</span>' + (prezzoRiv && listinoTipoAttuale === 'cliente' ? '<span style="color:#f59e0b;font-size:9px;margin-left:4px;">riv.€' + parseFloat(prezzoRiv).toFixed(0) + '</span>' : '') : '<span style="color:#6b7280;">—</span>';
         const disp = (p.disponibilita||'').toLowerCase().includes('ordine') ? '⏳' : '✓';
         const dispColor = (p.disponibilita||'').toLowerCase().includes('ordine') ? '#f59e0b' : '#10b981';
         html += '<div style="padding:8px 10px; border-bottom:1px solid rgba(59,130,245,0.1); display:flex; align-items:center; gap:8px; cursor:pointer;" ' +
           'onmouseover="this.style.background=\'rgba(59,130,245,0.1)\'" onmouseout="this.style.background=\'\'">' +
           '<div style="flex:1;">' +
           '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (p.nome||p.codice) + '</div>' +
-          '<div style="font-size:9px; color:#d1d5db;">' + (p.codice||'') + (p.collezione ? ' · ' + p.collezione : '') + ' <span style="color:' + dispColor + ';">' + disp + '</span></div>' +
+          '<div style="font-size:9px; color:#9ca3af;">' + (p.codice||'') + (p.collezione ? ' · ' + p.collezione : '') + ' <span style="color:' + dispColor + ';">' + disp + '</span></div>' +
           '</div>' +
           '<div style="text-align:right;">' + prezzoLabel + '</div>' +
           '<button onclick="aggiungiDaRicercaRapida(' + idx + ',this)" class="btn-green btn-sm" style="margin-bottom:0;white-space:nowrap;">+ Carrello</button>' +
@@ -3781,7 +4023,7 @@ function chiudiListino() {
 }
 
 function caricaListino() {
-  document.getElementById('prodotti-grid').innerHTML = '<div style="color:#e5e7eb;font-size:11px;padding:20px 0;">Caricamento prodotti...</div>';
+  document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Caricamento prodotti...</div>';
   fetch('/api/listino/' + encodeURIComponent(listinoBrand))
     .then(r => r.json())
     .then(d => {
@@ -3863,7 +4105,7 @@ function filtraListino() {
   );
 
   if (prodotti.length === 0) {
-    document.getElementById('prodotti-grid').innerHTML = '<div style="color:#e5e7eb;font-size:11px;padding:20px 0;">Nessun prodotto trovato</div>';
+    document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Nessun prodotto trovato</div>';
     return;
   }
 
@@ -3883,10 +4125,10 @@ function filtraListino() {
 
     let prezzoHtml = pUsato
       ? '<span class="' + clsPrezzo + '">€' + parseFloat(pUsato).toFixed(0) + iconWeb + '</span>'
-      : '<span style="color:#e5e7eb;font-size:10px;">—</span>';
+      : '<span style="color:#6b7280;font-size:10px;">—</span>';
     if (pSecondario) {
       const lbl = listinoTipo === 'cliente' ? 'riv.' : 'cl.';
-      const clr = listinoTipo === 'cliente' ? '#f59e0b' : '#d1d5db';
+      const clr = listinoTipo === 'cliente' ? '#f59e0b' : '#9ca3af';
       prezzoHtml += '<span style="font-size:9px;color:' + clr + ';margin-left:6px;">' + lbl + ' €' + parseFloat(pSecondario).toFixed(0) + '</span>';
     }
 
@@ -3897,8 +4139,8 @@ function filtraListino() {
       '</div>' +
       '<div class="prodotto-nome">' + (p.nome||'—') + '</div>' +
       '<div class="prodotto-cat">' + [p.collezione, p.categoria].filter(Boolean).join(' · ') + '</div>' +
-      (p.descrizione ? '<div style="font-size:10px;color:#d1d5db;margin:3px 0;line-height:1.3;">' + p.descrizione + '</div>' : '') +
-      (p.finiture ? '<div style="font-size:9px;color:#e5e7eb;">🎨 ' + p.finiture + '</div>' : '') +
+      (p.descrizione ? '<div style="font-size:10px;color:#9ca3af;margin:3px 0;line-height:1.3;">' + p.descrizione + '</div>' : '') +
+      (p.finiture ? '<div style="font-size:9px;color:#6b7280;">🎨 ' + p.finiture + '</div>' : '') +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">' +
       '<div>' + prezzoHtml + '</div>' +
       '</div>' +
@@ -3914,64 +4156,6 @@ function filtraListino() {
     const idx = listinoData.indexOf(p);
     setTimeout(() => verificaAbbinamenti(idx, p.codice), 100 * i);
   });
-}
-
-function cercaImmagineGoogle(brand, codice) {
-  const query = encodeURIComponent(brand + ' ' + codice);
-  const googleUrl = 'https://www.google.com/search?q=' + query + '&tbm=isch';
-  
-  // Crea modale con 5 risultati Google Images
-  const modal = document.createElement('div');
-  modal.style.cssText = `position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;`;
-  
-  modal.innerHTML = `
-    <div style="background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:90%;max-width:700px;max-height:90vh;overflow-y:auto;padding:20px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-        <div style="color:#3b82f6;font-weight:700;font-size:14px;">🔍 Ricerca Immagini: ${brand} ${codice}</div>
-        <button onclick="this.closest('[style*=position]').remove()" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600;">✕ Chiudi</button>
-      </div>
-      
-      <div style="background:#1e293b;padding:15px;border-radius:8px;margin-bottom:15px;">
-        <div style="color:#e5e7eb;font-size:12px;margin-bottom:10px;">
-          <strong>Cerca su Google Images:</strong><br>
-          Clicca sul link sottostante per visualizzare i risultati, seleziona l'immagine giusta e copia l'URL.
-        </div>
-        <a href="${googleUrl}" target="_blank" style="display:inline-block;background:#3b82f6;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;cursor:pointer;">
-          🔗 Apri Google Images
-        </a>
-      </div>
-      
-      <div style="margin-top:15px;">
-        <div style="color:#e5e7eb;font-size:12px;margin-bottom:10px;font-weight:600;">📋 Incolla URL Immagine qui:</div>
-        <input type="text" id="img-url-input" placeholder="https://example.com/image.jpg" style="width:100%;padding:10px;border:1px solid #3b82f6;border-radius:6px;background:#1e293b;color:#e5e7eb;margin-bottom:10px;box-sizing:border-box;">
-        
-        <button onclick="salvaImmagineURL('${brand}','${codice}',document.getElementById('img-url-input').value)" style="width:100%;background:#10b981;color:white;padding:12px;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:14px;">
-          ✅ Salva Immagine
-        </button>
-      </div>
-      
-      <div style="color:#d1d5db;font-size:11px;margin-top:15px;padding:10px;background:rgba(59,130,245,0.1);border-radius:6px;">
-        <strong>Istruzioni:</strong><br>
-        1. Clicca "Apri Google Images"<br>
-        2. Vedi i risultati per "${brand} ${codice}"<br>
-        3. Clicca sulla foto più adatta<br>
-        4. Copia l'URL dalla barra indirizzi<br>
-        5. Incolla qui e clicca "Salva Immagine"
-      </div>
-    </div>
-  `;
-  
-  document.body.appendChild(modal);
-}
-
-function salvaImmagineURL(brand, codice, imageUrl) {
-  if (!imageUrl.trim()) {
-    alert('⚠️ Incolla l\'URL dell\'immagine prima!');
-    return;
-  }
-  
-  alert('✅ Immagine salvata per ' + brand + ' ' + codice + ':\\n' + imageUrl + '\\n\\n(In produzione, questo verrebbe salvato nel DB)');
-  document.querySelector('[style*="position:fixed"]').remove();
 }
 
 function chiediAIprodotto(idx, tipo) {
@@ -4393,7 +4577,7 @@ fetch('/api/me').then(r => r.json()).then(d => {
 }
 
 .btn-aggiungi:disabled {
-    background: #e5e7eb;
+    background: #6b7280;
     cursor: not-allowed;
 }
 
@@ -4453,7 +4637,7 @@ function aggiornaPannelloAccessori(data) {
             html += `
             <div style="padding:8px;margin-bottom:6px;background:rgba(239,68,68,0.1);border-left:2px solid #ef4444;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
                 <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
-                <div style="font-size:9px;color:#d1d5db;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
                 <div style="font-size:10px;color:#10b981;margin-top:4px;">→ Clicca per aggiungere</div>
             </div>
             `;
@@ -4467,7 +4651,7 @@ function aggiornaPannelloAccessori(data) {
             html += `
             <div style="padding:8px;margin-bottom:6px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
                 <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
-                <div style="font-size:9px;color:#d1d5db;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
                 <div style="font-size:10px;color:#f59e0b;margin-top:4px;">→ Clicca per aggiungere</div>
             </div>
             `;
@@ -4654,6 +4838,70 @@ render();
 </script>
 </body></html>"""
     return render_template_string(html)
+
+
+
+# ============================================================================
+# ENDPOINT RICERCA IMMAGINI AUTOMATICA
+# ============================================================================
+
+@app.route('/api/cerca-immagini-auto/<brand>/<codice>', methods=['GET'])
+def cerca_immagini_auto(brand, codice):
+    try:
+        scrape_result = scrape_google_images(brand, codice, max_results=6)
+        if not scrape_result['ok']:
+            return jsonify({'ok': False, 'error': scrape_result['error'], 'risultati': []}), 404
+        urls = scrape_result['urls']
+        download_result = download_immagini_con_thumbnail(urls)
+        if not download_result['ok']:
+            return jsonify({'ok': False, 'error': f'Errore download', 'risultati': []}), 500
+        risultati_formattati = []
+        for r in download_result['risultati']:
+            risultati_formattati.append({'url': r['url'], 'thumbnail_base64': f"data:image/jpeg;base64,{r['thumbnail_base64']}"})
+        return jsonify({'ok': True, 'risultati': risultati_formattati, 'count': len(risultati_formattati), 'query': f"{brand} {codice}"}), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e), 'risultati': []}), 500
+
+@app.route('/api/salva-immagine-scelta', methods=['POST'])
+def salva_immagine_scelta_endpoint():
+    try:
+        data = request.get_json()
+        brand = data.get('brand', '').strip()
+        codice = data.get('codice', '').strip()
+        image_url = data.get('image_url', '').strip()
+        thumbnail_base64 = data.get('thumbnail_base64', '').strip()
+        if thumbnail_base64.startswith('data:'):
+            thumbnail_base64 = thumbnail_base64.split(',', 1)[1]
+        if not all([brand, codice, image_url, thumbnail_base64]):
+            return jsonify({'ok': False, 'error': 'Dati incompleti'}), 400
+        result = salva_immagine_scelta(brand, codice, image_url, thumbnail_base64)
+        return jsonify(result), (200 if result['ok'] else 500)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/api/immagine/<brand>/<codice>', methods=['GET'])
+def get_immagine_endpoint(brand, codice):
+    try:
+        img = get_immagine_dal_db(brand, codice)
+        if img:
+            return jsonify({'ok': True, 'url': img['url'], 'thumbnail_base64': f"data:image/jpeg;base64,{img['thumbnail_base64']}"}), 200
+        else:
+            return jsonify({'ok': False, 'error': 'Immagine non trovata'}), 404
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/api/immagine/<brand>/<codice>', methods=['DELETE'])
+def delete_immagine_endpoint(brand, codice):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM product_images WHERE brand = ? AND codice = ?", (brand, codice))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'message': 'Immagine eliminata'}), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
 
 
 if __name__ == '__main__':
