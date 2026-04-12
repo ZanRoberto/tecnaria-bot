@@ -5733,5 +5733,8 @@ def genera_offerta_pdf_endpoint(cid):
         return jsonify({'error': str(e)}), 500
 
 
+print("[LOG] All endpoints registered successfully!", file=sys.stderr, flush=True)
+print("[LOG] Starting Flask server on 0.0.0.0:10000...", file=sys.stderr, flush=True)
 
+if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
