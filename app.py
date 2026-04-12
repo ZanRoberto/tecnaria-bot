@@ -2042,7 +2042,6 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
     <button onclick="caricaAbbinamentiEProdotti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Listino + Abbinamenti</button>
     <div id="abbinamenti-status" style="font-size:10px; color:#d1d5db; margin-top:2px;"></div>
-    <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica URL Immagini Gessi</button>
   </div>
 
   <!-- CENTRO -->
@@ -2881,30 +2880,66 @@ function generaOffertaCantiere() {
     if (righe.length === 0) { return; }
     const nome = document.getElementById('drawer-nome').textContent;
     let totale = 0;
-    const riepilogo = righe.map(r => {
+    let riepilogo = '';
+    let immaginiHtml = '';
+    
+    // Carica immagini per ogni riga
+    const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
+    let imgCaricate = 0;
+    let imgPromises = [];
+    
+    righe.forEach(r => {
       totale += (r.importo || 0);
       const prezzo = r.importo ? ' | Prezzo: €' + r.importo.toFixed(2) : ' | Prezzo: da definire';
-      return '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + prezzo;
-    }).join('\n');
-    const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
-    if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
-    const domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
-      'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
-      'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
-      'La proposta deve:\n' +
-      '1. Avere un testo introduttivo professionale e convincente\n' +
-      '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
-      '3. Mostrare il totale finale in modo chiaro\n' +
-      '4. Chiudersi con una call to action per il cliente\n' +
-      'Usa un tono elegante, orientato al valore e alla qualità.';
-    closeCantiere();
-    askDirect(domanda, brands);
+      riepilogo += '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + prezzo + '\n';
+      
+      // Cerca immagini associate (se il codice è nella descrizione)
+      const match = r.descrizione ? r.descrizione.match(/\[([^\]]+)\]/) : null;
+      if (match && r.brand) {
+        const codice = match[1];
+        const imgPromise = fetch('/api/immagine/' + encodeURIComponent(r.brand) + '/' + encodeURIComponent(codice))
+          .then(res => res.json())
+          .then(data => {
+            if (data.ok && data.thumbnail_base64) {
+              immaginiHtml += '<div style="display:inline-block; margin:8px; text-align:center;">' +
+                '<img src="' + data.thumbnail_base64 + '" style="width:120px; height:120px; object-fit:cover; border-radius:6px; border:2px solid #3b82f6; cursor:pointer;" onclick="window.open(\'' + data.url + '\',\'_blank\')" title="Clicca per aprire">' +
+                '<div style="font-size:10px; color:#e5e7eb; margin-top:4px;">' + (r.descrizione||'').substring(0,30) + '</div>' +
+                '</div>';
+            }
+          })
+          .catch(() => {}); // Silenzioso se non trova immagine
+        imgPromises.push(imgPromise);
+      }
+    });
+    
+    // Aspetta che tutte le immagini siano caricate
+    Promise.all(imgPromises).then(() => {
+      if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
+      
+      let domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
+        'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
+        'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
+        'La proposta deve:\n' +
+        '1. Avere un testo introduttivo professionale e convincente\n' +
+        '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
+        '3. Mostrare il totale finale in modo chiaro\n' +
+        '4. Chiudersi con una call to action per il cliente\n' +
+        'Usa un tono elegante, orientato al valore e alla qualità.';
+      
+      // Aggiungi info immagini se presenti
+      if (immaginiHtml) {
+        domanda += '\n\n[NOTA: Le immagini dei prodotti sono state caricate e dovrebbero apparire accanto a ogni voce nella proposta]';
+      }
+      
+      closeCantiere();
+      askDirect(domanda, brands, immaginiHtml);
+    });
   });
 }
 
-function askDirect(domanda, brands) {
+function askDirect(domanda, brands, immaginiHtml = '') {
   const chat = document.getElementById('chat');
-  chat.innerHTML += '<div class="message"><strong>Tu:</strong> Genera offerta cantiere — ' + document.getElementById('drawer-nome') ? '' : brands.join(', ') + '</div>';
+  chat.innerHTML += '<div class="message"><strong>Tu:</strong> Genera offerta cantiere — ' + (document.getElementById('drawer-nome') ? document.getElementById('drawer-nome').textContent : brands.join(', ')) + '</div>';
   const loadingId = 'loading_' + Date.now();
   chat.innerHTML += '<div class="message" id="' + loadingId + '" style="opacity:0.6;font-style:italic">Oracolo sta elaborando l\'offerta...</div>';
   chat.scrollTop = chat.scrollHeight;
@@ -2920,9 +2955,19 @@ function askDirect(domanda, brands) {
       let html = '<div class="message oracolo-msg" id="' + msgId + '">';
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
       html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      
+      // Mostra immagini SALVATE dal cantiere se presenti
+      if (immaginiHtml) {
+        html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
+        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">📸 Immagini Prodotti Selezionate</div>';
+        html += immaginiHtml;
+        html += '</div>';
+      }
+      
+      // Mostra immagini AGGIUNTIVE da web/API
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
-        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
+        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">🖼️ Immagini Aggiuntive</div>';
         html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
         d.images.forEach(img => {
           html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
@@ -2930,9 +2975,10 @@ function askDirect(domanda, brands) {
           html += '</div>';
         });
         html += '</div></div>';
-      } else {
+      } else if (!immaginiHtml) {
         html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
       }
+      
       html += '</div>';
       chat.innerHTML += html;
       chat.scrollTop = chat.scrollHeight;
