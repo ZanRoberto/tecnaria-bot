@@ -5792,46 +5792,6 @@ def cambia_stato_offerta_endpoint(offerta_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/offerte/<int:offerta_id>/stato', methods=['PUT'])
-def cambia_stato_offerta_endpoint(offerta_id):
-    """Cambia stato offerta: bozza → inviata → accettata → rifiutata"""
-    try:
-        data = request.get_json()
-        nuovo_stato = data.get('stato')
-        
-        if nuovo_stato not in ['bozza', 'inviata', 'accettata', 'rifiutata']:
-            return jsonify({'error': 'Stato non valido'}), 400
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Determina quale timestamp aggiornare
-        timestamp_field = None
-        if nuovo_stato == 'inviata':
-            timestamp_field = 'data_invio'
-        elif nuovo_stato == 'accettata':
-            timestamp_field = 'data_accettazione'
-        
-        update_sql = f'''UPDATE offerte 
-                        SET stato = ?, updated_at = ?'''
-        params = [nuovo_stato, datetime.now().isoformat()]
-        
-        if timestamp_field:
-            update_sql += f', {timestamp_field} = ?'
-            params.append(datetime.now().isoformat())
-        
-        update_sql += ' WHERE id = ?'
-        params.append(offerta_id)
-        
-        c.execute(update_sql, params)
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'offerta_id': offerta_id, 'stato': nuovo_stato}), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/offerte/<int:offerta_id>/sconto', methods=['PUT'])
 def applica_sconto_endpoint(offerta_id):
     """Applica sconto % o fisso e ricalcola totali"""
