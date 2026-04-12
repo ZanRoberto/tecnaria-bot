@@ -3338,6 +3338,110 @@ function parseMarkdown(text) {
     .replace(/\n/g, '<br>');
 }
 
+// ============================================================================
+// RICERCA IMMAGINI AUTOMATICA
+// ============================================================================
+
+function cercaImmaginiAuto(brand, codice, idxProdotto) {
+  const btn = document.getElementById(`cerca-img-btn-${idxProdotto}`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Ricerca...'; }
+  fetch(`/api/cerca-immagini-auto/${encodeURIComponent(brand)}/${encodeURIComponent(codice)}`)
+    .then(r => r.json())
+    .then(data => {
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 Cerca'; }
+      if (!data.ok || !data.risultati || data.risultati.length === 0) { alert('❌ Nessuna immagine trovata'); return; }
+      mostraGalleryImmagini(data.risultati, brand, codice, idxProdotto);
+    })
+    .catch(err => { alert('❌ Errore'); if (btn) { btn.disabled = false; btn.textContent = '🔍 Cerca'; } });
+}
+
+function mostraGalleryImmagini(risultati, brand, codice, idxProdotto) {
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  const container = document.createElement('div');
+  container.style.cssText = 'background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:100%;max-width:900px;max-height:85vh;overflow-y:auto;padding:24px;color:#e5e7eb;';
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;justify-content:space-between;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid rgba(59,130,245,0.3);';
+  const title = document.createElement('div');
+  title.textContent = `🔍 ${brand} ${codice}`;
+  title.style.cssText = 'font-size:18px;font-weight:600;color:#60a5fa;';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕ Chiudi';
+  closeBtn.style.cssText = 'background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;';
+  closeBtn.onclick = () => modal.remove();
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+  const gallery = document.createElement('div');
+  gallery.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:24px;';
+  risultati.forEach((result) => {
+    const card = document.createElement('div');
+    card.style.cssText = 'cursor:pointer;border-radius:8px;border:2px solid rgba(59,130,245,0.2);position:relative;overflow:hidden;';
+    const img = document.createElement('img');
+    img.src = result.thumbnail_base64;
+    img.style.cssText = 'width:100%;height:180px;object-fit:cover;display:block;';
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(59,130,245,0);display:flex;align-items:center;justify-content:center;font-size:32px;';
+    card.appendChild(img);
+    card.appendChild(overlay);
+    card.onmouseover = () => { card.style.boxShadow = '0 0 15px rgba(59,130,245,0.4)'; overlay.style.background = 'rgba(59,130,245,0.3)'; overlay.textContent = '✓'; };
+    card.onmouseout = () => { card.style.boxShadow = 'none'; overlay.style.background = 'rgba(59,130,245,0)'; overlay.textContent = ''; };
+    card.onclick = () => { salvaImmagineScelta(brand, codice, result.url, result.thumbnail_base64, idxProdotto); modal.remove(); };
+    gallery.appendChild(card);
+  });
+  container.appendChild(header);
+  container.appendChild(gallery);
+  modal.appendChild(container);
+  document.body.appendChild(modal);
+}
+
+function salvaImmagineScelta(brand, codice, imageUrl, thumbnailBase64, idxProdotto) {
+  const msg = document.createElement('div');
+  msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#f59e0b;color:white;padding:12px 20px;border-radius:6px;font-weight:600;z-index:9999;';
+  msg.textContent = '⏳ Salvataggio...';
+  document.body.appendChild(msg);
+  fetch('/api/salva-immagine-scelta', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brand, codice, image_url: imageUrl, thumbnail_base64: thumbnailBase64 })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        msg.style.background = '#10b981';
+        msg.textContent = '✅ Salvato!';
+        aggiornaCardConImmagine(idxProdotto, thumbnailBase64, imageUrl);
+        setTimeout(() => msg.remove(), 3000);
+      } else {
+        msg.style.background = '#ef4444';
+        msg.textContent = '❌ Errore';
+        setTimeout(() => msg.remove(), 4000);
+      }
+    });
+}
+
+function aggiornaCardConImmagine(idxProdotto, thumbnailBase64, imageUrl) {
+  const card = document.getElementById(`pcard-${idxProdotto}`);
+  if (!card) return;
+  let imgArea = card.querySelector('[data-img-area]');
+  if (!imgArea) {
+    imgArea = document.createElement('div');
+    imgArea.setAttribute('data-img-area', 'true');
+    imgArea.style.cssText = 'width:100%;height:120px;background:linear-gradient(135deg,#3b82f6 0%,#1e40af 100%);border-radius:6px;margin-bottom:10px;';
+    const img = document.createElement('img');
+    img.src = thumbnailBase64;
+    img.style.cssText = 'width:100%;height:100%;object-fit:cover;cursor:pointer;';
+    img.onclick = () => window.open(imageUrl, '_blank');
+    imgArea.appendChild(img);
+    const actions = card.querySelector('.prodotto-actions');
+    if (actions) { card.insertBefore(imgArea, actions); } else { card.appendChild(imgArea); }
+  } else {
+    const img = imgArea.querySelector('img');
+    if (img) { img.src = thumbnailBase64; }
+  }
+  const btn = card.querySelector(`[data-search-img-btn]`);
+  if (btn) { btn.textContent = '🔄 Cambia'; btn.style.background = '#8b5cf6'; }
+}
+
 function ask() {
   if (!selected.length) { alert('Seleziona brand'); return; }
   const q = document.getElementById('question').value;
