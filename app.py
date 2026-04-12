@@ -5,17 +5,38 @@ ORACOLO COVOLO - SISTEMA COMPLETO V2
 + Pannello destra: Cantieri, Carrello, BI
 + Tutto il precedente invariato
 """
-import os, json, sqlite3, re, hashlib, secrets, base64, io
+import sys
+import os
+
+print("=" * 60, file=sys.stderr, flush=True)
+print("[START] Importing modules...", file=sys.stderr, flush=True)
+print("=" * 60, file=sys.stderr, flush=True)
+
+import json, sqlite3, re, hashlib, secrets, base64, io
+print("[LOG] Imported: json, sqlite3, re, hashlib, secrets, base64, io", file=sys.stderr, flush=True)
+
 from datetime import datetime
+print("[LOG] Imported: datetime", file=sys.stderr, flush=True)
+
 from flask import Flask, render_template_string, request, jsonify, session, send_file
+print("[LOG] Imported: Flask modules", file=sys.stderr, flush=True)
+
 import httpx
+print("[LOG] Imported: httpx", file=sys.stderr, flush=True)
+
 import urllib.request
 import urllib.error
+print("[LOG] Imported: urllib", file=sys.stderr, flush=True)
+
 try:
     import openpyxl
     OPENPYXL_OK = True
+    print("[LOG] openpyxl: OK", file=sys.stderr, flush=True)
 except ImportError:
     OPENPYXL_OK = False
+    print("[LOG] openpyxl: SKIP", file=sys.stderr, flush=True)
+
+print("[LOG] Setting up paths...", file=sys.stderr, flush=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -175,6 +196,7 @@ def get_immagine_dal_db(brand, codice):
 
 
 def init_db():
+    print("[INIT_DB] Starting...", file=sys.stderr, flush=True)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     # Tabelle esistenti
@@ -363,10 +385,18 @@ def init_db():
         c.execute('INSERT OR IGNORE INTO aziende (nome) VALUES (?)', (brand,))
     conn.commit()
     conn.close()
+    print("[INIT_DB] DONE!", file=sys.stderr, flush=True)
 
+print("[LOG] Creating Flask app...", file=sys.stderr, flush=True)
 app = Flask(__name__)
+print("[LOG] Flask app created", file=sys.stderr, flush=True)
+
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
+print("[LOG] Secret key set", file=sys.stderr, flush=True)
+
+print("[LOG] Calling init_db()...", file=sys.stderr, flush=True)
 init_db()
+print("[LOG] init_db() completed", file=sys.stderr, flush=True)
 
 def dedup_brands_on_start():
     """Unifica brand duplicati case-insensitive all'avvio"""
@@ -386,7 +416,14 @@ def dedup_brands_on_start():
     conn.commit()
     conn.close()
 
-dedup_brands_on_start()
+print("[LOG] Calling dedup_brands_on_start()...", file=sys.stderr, flush=True)
+try:
+    dedup_brands_on_start()
+    print("[LOG] dedup_brands_on_start() OK", file=sys.stderr, flush=True)
+except Exception as e:
+    print(f"[WARNING] dedup_brands_on_start() error (non-blocking): {e}", file=sys.stderr, flush=True)
+
+print("[LOG] All startup checks passed! Ready to start.", file=sys.stderr, flush=True)
 
 def load_gessi_abbinamenti_on_start():
     """Placeholder — abbinamenti caricheranno da Excel quando l'utente clicca il bottone"""
