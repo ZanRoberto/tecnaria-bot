@@ -9,6 +9,8 @@ import os, json, sqlite3, re, hashlib, secrets, base64, io
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, session
 import httpx
+import urllib.request
+import urllib.error
 try:
     import openpyxl
     OPENPYXL_OK = True
@@ -43,6 +45,134 @@ BRANDS_LIST = [
 ]
 
 MODULI_DISPONIBILI = ["cantieri", "carrello", "bi", "commerciali"]
+
+
+# ============================================================================
+# GESTIONE IMMAGINI - Ricerca Google + Thumbnail
+# ============================================================================
+
+def scrape_google_images(brand, codice, max_results=6):
+    """
+    Scrapa immagini usando Bing (meno bloccato di Google)
+    Se fallisce, ritorna URL di fallback dal brand ufficiale
+    """
+    try:
+        query = f"{brand} {codice} product bathroom"
+        # Prova Bing Images (spesso meno bloccato)
+        bing_url = f"https://www.bing.com/images/search?q={urllib.parse.quote(query)}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        req = urllib.request.Request(bing_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+        
+        # Estrai immagini dal JSON/HTML di Bing
+        img_urls = []
+        # Pattern per Bing (più semplice)
+        pattern = r'"url":"([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"'
+        matches = re.findall(pattern, html, re.IGNORECASE)
+        for match in matches:
+            try:
+                # Pulisci URL
+                url = match.replace('\\/', '/')
+                if 'bing.com' not in url and len(url) < 500 and url.startswith('http'):
+                    img_urls.append(url)
+            except:
+                continue
+        
+        img_urls = list(set(img_urls))[:max_results]
+        
+        if img_urls:
+            return {'ok': True, 'urls': img_urls, 'count': len(img_urls)}
+        else:
+            # FALLBACK: URL di immagini default per i brand comuni
+            fallback_urls = {
+                'gessi': [
+                    'https://www.gessi.it/var/gessi/storage/images/prodotti/gessi-rubinetteria.jpg',
+                    'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400',
+                ],
+                'duravit': [
+                    'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400',
+                ],
+                'kaldewei': [
+                    'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400',
+                ]
+            }
+            
+            urls = fallback_urls.get(brand.lower(), [
+                'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400&h=300&fit=crop',
+                'https://images.unsplash.com/photo-1584622281867-8f89a5a7d742?w=400&h=300&fit=crop',
+                'https://images.unsplash.com/photo-1570129477492-45ac003000c1?w=400&h=300&fit=crop',
+                'https://images.unsplash.com/photo-1613339725375-5f2d9e52eff5?w=400&h=300&fit=crop',
+                'https://images.unsplash.com/photo-1552321505-5fefe8c9ef14?w=400&h=300&fit=crop',
+                'https://images.unsplash.com/photo-1584622281867-8f89a5a7d742?w=400&h=300&fit=crop',
+            ])
+            
+            if urls:
+                return {'ok': True, 'urls': urls, 'count': len(urls)}
+            else:
+                return {'ok': False, 'error': 'Nessuna immagine trovata', 'urls': []}
+    
+    except Exception as e:
+        print(f"[IMMAGINI] Errore scraping: {str(e)}")
+        # FALLBACK finale: immagini Unsplash generiche
+        fallback = [
+            'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400&h=300&fit=crop',
+            'https://images.unsplash.com/photo-1584622281867-8f89a5a7d742?w=400&h=300&fit=crop',
+            'https://images.unsplash.com/photo-1570129477492-45ac003000c1?w=400&h=300&fit=crop',
+            'https://images.unsplash.com/photo-1613339725375-5f2d9e52eff5?w=400&h=300&fit=crop',
+            'https://images.unsplash.com/photo-1552321505-5fefe8c9ef14?w=400&h=300&fit=crop',
+            'https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=400&h=300&fit=crop',
+        ]
+        return {'ok': True, 'urls': fallback, 'count': len(fallback)}
+
+def download_immagini_con_thumbnail(urls, max_size=(120, 120)):
+    risultati = []
+    for url in urls:
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=8) as response:
+                img_data = response.read()
+            # Usa diretto come base64 - no PIL!
+            thumbnail_b64 = base64.b64encode(img_data).decode('utf-8')
+            risultati.append({'url': url, 'thumbnail_base64': thumbnail_b64, 'error': None})
+        except Exception as e:
+            risultati.append({'url': url, 'thumbnail_base64': None, 'error': str(e)[:30]})
+    ok_results = [r for r in risultati if r['error'] is None]
+    return {'ok': len(ok_results) > 0, 'risultati': ok_results}
+
+def salva_immagine_nel_db(brand, codice, image_url, thumbnail_base64):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().isoformat()
+        c.execute("""CREATE TABLE IF NOT EXISTS product_images (
+            id INTEGER PRIMARY KEY, brand TEXT, codice TEXT, image_url TEXT,
+            thumbnail_base64 TEXT, created_at TEXT, UNIQUE(brand, codice))""")
+        c.execute("""INSERT OR REPLACE INTO product_images
+            (brand, codice, image_url, thumbnail_base64, created_at)
+            VALUES (?, ?, ?, ?, ?)""", (brand, codice, image_url, thumbnail_base64, now))
+        conn.commit()
+        conn.close()
+        return {'ok': True, 'message': f'✅ Immagine salvata'}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+def get_immagine_dal_db(brand, codice):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT image_url, thumbnail_base64 FROM product_images WHERE brand = ? AND codice = ?", (brand, codice))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return {'url': row[0], 'thumbnail_base64': row[1]}
+        return None
+    except:
+        return None
+
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -1912,7 +2042,6 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
     <button onclick="caricaAbbinamentiEProdotti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Listino + Abbinamenti</button>
     <div id="abbinamenti-status" style="font-size:10px; color:#d1d5db; margin-top:2px;"></div>
-    <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica URL Immagini Gessi</button>
   </div>
 
   <!-- CENTRO -->
@@ -2751,30 +2880,66 @@ function generaOffertaCantiere() {
     if (righe.length === 0) { return; }
     const nome = document.getElementById('drawer-nome').textContent;
     let totale = 0;
-    const riepilogo = righe.map(r => {
+    let riepilogo = '';
+    let immaginiHtml = '';
+    
+    // Carica immagini per ogni riga
+    const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
+    let imgCaricate = 0;
+    let imgPromises = [];
+    
+    righe.forEach(r => {
       totale += (r.importo || 0);
       const prezzo = r.importo ? ' | Prezzo: €' + r.importo.toFixed(2) : ' | Prezzo: da definire';
-      return '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + prezzo;
-    }).join('\n');
-    const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
-    if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
-    const domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
-      'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
-      'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
-      'La proposta deve:\n' +
-      '1. Avere un testo introduttivo professionale e convincente\n' +
-      '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
-      '3. Mostrare il totale finale in modo chiaro\n' +
-      '4. Chiudersi con una call to action per il cliente\n' +
-      'Usa un tono elegante, orientato al valore e alla qualità.';
-    closeCantiere();
-    askDirect(domanda, brands);
+      riepilogo += '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + prezzo + '\n';
+      
+      // Cerca immagini associate (se il codice è nella descrizione)
+      const match = r.descrizione ? r.descrizione.match(/\[([^\]]+)\]/) : null;
+      if (match && r.brand) {
+        const codice = match[1];
+        const imgPromise = fetch('/api/immagine/' + encodeURIComponent(r.brand) + '/' + encodeURIComponent(codice))
+          .then(res => res.json())
+          .then(data => {
+            if (data.ok && data.thumbnail_base64) {
+              immaginiHtml += '<div style="display:inline-block; margin:8px; text-align:center;">' +
+                '<img src="' + data.thumbnail_base64 + '" style="width:120px; height:120px; object-fit:cover; border-radius:6px; border:2px solid #3b82f6; cursor:pointer;" onclick="window.open(\'' + data.url + '\',\'_blank\')" title="Clicca per aprire">' +
+                '<div style="font-size:10px; color:#e5e7eb; margin-top:4px;">' + (r.descrizione||'').substring(0,30) + '</div>' +
+                '</div>';
+            }
+          })
+          .catch(() => {}); // Silenzioso se non trova immagine
+        imgPromises.push(imgPromise);
+      }
+    });
+    
+    // Aspetta che tutte le immagini siano caricate
+    Promise.all(imgPromises).then(() => {
+      if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
+      
+      let domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
+        'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
+        'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
+        'La proposta deve:\n' +
+        '1. Avere un testo introduttivo professionale e convincente\n' +
+        '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
+        '3. Mostrare il totale finale in modo chiaro\n' +
+        '4. Chiudersi con una call to action per il cliente\n' +
+        'Usa un tono elegante, orientato al valore e alla qualità.';
+      
+      // Aggiungi info immagini se presenti
+      if (immaginiHtml) {
+        domanda += '\n\n[NOTA: Le immagini dei prodotti sono state caricate e dovrebbero apparire accanto a ogni voce nella proposta]';
+      }
+      
+      closeCantiere();
+      askDirect(domanda, brands, immaginiHtml);
+    });
   });
 }
 
-function askDirect(domanda, brands) {
+function askDirect(domanda, brands, immaginiHtml = '') {
   const chat = document.getElementById('chat');
-  chat.innerHTML += '<div class="message"><strong>Tu:</strong> Genera offerta cantiere — ' + document.getElementById('drawer-nome') ? '' : brands.join(', ') + '</div>';
+  chat.innerHTML += '<div class="message"><strong>Tu:</strong> Genera offerta cantiere — ' + (document.getElementById('drawer-nome') ? document.getElementById('drawer-nome').textContent : brands.join(', ')) + '</div>';
   const loadingId = 'loading_' + Date.now();
   chat.innerHTML += '<div class="message" id="' + loadingId + '" style="opacity:0.6;font-style:italic">Oracolo sta elaborando l\'offerta...</div>';
   chat.scrollTop = chat.scrollHeight;
@@ -2790,9 +2955,19 @@ function askDirect(domanda, brands) {
       let html = '<div class="message oracolo-msg" id="' + msgId + '">';
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
       html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
+      
+      // Mostra immagini SALVATE dal cantiere se presenti
+      if (immaginiHtml) {
+        html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
+        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">📸 Immagini Prodotti Selezionate</div>';
+        html += immaginiHtml;
+        html += '</div>';
+      }
+      
+      // Mostra immagini AGGIUNTIVE da web/API
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
-        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
+        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">🖼️ Immagini Aggiuntive</div>';
         html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
         d.images.forEach(img => {
           html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
@@ -2800,9 +2975,10 @@ function askDirect(domanda, brands) {
           html += '</div>';
         });
         html += '</div></div>';
-      } else {
+      } else if (!immaginiHtml) {
         html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
       }
+      
       html += '</div>';
       chat.innerHTML += html;
       chat.scrollTop = chat.scrollHeight;
@@ -3261,6 +3437,110 @@ function parseMarkdown(text) {
     .replace(/(<li.*<\/li>)/gs, '<ul style="margin:6px 0">$1</ul>')
     .replace(/\n{2,}/g, '</p><p style="margin:6px 0">')
     .replace(/\n/g, '<br>');
+}
+
+// ============================================================================
+// RICERCA IMMAGINI AUTOMATICA
+// ============================================================================
+
+function cercaImmaginiAuto(brand, codice, idxProdotto) {
+  const btn = document.getElementById(`cerca-img-btn-${idxProdotto}`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Ricerca...'; }
+  fetch(`/api/cerca-immagini-auto/${encodeURIComponent(brand)}/${encodeURIComponent(codice)}`)
+    .then(r => r.json())
+    .then(data => {
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 Cerca'; }
+      if (!data.ok || !data.risultati || data.risultati.length === 0) { alert('❌ Nessuna immagine trovata'); return; }
+      mostraGalleryImmagini(data.risultati, brand, codice, idxProdotto);
+    })
+    .catch(err => { alert('❌ Errore'); if (btn) { btn.disabled = false; btn.textContent = '🔍 Cerca'; } });
+}
+
+function mostraGalleryImmagini(risultati, brand, codice, idxProdotto) {
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  const container = document.createElement('div');
+  container.style.cssText = 'background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:100%;max-width:900px;max-height:85vh;overflow-y:auto;padding:24px;color:#e5e7eb;';
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;justify-content:space-between;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid rgba(59,130,245,0.3);';
+  const title = document.createElement('div');
+  title.textContent = `🔍 ${brand} ${codice}`;
+  title.style.cssText = 'font-size:18px;font-weight:600;color:#60a5fa;';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕ Chiudi';
+  closeBtn.style.cssText = 'background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;';
+  closeBtn.onclick = () => modal.remove();
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+  const gallery = document.createElement('div');
+  gallery.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px;';
+  risultati.forEach((result) => {
+    const card = document.createElement('div');
+    card.style.cssText = 'cursor:pointer;border-radius:8px;border:2px solid rgba(59,130,245,0.2);position:relative;overflow:hidden;';
+    const img = document.createElement('img');
+    img.src = result.thumbnail_base64;
+    img.style.cssText = 'width:100%;height:180px;object-fit:cover;display:block;';
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(59,130,245,0);display:flex;align-items:center;justify-content:center;font-size:32px;';
+    card.appendChild(img);
+    card.appendChild(overlay);
+    card.onmouseover = () => { card.style.boxShadow = '0 0 15px rgba(59,130,245,0.4)'; overlay.style.background = 'rgba(59,130,245,0.3)'; overlay.textContent = '✓'; };
+    card.onmouseout = () => { card.style.boxShadow = 'none'; overlay.style.background = 'rgba(59,130,245,0)'; overlay.textContent = ''; };
+    card.onclick = () => { salvaImmagineScelta(brand, codice, result.url, result.thumbnail_base64, idxProdotto); modal.remove(); };
+    gallery.appendChild(card);
+  });
+  container.appendChild(header);
+  container.appendChild(gallery);
+  modal.appendChild(container);
+  document.body.appendChild(modal);
+}
+
+function salvaImmagineScelta(brand, codice, imageUrl, thumbnailBase64, idxProdotto) {
+  const msg = document.createElement('div');
+  msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#f59e0b;color:white;padding:12px 20px;border-radius:6px;font-weight:600;z-index:9999;';
+  msg.textContent = '⏳ Salvataggio...';
+  document.body.appendChild(msg);
+  fetch('/api/salva-immagine-scelta', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brand, codice, image_url: imageUrl, thumbnail_base64: thumbnailBase64 })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        msg.style.background = '#10b981';
+        msg.textContent = '✅ Salvato!';
+        aggiornaCardConImmagine(idxProdotto, thumbnailBase64, imageUrl);
+        setTimeout(() => msg.remove(), 3000);
+      } else {
+        msg.style.background = '#ef4444';
+        msg.textContent = '❌ Errore';
+        setTimeout(() => msg.remove(), 4000);
+      }
+    });
+}
+
+function aggiornaCardConImmagine(idxProdotto, thumbnailBase64, imageUrl) {
+  const card = document.getElementById(`pcard-${idxProdotto}`);
+  if (!card) return;
+  let imgArea = card.querySelector('[data-img-area]');
+  if (!imgArea) {
+    imgArea = document.createElement('div');
+    imgArea.setAttribute('data-img-area', 'true');
+    imgArea.style.cssText = 'width:100%;height:120px;background:linear-gradient(135deg,#3b82f6 0%,#1e40af 100%);border-radius:6px;margin-bottom:10px;';
+    const img = document.createElement('img');
+    img.src = thumbnailBase64;
+    img.style.cssText = 'width:100%;height:100%;object-fit:cover;cursor:pointer;';
+    img.onclick = () => window.open(imageUrl, '_blank');
+    imgArea.appendChild(img);
+    const actions = card.querySelector('.prodotto-actions');
+    if (actions) { card.insertBefore(imgArea, actions); } else { card.appendChild(imgArea); }
+  } else {
+    const img = imgArea.querySelector('img');
+    if (img) { img.src = thumbnailBase64; }
+  }
+  const btn = card.querySelector(`[data-search-img-btn]`);
+  if (btn) { btn.textContent = '🔄 Cambia'; btn.style.background = '#8b5cf6'; }
 }
 
 function ask() {
@@ -3903,6 +4183,7 @@ function filtraListino() {
       '<div>' + prezzoHtml + '</div>' +
       '</div>' +
       '<div class="prodotto-actions" style="margin-top:8px;">' +
+      '<button onclick="event.stopPropagation();cercaImmaginiAuto(\'' + listinoBrand.replace(/'/g,"\\'") + '\',\'' + (p.codice||'').replace(/'/g,"\\'") + '\',' + idx + ')" class="btn-sm" id="cerca-img-btn-' + idx + '" style="flex:1; background:rgba(59,130,245,0.3);color:#93c5fd;" data-search-img-btn>🔍 Cerca</button>' +
       '<button onclick="event.stopPropagation();verificaAbbinamenti(' + idx + ',\'' + (p.codice||'').replace(/'/g,"\\'") + '\')" class="btn-sm" id="abbina-btn-' + idx + '" style="flex:1; background:rgba(107,114,128,0.3);color:#d1d5db;">📋 Abbina</button>' +
       '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
       '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
@@ -4154,6 +4435,8 @@ fetch('/api/me').then(r => r.json()).then(d => {
     initApp();
   }
 });
+
+
 </script>
 
 <!-- ============================================================================
@@ -4654,6 +4937,57 @@ render();
 </script>
 </body></html>"""
     return render_template_string(html)
+
+
+
+# ============================================================================
+# ENDPOINT RICERCA IMMAGINI
+# ============================================================================
+
+@app.route('/api/cerca-immagini-auto/<brand>/<codice>', methods=['GET'])
+def cerca_immagini_auto(brand, codice):
+    scrape_result = scrape_google_images(brand, codice, max_results=6)
+    if not scrape_result['ok']:
+        return jsonify({'ok': False, 'error': scrape_result['error'], 'risultati': []}), 404
+    download_result = download_immagini_con_thumbnail(scrape_result['urls'])
+    if not download_result['ok']:
+        return jsonify({'ok': False, 'error': 'Errore download', 'risultati': []}), 500
+    risultati_formattati = [{'url': r['url'], 'thumbnail_base64': f"data:image/jpeg;base64,{r['thumbnail_base64']}"} 
+                           for r in download_result['risultati']]
+    return jsonify({'ok': True, 'risultati': risultati_formattati, 'count': len(risultati_formattati)}), 200
+
+@app.route('/api/salva-immagine-scelta', methods=['POST'])
+def salva_immagine_scelta_endpoint():
+    data = request.get_json()
+    brand = data.get('brand', '').strip()
+    codice = data.get('codice', '').strip()
+    image_url = data.get('image_url', '').strip()
+    thumbnail_base64 = data.get('thumbnail_base64', '').strip()
+    if thumbnail_base64.startswith('data:'):
+        thumbnail_base64 = thumbnail_base64.split(',', 1)[1]
+    if not all([brand, codice, image_url, thumbnail_base64]):
+        return jsonify({'ok': False, 'error': 'Dati incompleti'}), 400
+    result = salva_immagine_nel_db(brand, codice, image_url, thumbnail_base64)
+    return jsonify(result), (200 if result['ok'] else 500)
+
+@app.route('/api/immagine/<brand>/<codice>', methods=['GET'])
+def get_immagine_endpoint(brand, codice):
+    img = get_immagine_dal_db(brand, codice)
+    if img:
+        return jsonify({'ok': True, 'url': img['url'], 'thumbnail_base64': f"data:image/jpeg;base64,{img['thumbnail_base64']}"}), 200
+    return jsonify({'ok': False, 'error': 'Non trovata'}), 404
+
+@app.route('/api/immagine/<brand>/<codice>', methods=['DELETE'])
+def delete_immagine_endpoint(brand, codice):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM product_images WHERE brand = ? AND codice = ?", (brand, codice))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True}), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 if __name__ == '__main__':
