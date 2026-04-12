@@ -5,38 +5,15 @@ ORACOLO COVOLO - SISTEMA COMPLETO V2
 + Pannello destra: Cantieri, Carrello, BI
 + Tutto il precedente invariato
 """
-import sys
-import os
-
-print("=" * 60, file=sys.stderr, flush=True)
-print("[START] Importing modules...", file=sys.stderr, flush=True)
-print("=" * 60, file=sys.stderr, flush=True)
-
-import json, sqlite3, re, hashlib, secrets, base64, io
-print("[LOG] Imported: json, sqlite3, re, hashlib, secrets, base64, io", file=sys.stderr, flush=True)
-
+import os, json, sqlite3, re, hashlib, secrets, base64, io
 from datetime import datetime
-print("[LOG] Imported: datetime", file=sys.stderr, flush=True)
-
-from flask import Flask, render_template_string, request, jsonify, session, send_file
-print("[LOG] Imported: Flask modules", file=sys.stderr, flush=True)
-
+from flask import Flask, render_template_string, request, jsonify, session
 import httpx
-print("[LOG] Imported: httpx", file=sys.stderr, flush=True)
-
-import urllib.request
-import urllib.error
-print("[LOG] Imported: urllib", file=sys.stderr, flush=True)
-
 try:
     import openpyxl
     OPENPYXL_OK = True
-    print("[LOG] openpyxl: OK", file=sys.stderr, flush=True)
 except ImportError:
     OPENPYXL_OK = False
-    print("[LOG] openpyxl: SKIP", file=sys.stderr, flush=True)
-
-print("[LOG] Setting up paths...", file=sys.stderr, flush=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -67,136 +44,7 @@ BRANDS_LIST = [
 
 MODULI_DISPONIBILI = ["cantieri", "carrello", "bi", "commerciali"]
 
-
-# ============================================================================
-# GESTIONE IMMAGINI - Ricerca Google + Thumbnail
-# ============================================================================
-
-def scrape_google_images(brand, codice, max_results=6):
-    """
-    Scrapa immagini usando Bing (meno bloccato di Google)
-    Se fallisce, ritorna URL di fallback dal brand ufficiale
-    """
-    try:
-        query = f"{brand} {codice} product bathroom"
-        # Prova Bing Images (spesso meno bloccato)
-        bing_url = f"https://www.bing.com/images/search?q={urllib.parse.quote(query)}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        req = urllib.request.Request(bing_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as response:
-            html = response.read().decode('utf-8', errors='ignore')
-        
-        # Estrai immagini dal JSON/HTML di Bing
-        img_urls = []
-        # Pattern per Bing (più semplice)
-        pattern = r'"url":"([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"'
-        matches = re.findall(pattern, html, re.IGNORECASE)
-        for match in matches:
-            try:
-                # Pulisci URL
-                url = match.replace('\\/', '/')
-                if 'bing.com' not in url and len(url) < 500 and url.startswith('http'):
-                    img_urls.append(url)
-            except:
-                continue
-        
-        img_urls = list(set(img_urls))[:max_results]
-        
-        if img_urls:
-            return {'ok': True, 'urls': img_urls, 'count': len(img_urls)}
-        else:
-            # FALLBACK: URL di immagini default per i brand comuni
-            fallback_urls = {
-                'gessi': [
-                    'https://www.gessi.it/var/gessi/storage/images/prodotti/gessi-rubinetteria.jpg',
-                    'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400',
-                ],
-                'duravit': [
-                    'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400',
-                ],
-                'kaldewei': [
-                    'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400',
-                ]
-            }
-            
-            urls = fallback_urls.get(brand.lower(), [
-                'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400&h=300&fit=crop',
-                'https://images.unsplash.com/photo-1584622281867-8f89a5a7d742?w=400&h=300&fit=crop',
-                'https://images.unsplash.com/photo-1570129477492-45ac003000c1?w=400&h=300&fit=crop',
-                'https://images.unsplash.com/photo-1613339725375-5f2d9e52eff5?w=400&h=300&fit=crop',
-                'https://images.unsplash.com/photo-1552321505-5fefe8c9ef14?w=400&h=300&fit=crop',
-                'https://images.unsplash.com/photo-1584622281867-8f89a5a7d742?w=400&h=300&fit=crop',
-            ])
-            
-            if urls:
-                return {'ok': True, 'urls': urls, 'count': len(urls)}
-            else:
-                return {'ok': False, 'error': 'Nessuna immagine trovata', 'urls': []}
-    
-    except Exception as e:
-        print(f"[IMMAGINI] Errore scraping: {str(e)}")
-        # FALLBACK finale: immagini Unsplash generiche
-        fallback = [
-            'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=400&h=300&fit=crop',
-            'https://images.unsplash.com/photo-1584622281867-8f89a5a7d742?w=400&h=300&fit=crop',
-            'https://images.unsplash.com/photo-1570129477492-45ac003000c1?w=400&h=300&fit=crop',
-            'https://images.unsplash.com/photo-1613339725375-5f2d9e52eff5?w=400&h=300&fit=crop',
-            'https://images.unsplash.com/photo-1552321505-5fefe8c9ef14?w=400&h=300&fit=crop',
-            'https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=400&h=300&fit=crop',
-        ]
-        return {'ok': True, 'urls': fallback, 'count': len(fallback)}
-
-def download_immagini_con_thumbnail(urls, max_size=(120, 120)):
-    risultati = []
-    for url in urls:
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=8) as response:
-                img_data = response.read()
-            # Usa diretto come base64 - no PIL!
-            thumbnail_b64 = base64.b64encode(img_data).decode('utf-8')
-            risultati.append({'url': url, 'thumbnail_base64': thumbnail_b64, 'error': None})
-        except Exception as e:
-            risultati.append({'url': url, 'thumbnail_base64': None, 'error': str(e)[:30]})
-    ok_results = [r for r in risultati if r['error'] is None]
-    return {'ok': len(ok_results) > 0, 'risultati': ok_results}
-
-def salva_immagine_nel_db(brand, codice, image_url, thumbnail_base64):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        now = datetime.now().isoformat()
-        c.execute("""CREATE TABLE IF NOT EXISTS product_images (
-            id INTEGER PRIMARY KEY, brand TEXT, codice TEXT, image_url TEXT,
-            thumbnail_base64 TEXT, created_at TEXT, UNIQUE(brand, codice))""")
-        c.execute("""INSERT OR REPLACE INTO product_images
-            (brand, codice, image_url, thumbnail_base64, created_at)
-            VALUES (?, ?, ?, ?, ?)""", (brand, codice, image_url, thumbnail_base64, now))
-        conn.commit()
-        conn.close()
-        return {'ok': True, 'message': f'✅ Immagine salvata'}
-    except Exception as e:
-        return {'ok': False, 'error': str(e)}
-
-def get_immagine_dal_db(brand, codice):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT image_url, thumbnail_base64 FROM product_images WHERE brand = ? AND codice = ?", (brand, codice))
-        row = c.fetchone()
-        conn.close()
-        if row:
-            return {'url': row[0], 'thumbnail_base64': row[1]}
-        return None
-    except:
-        return None
-
-
 def init_db():
-    print("[INIT_DB] Starting...", file=sys.stderr, flush=True)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     # Tabelle esistenti
@@ -265,6 +113,59 @@ def init_db():
         FOREIGN KEY (prodotto_codice) REFERENCES products(codice)
     )''')
     
+    # TABELLE PIANI/STANZE/VOCI (MODALITA PIANI)
+    c.execute('''CREATE TABLE IF NOT EXISTS piani (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cantiere_id INTEGER NOT NULL,
+        numero INTEGER,
+        nome TEXT,
+        totale_piano REAL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (cantiere_id) REFERENCES cantieri(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS stanze (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        piano_id INTEGER NOT NULL,
+        nome TEXT,
+        descrizione TEXT,
+        totale_stanza REAL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (piano_id) REFERENCES piani(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS stanza_voci (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stanza_id INTEGER NOT NULL,
+        tipo TEXT,
+        codice TEXT,
+        brand TEXT,
+        descrizione TEXT,
+        quantita REAL DEFAULT 1,
+        udm TEXT,
+        prezzo_unitario REAL DEFAULT 0,
+        sconto_percentuale REAL DEFAULT 0,
+        sconto_fisso REAL DEFAULT 0,
+        subtotale REAL DEFAULT 0,
+        note TEXT,
+        immagine_b64 TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (stanza_id) REFERENCES stanze(id)
+    )''')
+    
+    # CONFIGURAZIONE SISTEMA (sconto mode, etc)
+    c.execute('''CREATE TABLE IF NOT EXISTS config_sistema (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chiave TEXT UNIQUE NOT NULL,
+        valore TEXT,
+        descrizione TEXT,
+        updated_at TEXT
+    )''')
+    
+
     # TABELLE LAZY LOADING ABBINAMENTI
     c.execute('''CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -330,48 +231,6 @@ def init_db():
         FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id)
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS offerte (
-        id INTEGER PRIMARY KEY,
-        numero_offerta TEXT UNIQUE,
-        versione INTEGER DEFAULT 0,
-        data_creazione TEXT,
-        cantiere_id INTEGER,
-        cliente_id INTEGER,
-        stato TEXT DEFAULT 'bozza',
-        sconto_percentuale REAL DEFAULT 0,
-        sconto_fisso REAL DEFAULT 0,
-        totale_lordo REAL,
-        totale_sconto REAL DEFAULT 0,
-        totale_cliente REAL,
-        totale_rivenditore REAL,
-        data_invio TEXT,
-        data_accettazione TEXT,
-        note_commerciale TEXT,
-        json_strutturato TEXT,
-        created_at TEXT,
-        updated_at TEXT,
-        FOREIGN KEY(cantiere_id) REFERENCES cantieri(id),
-        FOREIGN KEY(cliente_id) REFERENCES clienti(id)
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS offerte_righe (
-        id INTEGER PRIMARY KEY,
-        offerta_id INTEGER,
-        codice_covolo TEXT,
-        codice_fornitore TEXT,
-        brand TEXT,
-        categoria TEXT,
-        descrizione TEXT,
-        quantita INTEGER,
-        udm TEXT,
-        prezzo_cliente REAL,
-        prezzo_rivenditore REAL,
-        immagine_b64 TEXT,
-        disponibilita_magazzino INTEGER,
-        note TEXT,
-        FOREIGN KEY(offerta_id) REFERENCES offerte(id)
-    )''')
-    
     # Cliente default Covolo
     c.execute("INSERT OR IGNORE INTO clienti (nome, slug) VALUES ('Covolo SRL', 'covolo')")
     conn.commit()
@@ -386,18 +245,10 @@ def init_db():
         c.execute('INSERT OR IGNORE INTO aziende (nome) VALUES (?)', (brand,))
     conn.commit()
     conn.close()
-    print("[INIT_DB] DONE!", file=sys.stderr, flush=True)
 
-print("[LOG] Creating Flask app...", file=sys.stderr, flush=True)
 app = Flask(__name__)
-print("[LOG] Flask app created", file=sys.stderr, flush=True)
-
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
-print("[LOG] Secret key set", file=sys.stderr, flush=True)
-
-print("[LOG] Calling init_db()...", file=sys.stderr, flush=True)
 init_db()
-print("[LOG] init_db() completed", file=sys.stderr, flush=True)
 
 def dedup_brands_on_start():
     """Unifica brand duplicati case-insensitive all'avvio"""
@@ -417,32 +268,7 @@ def dedup_brands_on_start():
     conn.commit()
     conn.close()
 
-print("[LOG] Calling dedup_brands_on_start()...", file=sys.stderr, flush=True)
-try:
-    dedup_brands_on_start()
-    print("[LOG] dedup_brands_on_start() OK", file=sys.stderr, flush=True)
-except Exception as e:
-    print(f"[WARNING] dedup_brands_on_start() error (non-blocking): {e}", file=sys.stderr, flush=True)
-
-print("[LOG] All startup checks passed! Ready to start.", file=sys.stderr, flush=True)
-print("[LOG] Starting endpoint registration...", file=sys.stderr, flush=True)
-
-# Aggiungi hook per catturare errori durante registration
-original_route = app.route
-def route_with_logging(*args, **kwargs):
-    def decorator(f):
-        route_path = args[0] if args else "unknown"
-        print(f"[ENDPOINT] Registering: {route_path} -> {f.__name__}", file=sys.stderr, flush=True)
-        try:
-            return original_route(*args, **kwargs)(f)
-        except Exception as e:
-            print(f"[ERROR] Failed to register {route_path}: {e}", file=sys.stderr, flush=True)
-            raise
-    return decorator
-
-app.route = route_with_logging
-
-print("[LOG] Endpoint registration hook installed", file=sys.stderr, flush=True)
+dedup_brands_on_start()
 
 def load_gessi_abbinamenti_on_start():
     """Placeholder — abbinamenti caricheranno da Excel quando l'utente clicca il bottone"""
@@ -466,474 +292,6 @@ def require_login(ruoli=None):
     if ruoli and u['ruolo'] not in ruoli:
         return None
     return u
-
-@app.route('/api/cantieri/<int:cid>/modalita', methods=['GET'])
-def get_modalita_cantiere(cid):
-    """Legge modalita cantiere: 'semplice' o 'piani'"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT modalita FROM cantieri WHERE id = ?", (cid,))
-        row = c.fetchone()
-        conn.close()
-        modalita = row[0] if row else 'semplice'
-        return jsonify({'modalita': modalita}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/cantieri/<int:cid>/modalita', methods=['PUT'])
-def set_modalita_cantiere(cid):
-    """Cambia modalita cantiere e converte dati se necessario"""
-    try:
-        data = request.get_json()
-        nuova_modalita = data.get('modalita', 'semplice')
-        
-        if nuova_modalita not in ['semplice', 'piani']:
-            return jsonify({'error': 'Modalita non valida'}), 400
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Leggi modalita attuale
-        c.execute("SELECT modalita FROM cantieri WHERE id = ?", (cid,))
-        row = c.fetchone()
-        modalita_attuale = row[0] if row else 'semplice'
-        
-        # Se cambio da semplice → piani: crea struttura Piano 1 / Stanza unica
-        if modalita_attuale == 'semplice' and nuova_modalita == 'piani':
-            # Crea Piano 1
-            c.execute('''INSERT INTO piani (cantiere_id, numero, nome, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)''',
-                     (cid, 1, 'Piano 1', datetime.now().isoformat(), datetime.now().isoformat()))
-            piano_id = c.lastrowid
-            
-            # Crea Stanza unica
-            c.execute('''INSERT INTO stanze (piano_id, nome, descrizione, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)''',
-                     (piano_id, 'Ambiente principale', '', datetime.now().isoformat(), datetime.now().isoformat()))
-            stanza_id = c.lastrowid
-            
-            # Sposta tutte le righe cantiere_righe → stanza_voci
-            c.execute("SELECT id, brand, categoria, descrizione, importo FROM cantiere_righe WHERE cantiere_id = ?", (cid,))
-            righe = c.fetchall()
-            
-            totale_stanza = 0
-            for rid, brand, categoria, descrizione, importo in righe:
-                importo = importo or 0
-                totale_stanza += importo
-                
-                c.execute('''INSERT INTO stanza_voci 
-                            (stanza_id, tipo, codice, brand, descrizione, quantita, udm,
-                             prezzo_unitario, sconto_percentuale, sconto_fisso, subtotale,
-                             note, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                         ('Da migrazione', categoria or '', brand or '', descrizione or '',
-                          1, 'pezzo', importo, 0, 0, importo, '', datetime.now().isoformat(), datetime.now().isoformat()))
-            
-            # Aggiorna totali
-            c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?",
-                     (totale_stanza, datetime.now().isoformat(), stanza_id))
-            c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?",
-                     (totale_stanza, datetime.now().isoformat(), piano_id))
-        
-        # Se cambio da piani → semplice: appiattisci voci in cantiere_righe
-        elif modalita_attuale == 'piani' and nuova_modalita == 'semplice':
-            # Carica tutte le voci dai piani
-            c.execute('''SELECT sv.brand, sv.descrizione, sv.subtotale 
-                        FROM stanza_voci sv
-                        JOIN stanze s ON sv.stanza_id = s.id
-                        JOIN piani p ON s.piano_id = p.id
-                        WHERE p.cantiere_id = ?''', (cid,))
-            voci = c.fetchall()
-            
-            # Cancella vecchie righe cantiere
-            c.execute("DELETE FROM cantiere_righe WHERE cantiere_id = ?", (cid,))
-            
-            # Inserisci voci come righe cantiere
-            for brand, descrizione, subtotale in voci:
-                c.execute('''INSERT INTO cantiere_righe 
-                            (cantiere_id, brand, categoria, descrizione, note, importo)
-                            VALUES (?, ?, ?, ?, ?, ?)''',
-                         (cid, brand or '', '', descrizione or '', 'Da migrazione piani', subtotale or 0))
-        
-        # Aggiorna modalita
-        c.execute("UPDATE cantieri SET modalita = ?, data_aggiornamento = ? WHERE id = ?",
-                 (nuova_modalita, datetime.now().isoformat(), cid))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'cantiere_id': cid,
-            'modalita': nuova_modalita,
-            'message': f'Convertito a modalita {nuova_modalita}'
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# API PIANI / STANZE / VOCI - Gestione struttura cantiere
-# ---------------------------------------------------------------------------
-
-@app.route('/api/config/sconto-mode', methods=['GET'])
-def get_sconto_mode_endpoint():
-    """Legge modalità sconto configurata"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT valore FROM config_sistema WHERE chiave = 'SCONTO_MODE'")
-        row = c.fetchone()
-        conn.close()
-        sconto_mode = int(row[0]) if row else 1
-        return jsonify({'sconto_mode': sconto_mode}), 200
-    except:
-        return jsonify({'sconto_mode': 1}), 200
-
-@app.route('/api/config/sconto-mode', methods=['PUT'])
-def set_sconto_mode_endpoint():
-    """Admin configura modalità sconto"""
-    try:
-        data = request.get_json()
-        sconto_mode = data.get('sconto_mode', 1)
-        
-        if sconto_mode not in [1, 2]:
-            return jsonify({'error': 'Valore non valido (1 o 2)'}), 400
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''UPDATE config_sistema SET valore = ?, updated_at = ?
-                    WHERE chiave = 'SCONTO_MODE'
-                    ''', (str(sconto_mode), datetime.now().isoformat()))
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'sconto_mode': sconto_mode}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/cantieri/<int:cid>/piani', methods=['POST'])
-def crea_piano_endpoint(cid):
-    """Crea un piano nel cantiere"""
-    try:
-        data = request.get_json()
-        numero = data.get('numero', 1)
-        nome = data.get('nome', f'Piano {numero}')
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute('''INSERT INTO piani (cantiere_id, numero, nome, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)''',
-                 (cid, numero, nome, datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        piano_id = c.lastrowid
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'piano_id': piano_id, 'numero': numero, 'nome': nome}), 201
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/piani/<int:pid>/stanze', methods=['POST'])
-def crea_stanza_endpoint(pid):
-    """Crea una stanza in un piano"""
-    try:
-        data = request.get_json()
-        nome = data.get('nome', 'Nuova stanza')
-        descrizione = data.get('descrizione', '')
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute('''INSERT INTO stanze (piano_id, nome, descrizione, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)''',
-                 (pid, nome, descrizione, datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        stanza_id = c.lastrowid
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'stanza_id': stanza_id, 'nome': nome}), 201
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stanze/<int:sid>/voci', methods=['POST'])
-def aggiungi_voce_endpoint(sid):
-    """Aggiungi voce (brand o manuale) a stanza"""
-    try:
-        data = request.get_json()
-        tipo = data.get('tipo', 'brand')
-        codice = data.get('codice', '')
-        brand = data.get('brand', '')
-        descrizione = data.get('descrizione', '')
-        quantita = data.get('quantita', 1)
-        udm = data.get('udm', 'pezzo')
-        prezzo_unitario = data.get('prezzo_unitario', 0)
-        sconto_perc = data.get('sconto_percentuale', 0)
-        sconto_fisso = data.get('sconto_fisso', 0)
-        note = data.get('note', '')
-        immagine_b64 = data.get('immagine_b64')
-        
-        sconto_totale = 0
-        if sconto_perc > 0:
-            sconto_totale = (prezzo_unitario * sconto_perc) / 100
-        else:
-            sconto_totale = sconto_fisso
-        
-        subtotale = (prezzo_unitario - sconto_totale) * quantita
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute('''INSERT INTO stanza_voci 
-                    (stanza_id, tipo, codice, brand, descrizione, quantita, udm, 
-                     prezzo_unitario, sconto_percentuale, sconto_fisso, subtotale, 
-                     note, immagine_b64, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                 (sid, tipo, codice, brand, descrizione, quantita, udm,
-                  prezzo_unitario, sconto_perc, sconto_fisso, subtotale,
-                  note, immagine_b64, datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        voce_id = c.lastrowid
-        
-        c.execute("SELECT SUM(subtotale) FROM stanza_voci WHERE stanza_id = ?", (sid,))
-        totale_stanza = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?",
-                 (totale_stanza, datetime.now().isoformat(), sid))
-        
-        c.execute('''SELECT piano_id FROM stanze WHERE id = ?''', (sid,))
-        piano_id = c.fetchone()[0]
-        
-        c.execute("SELECT SUM(totale_stanza) FROM stanze WHERE piano_id = ?", (piano_id,))
-        totale_piano = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?",
-                 (totale_piano, datetime.now().isoformat(), piano_id))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'voce_id': voce_id,
-            'subtotale': round(subtotale, 2),
-            'totale_stanza': round(totale_stanza, 2),
-            'totale_piano': round(totale_piano, 2)
-        }), 201
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stanza_voci/<int:vid>', methods=['PUT'])
-def modifica_voce_endpoint(vid):
-    """Modifica voce (prezzo, quantità, sconto, descrizione)"""
-    try:
-        data = request.get_json()
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute('''SELECT stanza_id, prezzo_unitario, quantita FROM stanza_voci WHERE id = ?''', (vid,))
-        row = c.fetchone()
-        if not row:
-            conn.close()
-            return jsonify({'error': 'Voce non trovata'}), 404
-        
-        stanza_id, _, _ = row
-        
-        prezzo = data.get('prezzo_unitario')
-        quantita = data.get('quantita')
-        sconto_perc = data.get('sconto_percentuale')
-        sconto_fisso = data.get('sconto_fisso')
-        descrizione = data.get('descrizione')
-        note = data.get('note')
-        
-        update_fields = []
-        params = []
-        
-        if prezzo is not None:
-            update_fields.append('prezzo_unitario = ?')
-            params.append(prezzo)
-        if quantita is not None:
-            update_fields.append('quantita = ?')
-            params.append(quantita)
-        if sconto_perc is not None:
-            update_fields.append('sconto_percentuale = ?')
-            params.append(sconto_perc)
-        if sconto_fisso is not None:
-            update_fields.append('sconto_fisso = ?')
-            params.append(sconto_fisso)
-        if descrizione is not None:
-            update_fields.append('descrizione = ?')
-            params.append(descrizione)
-        if note is not None:
-            update_fields.append('note = ?')
-            params.append(note)
-        
-        if update_fields:
-            update_fields.append('updated_at = ?')
-            params.append(datetime.now().isoformat())
-            params.append(vid)
-            
-            sql = f"UPDATE stanza_voci SET {', '.join(update_fields)} WHERE id = ?"
-            c.execute(sql, params)
-        
-        c.execute('''SELECT prezzo_unitario, quantita, sconto_percentuale, sconto_fisso 
-                    FROM stanza_voci WHERE id = ?''', (vid,))
-        pu, qty, sc_perc, sc_fisso = c.fetchone()
-        
-        sconto_tot = 0
-        if sc_perc > 0:
-            sconto_tot = (pu * sc_perc) / 100
-        else:
-            sconto_tot = sc_fisso
-        
-        subtotale = (pu - sconto_tot) * qty
-        
-        c.execute("UPDATE stanza_voci SET subtotale = ? WHERE id = ?", (subtotale, vid))
-        
-        c.execute("SELECT SUM(subtotale) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
-        totale_stanza = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?",
-                 (totale_stanza, datetime.now().isoformat(), stanza_id))
-        
-        c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
-        piano_id = c.fetchone()[0]
-        
-        c.execute("SELECT SUM(totale_stanza) FROM stanze WHERE piano_id = ?", (piano_id,))
-        totale_piano = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?",
-                 (totale_piano, datetime.now().isoformat(), piano_id))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'voce_id': vid,
-            'subtotale': round(subtotale, 2),
-            'totale_stanza': round(totale_stanza, 2),
-            'totale_piano': round(totale_piano, 2)
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stanza_voci/<int:vid>', methods=['DELETE'])
-def rimuovi_voce_endpoint(vid):
-    """Rimuovi voce da stanza"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute("SELECT stanza_id FROM stanza_voci WHERE id = ?", (vid,))
-        row = c.fetchone()
-        if not row:
-            conn.close()
-            return jsonify({'error': 'Voce non trovata'}), 404
-        
-        stanza_id = row[0]
-        
-        c.execute("DELETE FROM stanza_voci WHERE id = ?", (vid,))
-        
-        c.execute("SELECT SUM(subtotale) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
-        totale_stanza = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?",
-                 (totale_stanza, datetime.now().isoformat(), stanza_id))
-        
-        c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
-        piano_id = c.fetchone()[0]
-        
-        c.execute("SELECT SUM(totale_stanza) FROM stanze WHERE piano_id = ?", (piano_id,))
-        totale_piano = c.fetchone()[0] or 0
-        
-        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?",
-                 (totale_piano, datetime.now().isoformat(), piano_id))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'totale_stanza': round(totale_stanza, 2)}), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/cantieri/<int:cid>/struttura', methods=['GET'])
-def leggi_struttura_cantiere_endpoint(cid):
-    """Legge TUTTA la struttura: piani/stanze/voci con totali"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute('''SELECT id, numero, nome, totale_piano FROM piani 
-                    WHERE cantiere_id = ? ORDER BY numero''', (cid,))
-        piani_data = []
-        totale_generale = 0
-        
-        for piano_id, numero, nome, tot_piano in c.fetchall():
-            tot_piano = tot_piano or 0
-            totale_generale += tot_piano
-            
-            c.execute('''SELECT id, nome, descrizione, totale_stanza FROM stanze 
-                        WHERE piano_id = ? ORDER BY id''', (piano_id,))
-            stanze_data = []
-            
-            for stanza_id, stanza_nome, descr, tot_stanza in c.fetchall():
-                tot_stanza = tot_stanza or 0
-                
-                c.execute('''SELECT id, tipo, codice, brand, descrizione, quantita, udm,
-                                   prezzo_unitario, sconto_percentuale, sconto_fisso, subtotale
-                            FROM stanza_voci WHERE stanza_id = ? ORDER BY id''', (stanza_id,))
-                voci_data = []
-                
-                for (v_id, tipo, cod, brand, desc, qty, udm_val,
-                     prezzo, sc_perc, sc_fisso, subtot) in c.fetchall():
-                    voci_data.append({
-                        'id': v_id,
-                        'tipo': tipo,
-                        'codice': cod,
-                        'brand': brand,
-                        'descrizione': desc,
-                        'quantita': qty,
-                        'udm': udm_val,
-                        'prezzo_unitario': prezzo,
-                        'sconto_percentuale': sc_perc,
-                        'sconto_fisso': sc_fisso,
-                        'subtotale': subtot
-                    })
-                
-                stanze_data.append({
-                    'id': stanza_id,
-                    'nome': stanza_nome,
-                    'descrizione': descr,
-                    'totale_stanza': round(tot_stanza, 2),
-                    'voci': voci_data
-                })
-            
-            piani_data.append({
-                'id': piano_id,
-                'numero': numero,
-                'nome': nome,
-                'totale_piano': round(tot_piano, 2),
-                'stanze': stanze_data
-            })
-        
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'cantiere_id': cid,
-            'piani': piani_data,
-            'totale_generale': round(totale_generale, 2)
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 # ---------------------------------------------------------------------------
 # API AUTH
@@ -1099,6 +457,128 @@ def sa_delete_utente(uid):
     return jsonify({"ok": True})
 
 # ---------------------------------------------------------------------------
+# MODALITA SEMPLICE/PIANI - Switch intelligente
+# ---------------------------------------------------------------------------
+
+@app.route('/api/cantieri/<int:cid>/modalita', methods=['GET'])
+def get_modalita_cantiere(cid):
+    """Legge modalita cantiere: 'semplice' o 'piani'"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT modalita FROM cantieri WHERE id = ?", (cid,))
+        row = c.fetchone()
+        conn.close()
+        modalita = row[0] if row else 'semplice'
+        return jsonify({'modalita': modalita}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cantieri/<int:cid>/modalita', methods=['PUT'])
+def set_modalita_cantiere(cid):
+    """Cambia modalita cantiere"""
+    try:
+        data = request.get_json()
+        nuova_modalita = data.get('modalita', 'semplice')
+        
+        if nuova_modalita not in ['semplice', 'piani']:
+            return jsonify({'error': 'Modalita non valida'}), 400
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE cantieri SET modalita = ?, data_aggiornamento = ? WHERE id = ?",
+                 (nuova_modalita, datetime.now().isoformat(), cid))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'ok': True,
+            'cantiere_id': cid,
+            'modalita': nuova_modalita,
+            'message': f'Convertito a modalita {nuova_modalita}'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cantieri/<int:cid>/struttura', methods=['GET'])
+def get_struttura_piani(cid):
+    """Legge struttura piani/stanze/voci"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, numero, nome, totale_piano FROM piani WHERE cantiere_id = ? ORDER BY numero", (cid,))
+        piani_rows = c.fetchall()
+        
+        piani = []
+        for pid, num, nome, tot_piano in piani_rows:
+            c.execute("SELECT id, nome, descrizione, totale_stanza FROM stanze WHERE piano_id = ? ORDER BY nome", (pid,))
+            stanze_rows = c.fetchall()
+            
+            stanze = []
+            for sid, snome, sdescrizione, tot_stanza in stanze_rows:
+                c.execute("""SELECT id, codice, brand, descrizione, quantita, udm, prezzo_unitario, 
+                                    sconto_percentuale, sconto_fisso, subtotale
+                             FROM stanza_voci WHERE stanza_id = ? ORDER BY created_at""", (sid,))
+                voci_rows = c.fetchall()
+                
+                voci = []
+                for vid, codice, brand, descrizione, qty, udm, prezzo, sconto_perc, sconto_fisso, subtotale in voci_rows:
+                    voci.append({
+                        'id': vid,
+                        'codice': codice,
+                        'brand': brand,
+                        'descrizione': descrizione,
+                        'quantita': qty,
+                        'udm': udm,
+                        'prezzo_unitario': prezzo or 0,
+                        'sconto_percentuale': sconto_perc or 0,
+                        'sconto_fisso': sconto_fisso or 0,
+                        'subtotale': subtotale or 0
+                    })
+                
+                stanze.append({
+                    'id': sid,
+                    'nome': snome,
+                    'descrizione': sdescrizione,
+                    'totale_stanza': tot_stanza or 0,
+                    'voci': voci
+                })
+            
+            piani.append({
+                'id': pid,
+                'numero': num,
+                'nome': nome,
+                'totale_piano': tot_piano or 0,
+                'stanze': stanze
+            })
+        
+        conn.close()
+        return jsonify({'ok': True, 'piani': piani}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cantieri/<int:cid>/piani', methods=['POST'])
+def create_piano(cid):
+    """Crea un nuovo piano nel cantiere"""
+    try:
+        data = request.get_json()
+        numero = data.get('numero', 1)
+        nome = data.get('nome', f'Piano {numero}')
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)''',
+                 (cid, numero, nome, 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        piano_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'ok': True, 'piano_id': piano_id, 'numero': numero, 'nome': nome}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # API CANTIERI
 # ---------------------------------------------------------------------------
 
@@ -2414,7 +1894,7 @@ button { padding: 8px 12px; background: #3b82f6; color: white; border: none; bor
 button:hover { opacity: 0.85; }
 .btn-green { background: #10b981; }
 .btn-red { background: #ef4444; }
-.btn-gray { background: #e5e7eb; }
+.btn-gray { background: #6b7280; }
 .btn-purple { background: #8b5cf6; }
 .btn-sm { padding: 4px 8px; font-size: 10px; margin-bottom: 0; }
 .dropdown { background: rgba(30,41,59,0.95); border: 1px solid rgba(59,130,245,0.5); border-radius: 6px; padding: 8px; max-height: 220px; overflow-y: auto; display: none; margin-bottom: 8px; }
@@ -2430,13 +1910,13 @@ button:hover { opacity: 0.85; }
 .message img { max-width: 100%; max-height: 180px; margin-top: 6px; border-radius: 4px; }
 .input-area { display: flex; gap: 8px; }
 input[type=text], input[type=password], input[type=number], select, textarea { padding: 8px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 11px; }
-input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7eb; }
+input[type=text]::placeholder, input[type=password]::placeholder { color: #6b7280; }
 .title { color: #3b82f6; font-size: 20px; font-weight: 700; margin-bottom: 12px; }
 .btn-3pulsanti { display: flex; gap: 6px; margin-bottom: 10px; }
 .btn-3pulsanti button { flex: 1; padding: 7px; font-size: 10px; }
 .toggle-btn { width: 100%; padding: 7px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; margin-bottom: 6px; font-size: 11px; }
 .toggle-on { background: #10b981; color: white; }
-.toggle-off { background: #e5e7eb; color: white; }
+.toggle-off { background: #6b7280; color: white; }
 .module-box { background: rgba(30,41,59,0.6); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
 .module-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; cursor: pointer; }
 .module-header:hover { background: rgba(59,130,245,0.1); }
@@ -2446,7 +1926,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 .cantiere-item { background: rgba(59,130,245,0.1); border-radius: 4px; padding: 6px 8px; margin: 4px 0; font-size: 11px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
 .cantiere-item:hover { background: rgba(59,130,245,0.2); }
 .stato-badge { padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; }
-.stato-bozza { background: #e5e7eb; color: white; }
+.stato-bozza { background: #6b7280; color: white; }
 .stato-inviata { background: #3b82f6; color: white; }
 .stato-vinta { background: #10b981; color: white; }
 .stato-persa { background: #ef4444; color: white; }
@@ -2468,11 +1948,11 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 .drawer-title { font-size: 15px; font-weight: 700; color: #60a5fa; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 0; }
 .drawer-section { border-bottom: 1px solid rgba(59,130,245,0.15); padding: 10px 12px; }
-.drawer-section-title { font-size: 10px; font-weight: 700; color: #e5e7eb; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+.drawer-section-title { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
 .riga-card { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; padding: 8px 12px; margin: 5px 0; display: flex; align-items: center; justify-content: space-between; }
 .riga-card-info { flex: 1; }
 .riga-card-brand { font-size: 12px; font-weight: 600; color: #60a5fa; }
-.riga-card-cat { font-size: 11px; color: #d1d5db; }
+.riga-card-cat { font-size: 11px; color: #9ca3af; }
 .riga-card-importo { font-size: 13px; font-weight: 700; color: #10b981; margin: 0 12px; white-space: nowrap; }
 .totale-bar { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); border-radius: 6px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
 .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
@@ -2486,7 +1966,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 .listino-search { flex: 1; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; padding: 8px 12px; font-size: 12px; }
 .listino-body { flex: 1; overflow-y: auto; padding: 12px 18px; }
 .filtri-bar { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-.filtro-btn { padding: 4px 10px; font-size: 10px; border-radius: 20px; border: 1px solid rgba(59,130,245,0.3); background: transparent; color: #d1d5db; cursor: pointer; margin-bottom: 0; }
+.filtro-btn { padding: 4px 10px; font-size: 10px; border-radius: 20px; border: 1px solid rgba(59,130,245,0.3); background: transparent; color: #9ca3af; cursor: pointer; margin-bottom: 0; }
 .filtro-btn.active { background: rgba(59,130,245,0.4); color: white; border-color: #3b82f6; }
 .domande-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .domanda-chip { padding: 5px 10px; font-size: 10px; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; border-radius: 20px; cursor: pointer; margin-bottom: 0; }
@@ -2496,9 +1976,9 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 .prodotto-card:hover { border-color: rgba(59,130,245,0.6); }
 .prodotto-card.su-ordine { border-left: 3px solid #f59e0b; }
 .prodotto-card.disponibile { border-left: 3px solid #10b981; }
-.prodotto-codice { font-size: 9px; color: #e5e7eb; font-family: monospace; margin-bottom: 3px; }
+.prodotto-codice { font-size: 9px; color: #6b7280; font-family: monospace; margin-bottom: 3px; }
 .prodotto-nome { font-size: 12px; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; }
-.prodotto-cat { font-size: 10px; color: #d1d5db; margin-bottom: 6px; }
+.prodotto-cat { font-size: 10px; color: #9ca3af; margin-bottom: 6px; }
 .prodotto-prezzo-excel { color: #10b981; font-weight: 700; font-size: 13px; }
 .prodotto-prezzo-web { color: #ef4444; font-weight: 700; font-size: 13px; }
 .prodotto-prezzo-sc { color: #f59e0b; font-size: 11px; text-decoration: line-through; margin-left: 4px; }
@@ -2514,7 +1994,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 /* EXCEL PANEL */
 .excel-row { background: rgba(30,41,59,0.9); border: 1px solid rgba(59,130,245,0.15); border-radius: 6px; padding: 8px 10px; margin: 4px 0; font-size: 11px; }
 .excel-row-header { display: flex; align-items: center; gap: 8px; }
-.excel-codice { color: #d1d5db; font-size: 10px; font-family: monospace; }
+.excel-codice { color: #9ca3af; font-size: 10px; font-family: monospace; }
 .excel-desc { flex: 1; color: #e0e0e0; font-size: 11px; }
 .prezzo-excel { color: #10b981; font-weight: 700; font-size: 12px; }
 .prezzo-web { color: #ef4444; font-weight: 700; font-size: 12px; }
@@ -2585,7 +2065,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <h2>Accesso privato</h2>
     <input type="password" id="access-code" placeholder="Codice accesso..." style="width: 100%; margin-bottom: 6px;">
     <button onclick="toggleAccess()" style="width: 100%;">Attiva</button>
-    <div style="font-size: 10px; color: #d1d5db; margin-top: 4px;" id="access-status">Accesso: PUBBLICO</div>
+    <div style="font-size: 10px; color: #9ca3af; margin-top: 4px;" id="access-status">Accesso: PUBBLICO</div>
     <h2 style="margin-top: 10px;">Web search</h2>
     <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()">ON</button>
     <h2>Upload documenti</h2>
@@ -2604,23 +2084,22 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
       Upload Excel <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
     </label>
-    <div id="upload-status" style="font-size:10px; color:#d1d5db; margin-top:2px;"></div>
+    <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
     <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
     <button onclick="caricaAbbinamentiEProdotti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Listino + Abbinamenti</button>
-    <div id="abbinamenti-status" style="font-size:10px; color:#d1d5db; margin-top:2px;"></div>
+    <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
+    <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica URL Immagini Gessi</button>
   </div>
 
   <!-- CENTRO -->
   <div class="main">
     <div class="title">Oracolo Covolo</div>
     <div class="btn-3pulsanti" id="btn-3pulsanti">
-      <button class="btn-green" onclick="creaOfferta()">📄 CREA OFFERTA</button>
       <button class="btn-green" onclick="generateOfferta()">OFFERTA</button>
       <button class="btn-green" onclick="generateAnalisi()">ANALISI</button>
       <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
       <button style="background:#8b5cf6;" onclick="apriListino()">📋 LISTINO</button>
     </div>
-    <div id="offerta-info" style="font-size:10px; color:#10b981; margin:4px 0; padding:4px; background:rgba(16,185,129,0.1); border-radius:4px; display:none;"></div>
     <div class="chat-area" id="chat"></div>
     <div class="input-area">
       <input type="text" id="question" placeholder="Domanda libera o cerca prodotto..." onkeypress="if(event.key==='Enter') ask()" oninput="cercaRapidaListino(this.value)" style="flex: 1;">
@@ -2662,7 +2141,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 
     <!-- GRIGLIA PRODOTTI -->
     <div class="listino-body">
-      <div id="listino-count" style="font-size:10px; color:#e5e7eb; margin-bottom:8px;"></div>
+      <div id="listino-count" style="font-size:10px; color:#6b7280; margin-bottom:8px;"></div>
       <div class="prodotti-grid" id="prodotti-grid"></div>
     </div>
   </div>
@@ -2705,7 +2184,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
             <div id="sa-moduli-list" style="font-size:11px;"></div>
           </div>
           <div style="border-top: 1px solid rgba(59,130,245,0.2); padding-top: 8px; margin-top: 4px;">
-            <div style="font-size: 11px; font-weight: 600; color: #d1d5db; margin-bottom: 6px;">Nuovo utente</div>
+            <div style="font-size: 11px; font-weight: 600; color: #9ca3af; margin-bottom: 6px;">Nuovo utente</div>
             <input type="text" id="sa-u-nome" placeholder="Nome..." style="width:100%; margin-bottom:4px;">
             <input type="text" id="sa-u-username" placeholder="Username..." style="width:100%; margin-bottom:4px;">
             <input type="password" id="sa-u-pwd" placeholder="Password..." style="width:100%; margin-bottom:4px;">
@@ -2731,7 +2210,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <div class="module-box" id="mod-cantieri" style="display:none;">
       <div class="module-header" onclick="toggleModule('cantieri-body')">
         <span class="module-title">Cantieri</span>
-        <span id="cantieri-count" style="font-size:10px; color:#d1d5db;">0</span>
+        <span id="cantieri-count" style="font-size:10px; color:#9ca3af;">0</span>
       </div>
       <div class="module-body" id="cantieri-body">
         <div style="display: flex; gap: 4px; margin-bottom: 8px;">
@@ -2746,15 +2225,15 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <div class="module-box" id="mod-bi" style="display:none;">
       <div class="module-header" onclick="toggleModule('bi-body'); loadBI();">
         <span class="module-title">BI / Statistiche</span>
-        <span style="font-size:10px; color:#d1d5db;">admin</span>
+        <span style="font-size:10px; color:#9ca3af;">admin</span>
       </div>
       <div class="module-body" id="bi-body">
         <div id="bi-stats"></div>
         <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
-          <div style="font-size:11px; font-weight:600; color:#d1d5db; margin-bottom:6px;">Pulizia archivio</div>
+          <div style="font-size:11px; font-weight:600; color:#9ca3af; margin-bottom:6px;">Pulizia archivio</div>
           <input type="date" id="bi-da" style="width:100%; margin-bottom:4px;">
           <input type="date" id="bi-a" style="width:100%; margin-bottom:4px;">
-          <div style="font-size:10px; color:#d1d5db; margin-bottom:4px;">Stati da eliminare:</div>
+          <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">Stati da eliminare:</div>
           <label style="font-size:10px; display:block;"><input type="checkbox" value="vinta" id="del-vinta"> Vinte</label>
           <label style="font-size:10px; display:block;"><input type="checkbox" value="persa" id="del-persa"> Perse</label>
           <label style="font-size:10px; display:block; margin-bottom:6px;"><input type="checkbox" value="bozza" id="del-bozza"> Bozze</label>
@@ -2767,7 +2246,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <div class="module-box" id="mod-commerciali" style="display:none;">
       <div class="module-header" onclick="toggleModule('comm-body')">
         <span class="module-title">Commerciali</span>
-        <span style="font-size:10px; color:#d1d5db;">admin</span>
+        <span style="font-size:10px; color:#9ca3af;">admin</span>
       </div>
       <div class="module-body" id="comm-body">
         <div id="comm-list" style="font-size:11px;"></div>
@@ -2777,15 +2256,15 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
   </div>
 </div>
 
-<!-- DRAWER DETTAGLIO CANTIERE - MODALITA SEMPLICE -->
-<div class="cantiere-drawer" id="cantiere-drawer-semplice">
+<!-- DRAWER DETTAGLIO CANTIERE -->
+<div class="cantiere-drawer" id="cantiere-drawer">
   <div class="drawer-header">
     <div>
       <div class="drawer-title" id="drawer-nome"></div>
-      <div style="font-size:11px; color:#d1d5db; margin-top:2px;">Gestione offerta</div>
+      <div style="font-size:11px; color:#9ca3af; margin-top:2px;">Gestione offerta</div>
     </div>
     <div style="display:flex; gap:8px; align-items:center;">
-      <button id="btn-switch-semplice" onclick="switchModalita()" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap; font-size:10px;">🔄 PIANI</button>
+      <button id="btn-switch-modalita" onclick="switchModalita()" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap; font-size:10px;">🔄 PIANI</button>
       <select id="cantiere-stato" style="font-size:11px; padding:5px 8px;" onchange="updateCantiere()">
         <option value="bozza">Bozza</option>
         <option value="inviata">Inviata</option>
@@ -2802,7 +2281,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
       <div class="drawer-section-title">Elementi nel carrello</div>
       <div id="righe-list"></div>
       <div class="totale-bar" id="totale-bar" style="display:none;">
-        <span style="font-size:12px; color:#d1d5db;">Totale offerta</span>
+        <span style="font-size:12px; color:#9ca3af;">Totale offerta</span>
         <span style="font-size:15px; font-weight:700; color:#10b981;" id="totale-valore">€0</span>
       </div>
     </div>
@@ -2879,7 +2358,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
     <div class="drawer-section">
       <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleExcelPanel()">
         ⚡ Importa da Excel / Voce libera
-        <span id="excel-panel-arrow" style="float:right; color:#d1d5db;">▼</span>
+        <span id="excel-panel-arrow" style="float:right; color:#9ca3af;">▼</span>
       </div>
       <div id="excel-panel" style="display:none;">
         <!-- Upload Excel -->
@@ -2888,7 +2367,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
             📊 Carica Excel prodotti
             <input type="file" id="excel-listino" accept=".xlsx,.xls" style="display:none" onchange="caricaExcelListino(this)">
           </label>
-          <div id="excel-status" style="font-size:10px; color:#d1d5db; margin-bottom:6px;"></div>
+          <div id="excel-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px;"></div>
         </div>
 
         <!-- Lista righe Excel -->
@@ -2898,7 +2377,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
         <div style="border-top:1px solid rgba(59,130,245,0.15); margin: 10px 0 8px 0;"></div>
 
         <!-- Voce manuale libera -->
-        <div style="font-size:10px; color:#d1d5db; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Voce manuale (trasporto, manodopera, ecc.)</div>
+        <div style="font-size:10px; color:#9ca3af; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Voce manuale (trasporto, manodopera, ecc.)</div>
         <input type="text" id="voce-desc" placeholder="Descrizione voce..." style="width:100%; margin-bottom:6px;">
         <div class="form-row">
           <input type="number" id="voce-importo" placeholder="Importo €" style="flex:1;">
@@ -2914,21 +2393,20 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
   </div>
 </div>
 
-<!-- DRAWER DETTAGLIO CANTIERE - MODALITA PIANI/STANZE -->
+<!-- DRAWER PIANI/STANZE/VOCI (NASCOSTO FINCHE NON CLICCHI SWITCH) -->
 <div class="cantiere-drawer" id="cantiere-drawer-piani" style="display:none;">
   <div class="drawer-header">
     <div>
       <div class="drawer-title" id="drawer-piani-nome"></div>
-      <div style="font-size:11px; color:#d1d5db; margin-top:2px;">Gestione per Piani/Stanze/Voci</div>
+      <div style="font-size:11px; color:#9ca3af; margin-top:2px;">Modalità Piani/Stanze</div>
     </div>
     <div style="display:flex; gap:8px; align-items:center;">
-      <button onclick="switchModalita()" id="btn-switch-piani" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap;">🔄 Passa a SEMPLICE</button>
+      <button id="btn-switch-indietro" onclick="switchModalita()" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap; font-size:10px;">🔄 SEMPLICE</button>
       <button onclick="closeCantiere()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
     </div>
   </div>
 
   <div class="drawer-body">
-    <!-- PANNELLO PIANI/STANZE/VOCI -->
     <div id="pannello-piani" style="flex:1; overflow-y:auto; padding:12px;">
       <div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">
         ⏳ Caricamento struttura piani...
@@ -2938,7 +2416,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
 
   <div class="drawer-footer">
     <button onclick="aggiungiPianoModal()" class="btn-green" style="flex:1; font-size:11px; margin-bottom:0;">➕ Piano</button>
-    <button onclick="generaOffertaDaPiani()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta</button>
+    <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta</button>
     <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">✕ Elimina</button>
   </div>
 </div>
@@ -3214,7 +2692,7 @@ function renderAccessoriHtml(ufficiali, alternative, esclusi) {
       html += '<div style="background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
         '<div style="flex:1;">' +
         '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
-        '<div style="font-size:10px; color:#d1d5db;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
         '</div>' +
         '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm btn-green" style="margin-bottom:0; white-space:nowrap;">✓ Aggiungi</button>' +
         '</div>';
@@ -3229,7 +2707,7 @@ function renderAccessoriHtml(ufficiali, alternative, esclusi) {
       html += '<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
         '<div style="flex:1;">' +
         '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
-        '<div style="font-size:10px; color:#d1d5db;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
         '</div>' +
         '<button onclick="aggiungiAccessorioAlCantiere(\'' + (acc.id||'').replace(/'/g,"\\'") + '\',\'' + (acc.nome||'').replace(/'/g,"\\'") + '\',\'' + (acc.brand||'').replace(/'/g,"\\'") + '\')" class="btn-sm" style="background:rgba(245,158,11,0.2); color:#f59e0b; margin-bottom:0; white-space:nowrap;">+ Aggiungi</button>' +
         '</div>';
@@ -3243,7 +2721,7 @@ function renderAccessoriHtml(ufficiali, alternative, esclusi) {
     esclusi.forEach(acc => {
       html += '<div style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:8px; margin-bottom:4px; opacity:0.6;">' +
         '<div style="font-size:11px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
-        '<div style="font-size:10px; color:#d1d5db;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
+        '<div style="font-size:10px; color:#9ca3af;">' + (acc.id || '') + ' · ' + (acc.brand || '') + '</div>' +
         '<div style="font-size:9px; color:#fca5a5; margin-top:3px;">⚠️ Non compatibile con il prodotto principale</div>' +
         '</div>';
     });
@@ -3283,75 +2761,23 @@ function addCantiere() {
 
 function openCantiere(id, nome, stato) {
   cantiereAttivo = id;
+  document.getElementById('drawer-nome').textContent = nome;
+  document.getElementById('cantiere-stato').value = stato;
+  document.getElementById('cantiere-drawer').classList.add('open');
   
-  // 🔴 DECIDI QUALE DRAWER CARICARE
+  // Aggiorna bottone switch modalita
   fetch('/api/cantieri/' + id + '/modalita')
     .then(r => r.json())
     .then(d => {
-      const modalita = d.modalita || 'semplice';
-      
-      // Nascondi entrambi i drawer
-      const ds = document.getElementById('cantiere-drawer-semplice');
-      const dp = document.getElementById('cantiere-drawer-piani');
-      if (ds) ds.classList.remove('open');
-      if (dp) dp.classList.remove('open');
-      
-      if (modalita === 'piani') {
-        // ✅ MODALITA PIANI
-        if (dp) {
-          dp.classList.add('open');
-          caricaDrawerPiani(id, nome);
-        }
-      } else {
-        // ✅ MODALITA SEMPLICE (default)
-        if (ds) {
-          ds.classList.add('open');
-          caricaDrawerSemplice(id, nome, stato);
-        }
-      }
-    })
-    .catch(e => {
-      console.error('Errore modalita:', e);
-      // Fallback: carica semplice
-      const ds = document.getElementById('cantiere-drawer-semplice');
-      if (ds) {
-        ds.classList.add('open');
-        caricaDrawerSemplice(id, nome, stato);
+      const btn = document.getElementById('btn-switch-modalita');
+      if (btn) {
+        const modalita = d.modalita || 'semplice';
+        btn.textContent = modalita === 'semplice' ? '🔄 PIANI' : '🔄 SEMPLICE';
       }
     });
-}
-
-function caricaDrawerSemplice(id, nome, stato) {
-  // Carica il drawer SEMPLICE (attuale)
-  document.getElementById('drawer-nome').textContent = nome;
-  document.getElementById('cantiere-stato').value = stato;
+  
   precompilaBrandDrawer();
   loadRighe();
-  aggiornaBottoneSwitchModalita('semplice');
-}
-
-function caricaDrawerPiani(id, nome) {
-  // Carica il drawer PIANI/STANZE
-  if (!document.getElementById('drawer-piani-nome')) return;
-  document.getElementById('drawer-piani-nome').textContent = nome;
-  loadStrutturaPiani(id);
-  aggiornaBottoneSwitchModalita('piani');
-}
-
-function aggiornaBottoneSwitchModalita(modalita) {
-  const btnSemplice = document.getElementById('btn-switch-semplice');
-  const btnPiani = document.getElementById('btn-switch-piani');
-  if (btnSemplice) {
-    if (modalita === 'semplice') {
-      btnSemplice.textContent = '✓ MODALITA SEMPLICE';
-      btnSemplice.style.background = '#3b82f6';
-      if (btnPiani) { btnPiani.textContent = '🔄 Passa a PIANI'; btnPiani.style.background = 'rgba(59,130,245,0.3)'; }
-    } else {
-      if (btnPiani) { btnPiani.textContent = '✓ MODALITA PIANI'; btnPiani.style.background = '#3b82f6'; }
-      btnSemplice.textContent = '🔄 Passa a SEMPLICE';
-      btnSemplice.style.background = 'rgba(59,130,245,0.3)';
-    }
-  }
 }
 
 function switchModalita() {
@@ -3363,7 +2789,7 @@ function switchModalita() {
       const modalitaAttuale = d.modalita || 'semplice';
       const nuova = modalitaAttuale === 'semplice' ? 'piani' : 'semplice';
       
-      const msg = `Convertire a modalità ${nuova.toUpperCase()}?\n\nI dati verranno preservati e convertiti automaticamente.`;
+      const msg = `Convertire a modalità ${nuova.toUpperCase()}?\n\nI dati verranno preservati.`;
       if (!confirm(msg)) return;
       
       fetch('/api/cantieri/' + cantiereAttivo + '/modalita', {
@@ -3374,23 +2800,117 @@ function switchModalita() {
       .then(r => r.json())
       .then(d => {
         if (d.ok) {
-          const ds = document.getElementById('cantiere-drawer-semplice');
-          const dp = document.getElementById('cantiere-drawer-piani');
-          const nomeCantiere = (document.getElementById('drawer-nome') ? document.getElementById('drawer-nome').textContent : '') ||
-                              (document.getElementById('drawer-piani-nome') ? document.getElementById('drawer-piani-nome').textContent : '');
-          const stato = document.getElementById('cantiere-stato') ? document.getElementById('cantiere-stato').value : 'bozza';
+          const nomeCantiere = document.getElementById('drawer-nome').textContent || 
+                               document.getElementById('drawer-piani-nome').textContent;
+          const stato = document.getElementById('cantiere-stato').value;
           
-          if (ds) ds.classList.remove('open');
-          if (dp) dp.classList.remove('open');
+          // Nascondi entrambi i drawer
+          document.getElementById('cantiere-drawer').classList.remove('open');
+          document.getElementById('cantiere-drawer-piani').classList.remove('open');
           
+          // Aspetta transizione e riapri con modalita corretta
           setTimeout(() => {
-            openCantiere(cantiereAttivo, nomeCantiere, stato);
+            if (nuova === 'piani') {
+              // Mostra drawer PIANI
+              document.getElementById('drawer-piani-nome').textContent = nomeCantiere;
+              document.getElementById('cantiere-drawer-piani').classList.add('open');
+              loadStrutturaPiani(cantiereAttivo);
+            } else {
+              // Mostra drawer SEMPLICE
+              document.getElementById('drawer-nome').textContent = nomeCantiere;
+              document.getElementById('cantiere-stato').value = stato;
+              document.getElementById('cantiere-drawer').classList.add('open');
+              precompilaBrandDrawer();
+              loadRighe();
+            }
           }, 300);
         } else {
           alert('❌ Errore: ' + d.error);
         }
       });
     });
+}
+
+function loadStrutturaPiani(cantiere_id) {
+  const pannello = document.getElementById('pannello-piani');
+  if (!pannello) return;
+  
+  pannello.innerHTML = '<div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">⏳ Caricamento...</div>';
+  
+  fetch('/api/cantieri/' + cantiere_id + '/struttura')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) {
+        pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ Errore: ' + d.error + '</div>';
+        return;
+      }
+      
+      const piani = d.piani || [];
+      let html = '';
+      
+      if (piani.length === 0) {
+        html = '<div style="color:#d1d5db; padding:12px; text-align:center; font-size:11px;">Nessun piano. Clicca "➕ Piano" per crearne uno.</div>';
+      } else {
+        piani.forEach(p => {
+          html += `<div style="background:rgba(59,130,245,0.15); border:1px solid rgba(59,130,245,0.3); border-radius:6px; margin-bottom:10px; padding:12px;">
+            <div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+              <span>Piano ${p.numero}: ${p.nome}</span>
+              <span style="font-size:11px; color:#10b981; background:rgba(16,185,129,0.1); padding:4px 8px; border-radius:4px;">€${p.totale_piano.toFixed(2)}</span>
+            </div>`;
+          
+          const stanze = p.stanze || [];
+          stanze.forEach(s => {
+            html += `<div style="background:rgba(30,41,59,0.6); border-left:3px solid #8b5cf6; border-radius:4px; padding:8px; margin:6px 0; font-size:11px;">
+              <div style="color:#d1d5db; font-weight:bold; display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span>🏠 ${s.nome}</span>
+                <span style="color:#10b981;">€${s.totale_stanza.toFixed(2)}</span>
+              </div>`;
+            
+            const voci = s.voci || [];
+            if (voci.length === 0) {
+              html += '<div style="padding:4px 0; font-size:10px; color:#9ca3af; font-style:italic;">Nessuna voce</div>';
+            } else {
+              voci.forEach(v => {
+                html += `<div style="padding:4px 0; font-size:10px; color:#e5e7eb; display:flex; justify-content:space-between; border-bottom:1px solid rgba(59,130,245,0.1);">
+                  <span>[${v.codice||'—'}] ${v.brand ? v.brand + ' - ' : ''}${v.descrizione}</span>
+                  <span style="color:#93c5fd; font-weight:bold;">€${v.subtotale.toFixed(2)}</span>
+                </div>`;
+              });
+            }
+            
+            html += `</div>`;
+          });
+          
+          html += `</div>`;
+        });
+      }
+      
+      pannello.innerHTML = html;
+    })
+    .catch(e => {
+      pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ ' + e.message + '</div>';
+    });
+}
+
+function aggiungiPianoModal() {
+  if (!cantiereAttivo) return;
+  const nome = prompt('Nome del piano (es. "Piano 1", "Primo livello"):');
+  if (!nome || !nome.trim()) return;
+  
+  fetch('/api/cantieri/' + cantiereAttivo + '/piani', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ numero: 1, nome: nome.trim() })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadStrutturaPiani(cantiereAttivo);
+    } else {
+      alert('❌ Errore: ' + (d.error || 'Errore sconosciuto'));
+    }
+  })
+  .catch(e => alert('❌ Errore: ' + e.message));
 }
 
 function precompilaBrandDrawer() {
@@ -3411,7 +2931,7 @@ function precompilaBrandDrawer() {
       const brandRow = document.querySelector('.form-row');
       if (brandRow) brandRow.parentNode.insertBefore(container, brandRow);
     }
-    container.innerHTML = '<div style="font-size:10px;color:#d1d5db;width:100%;margin-bottom:2px;">Seleziona brand per questa riga:</div>' +
+    container.innerHTML = '<div style="font-size:10px;color:#9ca3af;width:100%;margin-bottom:2px;">Seleziona brand per questa riga:</div>' +
       selected.map(b =>
         '<button type="button" onclick="setBrandRiga(\'' + b.replace(/'/g,"\\'") + '\')" ' +
         'style="padding:3px 8px;font-size:10px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);color:#93c5fd;border-radius:4px;cursor:pointer;margin-bottom:0;">' + b + '</button>'
@@ -3438,10 +2958,7 @@ function setBrandRiga(brand) {
 
 function closeCantiere() {
   cantiereAttivo = null;
-  const ds = document.getElementById('cantiere-drawer-semplice');
-  const dp = document.getElementById('cantiere-drawer-piani');
-  if (ds) ds.classList.remove('open');
-  if (dp) dp.classList.remove('open');
+  document.getElementById('cantiere-drawer').classList.remove('open');
 }
 
 function updateCantiere() {
@@ -3465,7 +2982,7 @@ function loadRighe() {
     let totale = 0;
     righe.forEach(r => { totale += (r.importo || 0); });
     document.getElementById('righe-list').innerHTML = righe.length === 0
-      ? '<div style="color:#e5e7eb; font-size:11px; text-align:center; padding:12px 0;">Nessun elemento aggiunto</div>'
+      ? '<div style="color:#6b7280; font-size:11px; text-align:center; padding:12px 0;">Nessun elemento aggiunto</div>'
       : righe.map(r => {
           const desc = (r.descrizione || '').replace(/^Da Oracolo\s*[—-]\s*/i, '');
           const cat = (r.categoria && r.categoria !== 'Da Oracolo') ? r.categoria : '';
@@ -3584,66 +3101,30 @@ function generaOffertaCantiere() {
     if (righe.length === 0) { return; }
     const nome = document.getElementById('drawer-nome').textContent;
     let totale = 0;
-    let riepilogo = '';
-    let immaginiHtml = '';
-    
-    // Carica immagini per ogni riga
-    const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
-    let imgCaricate = 0;
-    let imgPromises = [];
-    
-    righe.forEach(r => {
+    const riepilogo = righe.map(r => {
       totale += (r.importo || 0);
       const prezzo = r.importo ? ' | Prezzo: €' + r.importo.toFixed(2) : ' | Prezzo: da definire';
-      riepilogo += '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + prezzo + '\n';
-      
-      // Cerca immagini associate (se il codice è nella descrizione)
-      const match = r.descrizione ? r.descrizione.match(/\[([^\]]+)\]/) : null;
-      if (match && r.brand) {
-        const codice = match[1];
-        const imgPromise = fetch('/api/immagine/' + encodeURIComponent(r.brand) + '/' + encodeURIComponent(codice))
-          .then(res => res.json())
-          .then(data => {
-            if (data.ok && data.thumbnail_base64) {
-              immaginiHtml += '<div style="display:inline-block; margin:8px; text-align:center;">' +
-                '<img src="' + data.thumbnail_base64 + '" style="width:120px; height:120px; object-fit:cover; border-radius:6px; border:2px solid #3b82f6; cursor:pointer;" onclick="window.open(\'' + data.url + '\',\'_blank\')" title="Clicca per aprire">' +
-                '<div style="font-size:10px; color:#e5e7eb; margin-top:4px;">' + (r.descrizione||'').substring(0,30) + '</div>' +
-                '</div>';
-            }
-          })
-          .catch(() => {}); // Silenzioso se non trova immagine
-        imgPromises.push(imgPromise);
-      }
-    });
-    
-    // Aspetta che tutte le immagini siano caricate
-    Promise.all(imgPromises).then(() => {
-      if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
-      
-      let domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
-        'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
-        'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
-        'La proposta deve:\n' +
-        '1. Avere un testo introduttivo professionale e convincente\n' +
-        '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
-        '3. Mostrare il totale finale in modo chiaro\n' +
-        '4. Chiudersi con una call to action per il cliente\n' +
-        'Usa un tono elegante, orientato al valore e alla qualità.';
-      
-      // Aggiungi info immagini se presenti
-      if (immaginiHtml) {
-        domanda += '\n\n[NOTA: Le immagini dei prodotti sono state caricate e dovrebbero apparire accanto a ogni voce nella proposta]';
-      }
-      
-      closeCantiere();
-      askDirect(domanda, brands, immaginiHtml);
-    });
+      return '- ' + (r.brand||'') + ' | ' + (r.categoria||'') + ' | ' + (r.descrizione||'') + prezzo;
+    }).join('\n');
+    const brands = [...new Set(righe.map(r => r.brand).filter(Boolean))];
+    if (brands.length === 0) { alert('Aggiungi brand alle righe'); return; }
+    const domanda = 'Genera una proposta commerciale professionale da presentare al cliente per il cantiere "' + nome + '".\n\n' +
+      'ELEMENTI DEL PROGETTO:\n' + riepilogo + '\n\n' +
+      'TOTALE OFFERTA: €' + totale.toFixed(2) + '\n\n' +
+      'La proposta deve:\n' +
+      '1. Avere un testo introduttivo professionale e convincente\n' +
+      '2. Elencare ogni voce con descrizione commerciale e prezzo\n' +
+      '3. Mostrare il totale finale in modo chiaro\n' +
+      '4. Chiudersi con una call to action per il cliente\n' +
+      'Usa un tono elegante, orientato al valore e alla qualità.';
+    closeCantiere();
+    askDirect(domanda, brands);
   });
 }
 
-function askDirect(domanda, brands, immaginiHtml = '') {
+function askDirect(domanda, brands) {
   const chat = document.getElementById('chat');
-  chat.innerHTML += '<div class="message"><strong>Tu:</strong> Genera offerta cantiere — ' + (document.getElementById('drawer-nome') ? document.getElementById('drawer-nome').textContent : brands.join(', ')) + '</div>';
+  chat.innerHTML += '<div class="message"><strong>Tu:</strong> Genera offerta cantiere — ' + document.getElementById('drawer-nome') ? '' : brands.join(', ') + '</div>';
   const loadingId = 'loading_' + Date.now();
   chat.innerHTML += '<div class="message" id="' + loadingId + '" style="opacity:0.6;font-style:italic">Oracolo sta elaborando l\'offerta...</div>';
   chat.scrollTop = chat.scrollHeight;
@@ -3659,19 +3140,9 @@ function askDirect(domanda, brands, immaginiHtml = '') {
       let html = '<div class="message oracolo-msg" id="' + msgId + '">';
       html += '<button class="copy-btn" onclick="copyRisposta(\'' + msgId + '\')">Copia</button>';
       html += '<div style="margin-top:6px;line-height:1.6">' + formatted + '</div>';
-      
-      // Mostra immagini SALVATE dal cantiere se presenti
-      if (immaginiHtml) {
-        html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
-        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">📸 Immagini Prodotti Selezionate</div>';
-        html += immaginiHtml;
-        html += '</div>';
-      }
-      
-      // Mostra immagini AGGIUNTIVE da web/API
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
-        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">🖼️ Immagini Aggiuntive</div>';
+        html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
         html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
         d.images.forEach(img => {
           html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
@@ -3679,10 +3150,9 @@ function askDirect(domanda, brands, immaginiHtml = '') {
           html += '</div>';
         });
         html += '</div></div>';
-      } else if (!immaginiHtml) {
+      } else {
         html += '<div style="margin-top:8px;"><a href="https://www.google.com/search?q=' + query + '&tbm=isch" target="_blank" style="display:inline-block;padding:5px 12px;background:rgba(59,130,245,0.2);border:1px solid rgba(59,130,245,0.4);border-radius:4px;color:#93c5fd;font-size:11px;text-decoration:none;">Cerca immagini</a></div>';
       }
-      
       html += '</div>';
       chat.innerHTML += html;
       chat.scrollTop = chat.scrollHeight;
@@ -3701,14 +3171,14 @@ function askDirect(domanda, brands, immaginiHtml = '') {
 function loadBI() {
   fetch('/api/bi/stats').then(r => r.json()).then(d => {
     const ps = d.per_stato || {};
-    let html = '<div style="font-size:11px;font-weight:600;color:#d1d5db;margin-bottom:4px;">Per stato</div>';
+    let html = '<div style="font-size:11px;font-weight:600;color:#9ca3af;margin-bottom:4px;">Per stato</div>';
     ['bozza','inviata','vinta','persa'].forEach(s => {
       if (ps[s]) html += '<div class="bi-stat"><span>' + s + '</span><span>' + ps[s] + '</span></div>';
     });
     html += '<div class="bi-stat" style="margin-top:4px;"><span>Valore vinto</span><span style="color:#10b981;">€' + (d.valore_vinto||0).toFixed(0) + '</span></div>';
     html += '<div class="bi-stat"><span>Valore aperto</span><span style="color:#3b82f6;">€' + (d.valore_aperto||0).toFixed(0) + '</span></div>';
     if (d.per_commerciale && d.per_commerciale.length > 0) {
-      html += '<div style="font-size:11px;font-weight:600;color:#d1d5db;margin-top:8px;margin-bottom:4px;">Per commerciale</div>';
+      html += '<div style="font-size:11px;font-weight:600;color:#9ca3af;margin-top:8px;margin-bottom:4px;">Per commerciale</div>';
       d.per_commerciale.forEach(pc => {
         html += '<div class="bi-stat"><span>' + pc.nome + '</span><span>' + pc.cantieri + ' | €' + pc.valore.toFixed(0) + '</span></div>';
       });
@@ -3824,7 +3294,7 @@ const FASCIA_LABEL = {
   luxury:  { label: 'Luxury',  color: '#f59e0b' },
   premium: { label: 'Premium', color: '#8b5cf6' },
   mid:     { label: 'Mid',     color: '#3b82f6' },
-  entry:   { label: 'Entry',   color: '#e5e7eb' },
+  entry:   { label: 'Entry',   color: '#6b7280' },
 };
 
 function switchTab(tab) {
@@ -3839,7 +3309,7 @@ function switchTab(tab) {
 function filterPerCategoria() {
   const sv = document.getElementById('search-cat').value.toLowerCase().trim();
   const container = document.getElementById('cat-results');
-  if (!sv) { container.innerHTML = '<div style="font-size:10px;color:#e5e7eb;padding:4px 0;">Digita una categoria...</div>'; return; }
+  if (!sv) { container.innerHTML = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Digita una categoria...</div>'; return; }
 
   // Trova brand che matchano la categoria cercata
   const risultati = { luxury: [], premium: [], mid: [], entry: [] };
@@ -3869,7 +3339,7 @@ function filterPerCategoria() {
   });
 
   if (totale === 0) {
-    html = '<div style="font-size:10px;color:#e5e7eb;padding:4px 0;">Nessun brand trovato per "' + sv + '"</div>';
+    html = '<div style="font-size:10px;color:#6b7280;padding:4px 0;">Nessun brand trovato per "' + sv + '"</div>';
   }
   container.innerHTML = html;
 }
@@ -4011,7 +3481,7 @@ function doUpload(input, tipo) {
   const file = input.files[0];
   if (!file) return;
   document.getElementById('upload-status').textContent = 'Caricamento...';
-  document.getElementById('upload-status').style.color = '#d1d5db';
+  document.getElementById('upload-status').style.color = '#9ca3af';
   const reader = new FileReader();
   reader.onload = function(e) {
     const filename = tipo === 'excel' ? file.name + ' [EXCEL]' : file.name;
@@ -4040,12 +3510,12 @@ function filtraDocumenti(tutti) {
   const brand = tutti ? '' : document.getElementById('filtro-doc-brand').value.trim();
   const url = brand ? '/api/list-documents?brand=' + encodeURIComponent(brand) : '/api/list-documents';
   const container = document.getElementById('doc-list-panel');
-  container.innerHTML = '<div style="color:#e5e7eb;font-size:11px;padding:12px 0;">Caricamento...</div>';
+  container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Caricamento...</div>';
 
   fetch(url).then(r => r.json()).then(d => {
     const docs = d.documents || [];
     if (docs.length === 0) {
-      container.innerHTML = '<div style="color:#e5e7eb;font-size:11px;padding:12px 0;">Nessun documento trovato' + (brand ? ' per "' + brand + '"' : '') + '</div>';
+      container.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:12px 0;">Nessun documento trovato' + (brand ? ' per "' + brand + '"' : '') + '</div>';
       return;
     }
     // Raggruppa per brand
@@ -4058,7 +3528,7 @@ function filtraDocumenti(tutti) {
 
     let html = '';
     Object.entries(grouped).sort().forEach(([b, bdocs]) => {
-      html += '<div style="font-size:10px;font-weight:700;color:#60a5fa;text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 6px 0;">' + b + ' <span style="color:#e5e7eb;font-weight:400;">(' + bdocs.length + ')</span></div>';
+      html += '<div style="font-size:10px;font-weight:700;color:#60a5fa;text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 6px 0;">' + b + ' <span style="color:#6b7280;font-weight:400;">(' + bdocs.length + ')</span></div>';
       bdocs.forEach(doc => {
         const isExcel = doc.filename.includes('[EXCEL]');
         const tipoHtml = isExcel
@@ -4067,13 +3537,13 @@ function filtraDocumenti(tutti) {
         const dataStr = doc.date ? doc.date.substring(0, 16).replace('T', ' ') : '—';
         const visHtml = doc.visibility === 'private'
           ? '<span style="font-size:9px;color:#f59e0b;">🔒 Privato</span>'
-          : '<span style="font-size:9px;color:#e5e7eb;">🌐 Pubblico</span>';
+          : '<span style="font-size:9px;color:#6b7280;">🌐 Pubblico</span>';
         const nomeFile = doc.filename.replace(' [EXCEL]', '');
         html += '<div class="doc-row" id="docrow-' + doc.id + '">' +
           tipoHtml +
           '<div style="flex:1;min-width:0;">' +
           '<div style="font-weight:600;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + nomeFile + '</div>' +
-          '<div style="color:#e5e7eb;font-size:10px;">' + dataStr + ' · ' + visHtml + '</div>' +
+          '<div style="color:#6b7280;font-size:10px;">' + dataStr + ' · ' + visHtml + '</div>' +
           '</div>' +
           '<button onclick="eliminaDocumento(' + doc.id + ',\'' + b.replace(/'/g,"\\'") + '\')" class="btn-red btn-sm" style="margin-bottom:0;white-space:nowrap;">✕ Elimina</button>' +
           '</div>';
@@ -4095,141 +3565,6 @@ function eliminaDocumento(id, brand) {
         alert('Errore: ' + (d.error || 'sconosciuto'));
       }
     });
-}
-
-// ==================== OFFERTE ====================
-function creaOfferta() {
-  if (!cantiereAttivo) { alert('Apri un cantiere prima'); return; }
-  
-  fetch(`/api/offerte/crea/${cantiereAttivo}`, { method: 'POST' })
-    .then(r => r.json())
-    .then(d => {
-      if (d.ok) {
-        const infoDiv = document.getElementById('offerta-info');
-        infoDiv.innerHTML = `✅ ${d.numero_offerta} | €${d.totale.toFixed(2)} | ` +
-          `<a href="javascript:scaricaOffertaJSON(${d.offerta_id})" style="color:#10b981; text-decoration:underline;">📋 JSON</a> | ` +
-          `<a href="javascript:apriModalSconto()" style="color:#f59e0b; text-decoration:underline;">💰 Sconto</a> | ` +
-          `<a href="javascript:creaVariazioneOfferta()" style="color:#8b5cf6; text-decoration:underline;">📄 Variazione</a>`;
-        infoDiv.style.display = 'block';
-        window.offerta_attiva_id = d.offerta_id;
-        window.offerta_attiva_numero = d.numero_offerta;
-      } else {
-        alert('❌ ' + d.error);
-      }
-    })
-    .catch(e => alert('Errore: ' + e));
-}
-
-function scaricaOffertaJSON(offerta_id) {
-  if (!offerta_id && window.offerta_attiva_id) offerta_id = window.offerta_attiva_id;
-  if (!offerta_id) { alert('Crea offerta prima'); return; }
-  
-  fetch(`/api/offerte/${offerta_id}/json`)
-    .then(r => r.json())
-    .then(json => {
-      const jsonStr = JSON.stringify(json, null, 2);
-      const blob = new Blob([jsonStr], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `offerta_${json.numero_offerta}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    })
-    .catch(e => alert('Errore download: ' + e));
-}
-
-function cambiaStatoOfferta(offerta_id, nuovo_stato) {
-  if (!offerta_id && window.offerta_attiva_id) offerta_id = window.offerta_attiva_id;
-  
-  fetch(`/api/offerte/${offerta_id}/stato`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ stato: nuovo_stato })
-  })
-    .then(r => r.json())
-    .then(d => {
-      if (d.ok) {
-        const infoDiv = document.getElementById('offerta-info');
-        infoDiv.innerHTML = `✅ Offerta ${nuovo_stato.toUpperCase()}: ${window.offerta_attiva_numero}`;
-        infoDiv.style.display = 'block';
-      } else {
-        alert('❌ ' + d.error);
-      }
-    })
-    .catch(e => alert('Errore: ' + e));
-}
-
-function apriModalSconto() {
-  if (!window.offerta_attiva_id) { alert('Crea offerta prima'); return; }
-  
-  const html = `
-    <div style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:10000; display:flex; align-items:center; justify-content:center; padding:20px;" id="modal-sconto">
-      <div style="background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:24px; max-width:400px; color:#e5e7eb;">
-        <div style="font-size:16px; font-weight:bold; margin-bottom:16px;">💰 Applica Sconto Offerta</div>
-        
-        <div style="margin-bottom:12px;">
-          <label style="display:block; font-size:12px; margin-bottom:4px;">Sconto Percentuale %</label>
-          <input type="number" id="sc-perc" placeholder="10" min="0" max="100" style="width:100%; padding:8px; background:#1e293b; border:1px solid #475569; color:white; border-radius:4px;">
-        </div>
-        
-        <div style="margin-bottom:12px;">
-          <label style="display:block; font-size:12px; margin-bottom:4px;">O Sconto Fisso €</label>
-          <input type="number" id="sc-fisso" placeholder="50" min="0" style="width:100%; padding:8px; background:#1e293b; border:1px solid #475569; color:white; border-radius:4px;">
-        </div>
-        
-        <div style="display:flex; gap:8px; margin-top:16px;">
-          <button onclick="applicaScontoOfferta()" style="flex:1; padding:8px; background:#10b981; color:white; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">✅ Applica</button>
-          <button onclick="document.getElementById('modal-sconto').remove()" style="flex:1; padding:8px; background:#6b7280; color:white; border:none; border-radius:4px; cursor:pointer;">✕ Chiudi</button>
-        </div>
-      </div>
-    </div>
-  `;
-  
-  document.body.insertAdjacentHTML('beforeend', html);
-}
-
-function applicaScontoOfferta() {
-  const offerta_id = window.offerta_attiva_id;
-  const sc_perc = parseFloat(document.getElementById('sc-perc').value) || 0;
-  const sc_fisso = parseFloat(document.getElementById('sc-fisso').value) || 0;
-  
-  fetch(`/api/offerte/${offerta_id}/sconto`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sconto_percentuale: sc_perc, sconto_fisso: sc_fisso })
-  })
-    .then(r => r.json())
-    .then(d => {
-      if (d.ok) {
-        document.getElementById('modal-sconto').remove();
-        const infoDiv = document.getElementById('offerta-info');
-        infoDiv.innerHTML = `💰 Sconto applicato: € ${d.sconto_applicato.toFixed(2)} | Totale: € ${d.totale_netto.toFixed(2)} | <a href="javascript:scaricaOffertaJSON(${offerta_id})" style="color:#10b981; text-decoration:underline;">📋 JSON aggiornato</a>`;
-        infoDiv.style.display = 'block';
-      } else {
-        alert('❌ ' + d.error);
-      }
-    })
-    .catch(e => alert('Errore: ' + e));
-}
-
-function creaVariazioneOfferta() {
-  if (!window.offerta_attiva_id) { alert('Crea offerta prima'); return; }
-  
-  fetch(`/api/offerte/${window.offerta_attiva_id}/crea-variazione`, { method: 'POST' })
-    .then(r => r.json())
-    .then(d => {
-      if (d.ok) {
-        const infoDiv = document.getElementById('offerta-info');
-        infoDiv.innerHTML = `✅ Variazione creata: ${d.numero_offerta} | <a href="javascript:scaricaOffertaJSON(${d.offerta_variazione_id})" style="color:#10b981; text-decoration:underline;">📋 JSON</a> | <a href="javascript:apriModalSconto()" style="color:#f59e0b; text-decoration:underline;">💰 Applica sconto</a>`;
-        infoDiv.style.display = 'block';
-        window.offerta_attiva_id = d.offerta_variazione_id;
-        window.offerta_attiva_numero = d.numero_offerta;
-      } else {
-        alert('❌ ' + d.error);
-      }
-    })
-    .catch(e => alert('Errore: ' + e));
 }
 
 function generateOfferta() {
@@ -4278,110 +3613,6 @@ function parseMarkdown(text) {
     .replace(/\n/g, '<br>');
 }
 
-// ============================================================================
-// RICERCA IMMAGINI AUTOMATICA
-// ============================================================================
-
-function cercaImmaginiAuto(brand, codice, idxProdotto) {
-  const btn = document.getElementById(`cerca-img-btn-${idxProdotto}`);
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Ricerca...'; }
-  fetch(`/api/cerca-immagini-auto/${encodeURIComponent(brand)}/${encodeURIComponent(codice)}`)
-    .then(r => r.json())
-    .then(data => {
-      if (btn) { btn.disabled = false; btn.textContent = '🔍 Cerca'; }
-      if (!data.ok || !data.risultati || data.risultati.length === 0) { alert('❌ Nessuna immagine trovata'); return; }
-      mostraGalleryImmagini(data.risultati, brand, codice, idxProdotto);
-    })
-    .catch(err => { alert('❌ Errore'); if (btn) { btn.disabled = false; btn.textContent = '🔍 Cerca'; } });
-}
-
-function mostraGalleryImmagini(risultati, brand, codice, idxProdotto) {
-  const modal = document.createElement('div');
-  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
-  const container = document.createElement('div');
-  container.style.cssText = 'background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:100%;max-width:900px;max-height:85vh;overflow-y:auto;padding:24px;color:#e5e7eb;';
-  const header = document.createElement('div');
-  header.style.cssText = 'display:flex;justify-content:space-between;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid rgba(59,130,245,0.3);';
-  const title = document.createElement('div');
-  title.textContent = `🔍 ${brand} ${codice}`;
-  title.style.cssText = 'font-size:18px;font-weight:600;color:#60a5fa;';
-  const closeBtn = document.createElement('button');
-  closeBtn.textContent = '✕ Chiudi';
-  closeBtn.style.cssText = 'background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;';
-  closeBtn.onclick = () => modal.remove();
-  header.appendChild(title);
-  header.appendChild(closeBtn);
-  const gallery = document.createElement('div');
-  gallery.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px;';
-  risultati.forEach((result) => {
-    const card = document.createElement('div');
-    card.style.cssText = 'cursor:pointer;border-radius:8px;border:2px solid rgba(59,130,245,0.2);position:relative;overflow:hidden;';
-    const img = document.createElement('img');
-    img.src = result.thumbnail_base64;
-    img.style.cssText = 'width:100%;height:180px;object-fit:cover;display:block;';
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(59,130,245,0);display:flex;align-items:center;justify-content:center;font-size:32px;';
-    card.appendChild(img);
-    card.appendChild(overlay);
-    card.onmouseover = () => { card.style.boxShadow = '0 0 15px rgba(59,130,245,0.4)'; overlay.style.background = 'rgba(59,130,245,0.3)'; overlay.textContent = '✓'; };
-    card.onmouseout = () => { card.style.boxShadow = 'none'; overlay.style.background = 'rgba(59,130,245,0)'; overlay.textContent = ''; };
-    card.onclick = () => { salvaImmagineScelta(brand, codice, result.url, result.thumbnail_base64, idxProdotto); modal.remove(); };
-    gallery.appendChild(card);
-  });
-  container.appendChild(header);
-  container.appendChild(gallery);
-  modal.appendChild(container);
-  document.body.appendChild(modal);
-}
-
-function salvaImmagineScelta(brand, codice, imageUrl, thumbnailBase64, idxProdotto) {
-  const msg = document.createElement('div');
-  msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#f59e0b;color:white;padding:12px 20px;border-radius:6px;font-weight:600;z-index:9999;';
-  msg.textContent = '⏳ Salvataggio...';
-  document.body.appendChild(msg);
-  fetch('/api/salva-immagine-scelta', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ brand, codice, image_url: imageUrl, thumbnail_base64: thumbnailBase64 })
-  })
-    .then(r => r.json())
-    .then(data => {
-      if (data.ok) {
-        msg.style.background = '#10b981';
-        msg.textContent = '✅ Salvato!';
-        aggiornaCardConImmagine(idxProdotto, thumbnailBase64, imageUrl);
-        setTimeout(() => msg.remove(), 3000);
-      } else {
-        msg.style.background = '#ef4444';
-        msg.textContent = '❌ Errore';
-        setTimeout(() => msg.remove(), 4000);
-      }
-    });
-}
-
-function aggiornaCardConImmagine(idxProdotto, thumbnailBase64, imageUrl) {
-  const card = document.getElementById(`pcard-${idxProdotto}`);
-  if (!card) return;
-  let imgArea = card.querySelector('[data-img-area]');
-  if (!imgArea) {
-    imgArea = document.createElement('div');
-    imgArea.setAttribute('data-img-area', 'true');
-    imgArea.style.cssText = 'width:100%;height:120px;background:linear-gradient(135deg,#3b82f6 0%,#1e40af 100%);border-radius:6px;margin-bottom:10px;';
-    const img = document.createElement('img');
-    img.src = thumbnailBase64;
-    img.style.cssText = 'width:100%;height:100%;object-fit:cover;cursor:pointer;';
-    img.onclick = () => window.open(imageUrl, '_blank');
-    imgArea.appendChild(img);
-    const actions = card.querySelector('.prodotto-actions');
-    if (actions) { card.insertBefore(imgArea, actions); } else { card.appendChild(imgArea); }
-  } else {
-    const img = imgArea.querySelector('img');
-    if (img) { img.src = thumbnailBase64; }
-  }
-  const btn = card.querySelector(`[data-search-img-btn]`);
-  if (btn) { btn.textContent = '🔄 Cambia'; btn.style.background = '#8b5cf6'; }
-}
-
 function ask() {
   if (!selected.length) { alert('Seleziona brand'); return; }
   const q = document.getElementById('question').value;
@@ -4406,7 +3637,7 @@ function ask() {
       const query = encodeURIComponent(selected.join(' ') + ' ' + q);
       if (d.images && d.images.length > 0) {
         html += '<div style="margin-top:12px; border-top:1px solid rgba(59,130,245,0.2); padding-top:10px;">';
-        html += '<div style="font-size:10px; color:#e5e7eb; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
+        html += '<div style="font-size:10px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Immagini prodotti</div>';
         html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px;">';
         d.images.forEach(img => {
           html += '<div style="aspect-ratio:1; overflow:hidden; border-radius:6px; background:rgba(30,41,59,0.8); cursor:pointer;" onclick="window.open(\'' + img + '\',\'_blank\')">';
@@ -4604,7 +3835,7 @@ function caricaExcelListino(input) {
   const file = input.files[0];
   if (!file) return;
   document.getElementById('excel-status').textContent = 'Lettura Excel...';
-  document.getElementById('excel-status').style.color = '#d1d5db';
+  document.getElementById('excel-status').style.color = '#9ca3af';
   const reader = new FileReader();
   reader.onload = function(e) {
     fetch('/api/parse-excel', {
@@ -4660,7 +3891,7 @@ function renderExcelRigheFiltered() {
     const prezzoHtml = r.prezzo !== null && r.prezzo !== undefined
       ? '<span class="' + (r.prezzo_src === 'excel' ? 'prezzo-excel' : 'prezzo-web') + '">€' +
         parseFloat(r.prezzo).toFixed(2) + (r.prezzo_src !== 'excel' ? ' ⚠web' : '') + '</span>'
-      : '<span style="color:#e5e7eb; font-size:10px;">prezzo mancante</span>';
+      : '<span style="color:#6b7280; font-size:10px;">prezzo mancante</span>';
 
     const aiDesc = r.descrizione_ai
       ? '<div class="excel-ai-desc">' + r.descrizione_ai + '</div>'
@@ -4684,7 +3915,7 @@ function renderExcelRigheFiltered() {
   }).join('');
 
   if (filtered.length > 50) {
-    inner.innerHTML += '<div style="font-size:10px; color:#d1d5db; text-align:center; padding:6px;">Mostrati 50 di ' + filtered.length + ' — usa il filtro per trovare</div>';
+    inner.innerHTML += '<div style="font-size:10px; color:#9ca3af; text-align:center; padding:6px;">Mostrati 50 di ' + filtered.length + ' — usa il filtro per trovare</div>';
   }
 }
 
@@ -4800,18 +4031,18 @@ function cercaRapidaListino(val) {
         return;
       }
       const listinoTipoAttuale = listinoTipo || 'cliente';
-      let html = '<div style="padding:6px 10px; font-size:9px; color:#e5e7eb; border-bottom:1px solid rgba(59,130,245,0.15);">📄 Trovato nel listino Excel — clicca per aggiungere al carrello</div>';
+      let html = '<div style="padding:6px 10px; font-size:9px; color:#6b7280; border-bottom:1px solid rgba(59,130,245,0.15);">📄 Trovato nel listino Excel — clicca per aggiungere al carrello</div>';
       d.prodotti.forEach((p, idx) => {
         const prezzo = listinoTipoAttuale === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : p.prezzo;
         const prezzoRiv = p.prezzo_rivenditore;
-        const prezzoLabel = prezzo ? '<span style="color:#10b981;font-weight:700;">€' + parseFloat(prezzo).toFixed(0) + '</span>' + (prezzoRiv && listinoTipoAttuale === 'cliente' ? '<span style="color:#f59e0b;font-size:9px;margin-left:4px;">riv.€' + parseFloat(prezzoRiv).toFixed(0) + '</span>' : '') : '<span style="color:#e5e7eb;">—</span>';
+        const prezzoLabel = prezzo ? '<span style="color:#10b981;font-weight:700;">€' + parseFloat(prezzo).toFixed(0) + '</span>' + (prezzoRiv && listinoTipoAttuale === 'cliente' ? '<span style="color:#f59e0b;font-size:9px;margin-left:4px;">riv.€' + parseFloat(prezzoRiv).toFixed(0) + '</span>' : '') : '<span style="color:#6b7280;">—</span>';
         const disp = (p.disponibilita||'').toLowerCase().includes('ordine') ? '⏳' : '✓';
         const dispColor = (p.disponibilita||'').toLowerCase().includes('ordine') ? '#f59e0b' : '#10b981';
         html += '<div style="padding:8px 10px; border-bottom:1px solid rgba(59,130,245,0.1); display:flex; align-items:center; gap:8px; cursor:pointer;" ' +
           'onmouseover="this.style.background=\'rgba(59,130,245,0.1)\'" onmouseout="this.style.background=\'\'">' +
           '<div style="flex:1;">' +
           '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (p.nome||p.codice) + '</div>' +
-          '<div style="font-size:9px; color:#d1d5db;">' + (p.codice||'') + (p.collezione ? ' · ' + p.collezione : '') + ' <span style="color:' + dispColor + ';">' + disp + '</span></div>' +
+          '<div style="font-size:9px; color:#9ca3af;">' + (p.codice||'') + (p.collezione ? ' · ' + p.collezione : '') + ' <span style="color:' + dispColor + ';">' + disp + '</span></div>' +
           '</div>' +
           '<div style="text-align:right;">' + prezzoLabel + '</div>' +
           '<button onclick="aggiungiDaRicercaRapida(' + idx + ',this)" class="btn-green btn-sm" style="margin-bottom:0;white-space:nowrap;">+ Carrello</button>' +
@@ -4900,7 +4131,7 @@ function chiudiListino() {
 }
 
 function caricaListino() {
-  document.getElementById('prodotti-grid').innerHTML = '<div style="color:#e5e7eb;font-size:11px;padding:20px 0;">Caricamento prodotti...</div>';
+  document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Caricamento prodotti...</div>';
   fetch('/api/listino/' + encodeURIComponent(listinoBrand))
     .then(r => r.json())
     .then(d => {
@@ -4982,7 +4213,7 @@ function filtraListino() {
   );
 
   if (prodotti.length === 0) {
-    document.getElementById('prodotti-grid').innerHTML = '<div style="color:#e5e7eb;font-size:11px;padding:20px 0;">Nessun prodotto trovato</div>';
+    document.getElementById('prodotti-grid').innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;">Nessun prodotto trovato</div>';
     return;
   }
 
@@ -5002,10 +4233,10 @@ function filtraListino() {
 
     let prezzoHtml = pUsato
       ? '<span class="' + clsPrezzo + '">€' + parseFloat(pUsato).toFixed(0) + iconWeb + '</span>'
-      : '<span style="color:#e5e7eb;font-size:10px;">—</span>';
+      : '<span style="color:#6b7280;font-size:10px;">—</span>';
     if (pSecondario) {
       const lbl = listinoTipo === 'cliente' ? 'riv.' : 'cl.';
-      const clr = listinoTipo === 'cliente' ? '#f59e0b' : '#d1d5db';
+      const clr = listinoTipo === 'cliente' ? '#f59e0b' : '#9ca3af';
       prezzoHtml += '<span style="font-size:9px;color:' + clr + ';margin-left:6px;">' + lbl + ' €' + parseFloat(pSecondario).toFixed(0) + '</span>';
     }
 
@@ -5016,13 +4247,12 @@ function filtraListino() {
       '</div>' +
       '<div class="prodotto-nome">' + (p.nome||'—') + '</div>' +
       '<div class="prodotto-cat">' + [p.collezione, p.categoria].filter(Boolean).join(' · ') + '</div>' +
-      (p.descrizione ? '<div style="font-size:10px;color:#d1d5db;margin:3px 0;line-height:1.3;">' + p.descrizione + '</div>' : '') +
-      (p.finiture ? '<div style="font-size:9px;color:#e5e7eb;">🎨 ' + p.finiture + '</div>' : '') +
+      (p.descrizione ? '<div style="font-size:10px;color:#9ca3af;margin:3px 0;line-height:1.3;">' + p.descrizione + '</div>' : '') +
+      (p.finiture ? '<div style="font-size:9px;color:#6b7280;">🎨 ' + p.finiture + '</div>' : '') +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">' +
       '<div>' + prezzoHtml + '</div>' +
       '</div>' +
       '<div class="prodotto-actions" style="margin-top:8px;">' +
-      '<button onclick="event.stopPropagation();cercaImmaginiAuto(\'' + listinoBrand.replace(/'/g,"\\'") + '\',\'' + (p.codice||'').replace(/'/g,"\\'") + '\',' + idx + ')" class="btn-sm" id="cerca-img-btn-' + idx + '" style="flex:1; background:rgba(59,130,245,0.3);color:#93c5fd;" data-search-img-btn>🔍 Cerca</button>' +
       '<button onclick="event.stopPropagation();verificaAbbinamenti(' + idx + ',\'' + (p.codice||'').replace(/'/g,"\\'") + '\')" class="btn-sm" id="abbina-btn-' + idx + '" style="flex:1; background:rgba(107,114,128,0.3);color:#d1d5db;">📋 Abbina</button>' +
       '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
       '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
@@ -5034,64 +4264,6 @@ function filtraListino() {
     const idx = listinoData.indexOf(p);
     setTimeout(() => verificaAbbinamenti(idx, p.codice), 100 * i);
   });
-}
-
-function cercaImmagineGoogle(brand, codice) {
-  const query = encodeURIComponent(brand + ' ' + codice);
-  const googleUrl = 'https://www.google.com/search?q=' + query + '&tbm=isch';
-  
-  // Crea modale con 5 risultati Google Images
-  const modal = document.createElement('div');
-  modal.style.cssText = `position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;`;
-  
-  modal.innerHTML = `
-    <div style="background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:90%;max-width:700px;max-height:90vh;overflow-y:auto;padding:20px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-        <div style="color:#3b82f6;font-weight:700;font-size:14px;">🔍 Ricerca Immagini: ${brand} ${codice}</div>
-        <button onclick="this.closest('[style*=position]').remove()" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600;">✕ Chiudi</button>
-      </div>
-      
-      <div style="background:#1e293b;padding:15px;border-radius:8px;margin-bottom:15px;">
-        <div style="color:#e5e7eb;font-size:12px;margin-bottom:10px;">
-          <strong>Cerca su Google Images:</strong><br>
-          Clicca sul link sottostante per visualizzare i risultati, seleziona l'immagine giusta e copia l'URL.
-        </div>
-        <a href="${googleUrl}" target="_blank" style="display:inline-block;background:#3b82f6;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;cursor:pointer;">
-          🔗 Apri Google Images
-        </a>
-      </div>
-      
-      <div style="margin-top:15px;">
-        <div style="color:#e5e7eb;font-size:12px;margin-bottom:10px;font-weight:600;">📋 Incolla URL Immagine qui:</div>
-        <input type="text" id="img-url-input" placeholder="https://example.com/image.jpg" style="width:100%;padding:10px;border:1px solid #3b82f6;border-radius:6px;background:#1e293b;color:#e5e7eb;margin-bottom:10px;box-sizing:border-box;">
-        
-        <button onclick="salvaImmagineURL('${brand}','${codice}',document.getElementById('img-url-input').value)" style="width:100%;background:#10b981;color:white;padding:12px;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:14px;">
-          ✅ Salva Immagine
-        </button>
-      </div>
-      
-      <div style="color:#d1d5db;font-size:11px;margin-top:15px;padding:10px;background:rgba(59,130,245,0.1);border-radius:6px;">
-        <strong>Istruzioni:</strong><br>
-        1. Clicca "Apri Google Images"<br>
-        2. Vedi i risultati per "${brand} ${codice}"<br>
-        3. Clicca sulla foto più adatta<br>
-        4. Copia l'URL dalla barra indirizzi<br>
-        5. Incolla qui e clicca "Salva Immagine"
-      </div>
-    </div>
-  `;
-  
-  document.body.appendChild(modal);
-}
-
-function salvaImmagineURL(brand, codice, imageUrl) {
-  if (!imageUrl.trim()) {
-    alert('⚠️ Incolla l\'URL dell\'immagine prima!');
-    return;
-  }
-  
-  alert('✅ Immagine salvata per ' + brand + ' ' + codice + ':\\n' + imageUrl + '\\n\\n(In produzione, questo verrebbe salvato nel DB)');
-  document.querySelector('[style*="position:fixed"]').remove();
 }
 
 function chiediAIprodotto(idx, tipo) {
@@ -5266,116 +4438,14 @@ function apriModalAbbinamenti(codice, data) {
   });
 }
 
-function loadStrutturaPiani(cantiere_id) {
-  const pannello = document.getElementById('pannello-piani');
-  pannello.innerHTML = '<div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">⏳ Caricamento...</div>';
-  
-  fetch('/api/cantieri/' + cantiere_id + '/struttura')
-    .then(r => r.json())
-    .then(d => {
-      if (!d.ok) {
-        pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ Errore: ' + d.error + '</div>';
-        return;
-      }
-      
-      const piani = d.piani || [];
-      let html = '';
-      
-      if (piani.length === 0) {
-        html = '<div style="color:#d1d5db; padding:12px; text-align:center;font-size:11px;">Nessun piano creato. Clicca "➕ Piano" per aggiungerne uno.</div>';
-      } else {
-        piani.forEach(p => {
-          html += `<div style="background:rgba(59,130,245,0.15); border:1px solid rgba(59,130,245,0.3); border-radius:6px; margin-bottom:10px; padding:12px;">
-            <div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:8px;">
-              Piano ${p.numero}: ${p.nome}
-              <span style="float:right; font-size:11px; color:#10b981;">€${p.totale_piano.toFixed(2)}</span>
-            </div>`;
-          
-          const stanze = p.stanze || [];
-          stanze.forEach(s => {
-            html += `<div style="background:rgba(30,41,59,0.6); border-left:3px solid #8b5cf6; border-radius:4px; padding:8px; margin:6px 0; font-size:11px;">
-              <div style="color:#d1d5db; font-weight:bold; display:flex; justify-content:space-between; margin-bottom:4px;">
-                <span>${s.nome}</span>
-                <span style="color:#10b981;">€${s.totale_stanza.toFixed(2)}</span>
-              </div>`;
-            
-            const voci = s.voci || [];
-            voci.forEach(v => {
-              html += `<div style="padding:4px 0; font-size:10px; color:#e5e7eb; display:flex; justify-content:space-between; border-bottom:1px solid rgba(59,130,245,0.1);">
-                <span>[${v.codice||'—'}] ${v.descrizione}</span>
-                <span style="color:#93c5fd;">€${v.subtotale.toFixed(2)}</span>
-              </div>`;
-            });
-            
-            html += `</div>`;
-          });
-          
-          html += `</div>`;
-        });
-      }
-      
-      pannello.innerHTML = html;
-    })
-    .catch(e => {
-      pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ ' + e + '</div>';
-    });
-}
-
-function aggiungiPianoModal() {
-  if (!cantiereAttivo) return;
-  const nome = prompt('Nome del piano (es. Piano 1, Primo livello):');
-  if (!nome) return;
-  
-  fetch('/api/cantieri/' + cantiereAttivo + '/piani', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ numero: 1, nome: nome })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      loadStrutturaPiani(cantiereAttivo);
-    }
-  });
-}
-
-function generaOffertaDaPiani() {
-  if (!cantiereAttivo) return;
-  
-  fetch('/api/cantieri/' + cantiereAttivo + '/struttura')
-    .then(r => r.json())
-    .then(d => {
-      if (!d.ok || !d.piani || d.piani.length === 0) {
-        alert('Nessun piano con voci');
-        return;
-      }
-      
-      let descrizione = '';
-      d.piani.forEach(p => {
-        descrizione += `\n\nPIANO: ${p.nome}\n`;
-        p.stanze.forEach(s => {
-          descrizione += `  Stanza: ${s.nome}\n`;
-          s.voci.forEach(v => {
-            descrizione += `    - ${v.descrizione} (€${v.subtotale.toFixed(2)})\n`;
-          });
-        });
-      });
-      
-      closeCantiere();
-      document.getElementById('question').value = `Genera una proposta per il cantiere con la seguente struttura per piani:${descrizione}\n\nCrea un documento professionale e ben organizzato.`;
-      ask();
-    });
-}
-
-// Carica il resto del codice JavaScript...
+// Controlla se già loggato
+fetch('/api/me').then(r => r.json()).then(d => {
   if (d.logged) {
     document.getElementById('login-overlay').style.display = 'none';
     document.getElementById('main-app').style.display = 'flex';
     initApp();
   }
 });
-
-
 </script>
 
 <!-- ============================================================================
@@ -5615,7 +4685,7 @@ function generaOffertaDaPiani() {
 }
 
 .btn-aggiungi:disabled {
-    background: #e5e7eb;
+    background: #6b7280;
     cursor: not-allowed;
 }
 
@@ -5675,7 +4745,7 @@ function aggiornaPannelloAccessori(data) {
             html += `
             <div style="padding:8px;margin-bottom:6px;background:rgba(239,68,68,0.1);border-left:2px solid #ef4444;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
                 <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
-                <div style="font-size:9px;color:#d1d5db;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
                 <div style="font-size:10px;color:#10b981;margin-top:4px;">→ Clicca per aggiungere</div>
             </div>
             `;
@@ -5689,7 +4759,7 @@ function aggiornaPannelloAccessori(data) {
             html += `
             <div style="padding:8px;margin-bottom:6px;background:rgba(245,158,11,0.1);border-left:2px solid #f59e0b;border-radius:3px;cursor:pointer;" onclick="aggiungiAccessorio('${acc.accessorio_id}','${acc.nome}')">
                 <div style="font-size:10px;color:#fff;font-weight:bold;margin-bottom:2px;">${acc.nome}</div>
-                <div style="font-size:9px;color:#d1d5db;">ID: ${acc.accessorio_id}</div>
+                <div style="font-size:9px;color:#9ca3af;">ID: ${acc.accessorio_id}</div>
                 <div style="font-size:10px;color:#f59e0b;margin-top:4px;">→ Clicca per aggiungere</div>
             </div>
             `;
@@ -5877,569 +4947,6 @@ render();
 </body></html>"""
     return render_template_string(html)
 
-
-
-# ============================================================================
-# ENDPOINT RICERCA IMMAGINI
-# ============================================================================
-
-@app.route('/api/cerca-immagini-auto/<brand>/<codice>', methods=['GET'])
-def cerca_immagini_auto(brand, codice):
-    scrape_result = scrape_google_images(brand, codice, max_results=6)
-    if not scrape_result['ok']:
-        return jsonify({'ok': False, 'error': scrape_result['error'], 'risultati': []}), 404
-    download_result = download_immagini_con_thumbnail(scrape_result['urls'])
-    if not download_result['ok']:
-        return jsonify({'ok': False, 'error': 'Errore download', 'risultati': []}), 500
-    risultati_formattati = [{'url': r['url'], 'thumbnail_base64': f"data:image/jpeg;base64,{r['thumbnail_base64']}"} 
-                           for r in download_result['risultati']]
-    return jsonify({'ok': True, 'risultati': risultati_formattati, 'count': len(risultati_formattati)}), 200
-
-@app.route('/api/salva-immagine-scelta', methods=['POST'])
-def salva_immagine_scelta_endpoint():
-    data = request.get_json()
-    brand = data.get('brand', '').strip()
-    codice = data.get('codice', '').strip()
-    image_url = data.get('image_url', '').strip()
-    thumbnail_base64 = data.get('thumbnail_base64', '').strip()
-    if thumbnail_base64.startswith('data:'):
-        thumbnail_base64 = thumbnail_base64.split(',', 1)[1]
-    if not all([brand, codice, image_url, thumbnail_base64]):
-        return jsonify({'ok': False, 'error': 'Dati incompleti'}), 400
-    result = salva_immagine_nel_db(brand, codice, image_url, thumbnail_base64)
-    return jsonify(result), (200 if result['ok'] else 500)
-
-@app.route('/api/immagine/<brand>/<codice>', methods=['GET'])
-def get_immagine_endpoint(brand, codice):
-    img = get_immagine_dal_db(brand, codice)
-    if img:
-        return jsonify({'ok': True, 'url': img['url'], 'thumbnail_base64': f"data:image/jpeg;base64,{img['thumbnail_base64']}"}), 200
-    return jsonify({'ok': False, 'error': 'Non trovata'}), 404
-
-@app.route('/api/immagine/<brand>/<codice>', methods=['DELETE'])
-def delete_immagine_endpoint(brand, codice):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("DELETE FROM product_images WHERE brand = ? AND codice = ?", (brand, codice))
-        conn.commit()
-        conn.close()
-        return jsonify({'ok': True}), 200
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
-
-# ============================================================================
-# ENDPOINT OFFERTE - Creazione, Esportazione, Gestione Stato
-# ============================================================================
-
-def genera_numero_offerta(cantiere_id):
-    """Genera numero offerta univoco: OFF-YYYYMMDD-XXXX"""
-    from datetime import datetime
-    data = datetime.now().strftime('%Y%m%d')
-    return f"OFF-{data}-{cantiere_id:04d}"
-
-@app.route('/api/offerte/crea/<int:cid>', methods=['POST'])
-def crea_offerta_endpoint(cid):
-    """Crea OFFERTA da cantiere: salva numero, stato, JSON strutturato"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Carica cantiere
-        c.execute('SELECT nome FROM cantieri WHERE id = ?', (cid,))
-        cant = c.fetchone()
-        if not cant:
-            conn.close()
-            return jsonify({'error': 'Cantiere non trovato'}), 404
-        
-        nome_cantiere = cant[0]
-        
-        # Carica righe cantiere
-        c.execute('''SELECT id, brand, categoria, descrizione, importo 
-                    FROM cantiere_righe WHERE cantiere_id = ? ORDER BY id''', (cid,))
-        righe = c.fetchall()
-        
-        # Estrai dati per JSON e totali
-        totale_cliente = 0
-        righe_json = []
-        
-        for rid, brand, categoria, descrizione, importo in righe:
-            importo = importo or 0
-            totale_cliente += importo
-            
-            # Estrai codice da [CODICE] nella descrizione
-            codice = descrizione.split(']')[0].lstrip('[') if '[' in descrizione else '—'
-            
-            # Carica immagine thumbnail se esiste
-            c.execute("SELECT thumbnail_base64 FROM product_images WHERE brand = ? AND codice = ? LIMIT 1",
-                     (brand, codice))
-            img_row = c.fetchone()
-            immagine_b64 = img_row[0] if img_row else None
-            
-            riga_json = {
-                "id": rid,
-                "codice_covolo": codice,
-                "brand": brand,
-                "categoria": categoria,
-                "descrizione": descrizione,
-                "prezzo_cliente": importo,
-                "immagine_b64": immagine_b64
-            }
-            righe_json.append(riga_json)
-        
-        # Genera numero offerta
-        numero_offerta = genera_numero_offerta(cid)
-        
-        # JSON strutturato per GAMMAAI
-        json_offerta = {
-            "numero_offerta": numero_offerta,
-            "versione": 0,
-            "data_creazione": datetime.now().isoformat(),
-            "cantiere": nome_cantiere,
-            "cantiere_id": cid,
-            "totale_lordo": round(totale_cliente, 2),
-            "sconto_percentuale": 0,
-            "sconto_fisso": 0,
-            "totale_sconto": 0,
-            "totale_netto": round(totale_cliente, 2),
-            "totale_cliente": round(totale_cliente, 2),
-            "righe": righe_json
-        }
-        
-        # Salva OFFERTA nel DB
-        c.execute('''INSERT INTO offerte 
-                    (numero_offerta, versione, data_creazione, cantiere_id, cliente_id, stato, 
-                     sconto_percentuale, sconto_fisso, totale_lordo, totale_sconto,
-                     totale_cliente, totale_rivenditore, json_strutturato, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                 (numero_offerta,
-                  0,
-                  datetime.now().isoformat(),
-                  cid,
-                  1,  # Cliente Covolo default
-                  'bozza',
-                  0,  # sconto_percentuale default
-                  0,  # sconto_fisso default
-                  totale_cliente,
-                  0,  # totale_sconto default
-                  totale_cliente,
-                  0,  # Rivenditore da calcolare
-                  json.dumps(json_offerta),
-                  datetime.now().isoformat(),
-                  datetime.now().isoformat()))
-        
-        offerta_id = c.lastrowid
-        
-        # Salva righe OFFERTA
-        for riga in righe_json:
-            c.execute('''INSERT INTO offerte_righe 
-                        (offerta_id, codice_covolo, brand, categoria, descrizione, 
-                         quantita, udm, prezzo_cliente, prezzo_rivenditore)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                     (offerta_id,
-                      riga['codice_covolo'],
-                      riga['brand'],
-                      riga['categoria'],
-                      riga['descrizione'],
-                      1,
-                      'pezzo',
-                      riga['prezzo_cliente'],
-                      0))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'offerta_id': offerta_id,
-            'numero_offerta': numero_offerta,
-            'stato': 'bozza',
-            'totale': totale_cliente
-        }), 201
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/offerte/<int:offerta_id>/json', methods=['GET'])
-def esporta_offerta_json_endpoint(offerta_id):
-    """Esporta JSON offerta per GAMMAAI"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Carica offerta
-        c.execute('SELECT json_strutturato FROM offerte WHERE id = ?', (offerta_id,))
-        row = c.fetchone()
-        conn.close()
-        
-        if not row:
-            return jsonify({'error': 'Offerta non trovata'}), 404
-        
-        json_offerta = json.loads(row[0])
-        return jsonify(json_offerta), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/offerte/<int:offerta_id>/stato', methods=['PUT'])
-def cambia_stato_offerta_endpoint(offerta_id):
-    """Cambia stato offerta: bozza → inviata → accettata → rifiutata"""
-    try:
-        data = request.get_json()
-        nuovo_stato = data.get('stato')
-        
-        if nuovo_stato not in ['bozza', 'inviata', 'accettata', 'rifiutata']:
-            return jsonify({'error': 'Stato non valido'}), 400
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Determina quale timestamp aggiornare
-        timestamp_field = None
-        if nuovo_stato == 'inviata':
-            timestamp_field = 'data_invio'
-        elif nuovo_stato == 'accettata':
-            timestamp_field = 'data_accettazione'
-        
-        update_sql = f'''UPDATE offerte 
-                        SET stato = ?, updated_at = ?'''
-        params = [nuovo_stato, datetime.now().isoformat()]
-        
-        if timestamp_field:
-            update_sql += f', {timestamp_field} = ?'
-            params.append(datetime.now().isoformat())
-        
-        update_sql += ' WHERE id = ?'
-        params.append(offerta_id)
-        
-        c.execute(update_sql, params)
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'offerta_id': offerta_id, 'stato': nuovo_stato}), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/offerte/<int:offerta_id>/sconto', methods=['PUT'])
-def applica_sconto_endpoint(offerta_id):
-    """Applica sconto % o fisso e ricalcola totali"""
-    try:
-        data = request.get_json()
-        sconto_perc = data.get('sconto_percentuale', 0)
-        sconto_fisso = data.get('sconto_fisso', 0)
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Carica offerta
-        c.execute('''SELECT numero_offerta, versione, totale_lordo, json_strutturato 
-                    FROM offerte WHERE id = ?''', (offerta_id,))
-        row = c.fetchone()
-        
-        if not row:
-            conn.close()
-            return jsonify({'error': 'Offerta non trovata'}), 404
-        
-        num_off, versione, totale_lordo, json_str = row
-        
-        # Calcola sconto
-        if sconto_perc > 0:
-            importo_sconto = (totale_lordo * sconto_perc) / 100
-        else:
-            importo_sconto = sconto_fisso
-        
-        totale_netto = totale_lordo - importo_sconto
-        
-        # Aggiorna offerta
-        c.execute('''UPDATE offerte 
-                    SET sconto_percentuale = ?, sconto_fisso = ?, 
-                        totale_sconto = ?, totale_cliente = ?, updated_at = ?
-                    WHERE id = ?''',
-                 (sconto_perc, sconto_fisso, round(importo_sconto, 2), 
-                  round(totale_netto, 2), datetime.now().isoformat(), offerta_id))
-        
-        # Aggiorna JSON
-        json_offerta = json.loads(json_str)
-        json_offerta['sconto_percentuale'] = sconto_perc
-        json_offerta['sconto_fisso'] = sconto_fisso
-        json_offerta['totale_lordo'] = totale_lordo
-        json_offerta['totale_sconto'] = round(importo_sconto, 2)
-        json_offerta['totale_netto'] = round(totale_netto, 2)
-        json_offerta['totale_cliente'] = round(totale_netto, 2)
-        
-        c.execute('''UPDATE offerte SET json_strutturato = ? WHERE id = ?''',
-                 (json.dumps(json_offerta), offerta_id))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'offerta_id': offerta_id,
-            'totale_lordo': totale_lordo,
-            'sconto_applicato': round(importo_sconto, 2),
-            'totale_netto': round(totale_netto, 2)
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/offerte/<int:offerta_id>/crea-variazione', methods=['POST'])
-def crea_variazione_offerta_endpoint(offerta_id):
-    """Crea variazione offerta (copia con versione incrementata)"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Carica offerta originale
-        c.execute('''SELECT numero_offerta, versione, cantiere_id, cliente_id,
-                            totale_lordo, sconto_percentuale, sconto_fisso, 
-                            totale_sconto, totale_cliente, json_strutturato
-                    FROM offerte WHERE id = ?''', (offerta_id,))
-        row = c.fetchone()
-        
-        if not row:
-            conn.close()
-            return jsonify({'error': 'Offerta non trovata'}), 404
-        
-        num_off_orig, ver_orig, cant_id, cli_id, tot_lordo, sc_perc, sc_fisso, tot_sco, tot_cli, json_str = row
-        
-        # Crea numero variazione
-        nuova_versione = (ver_orig or 0) + 1
-        numero_variazione = f"{num_off_orig}_V{nuova_versione}"
-        
-        # Copia JSON e aggiorna numero/versione
-        json_offerta = json.loads(json_str)
-        json_offerta['numero_offerta'] = numero_variazione
-        json_offerta['versione'] = nuova_versione
-        json_offerta['data_creazione'] = datetime.now().isoformat()
-        
-        # Crea nuova offerta
-        c.execute('''INSERT INTO offerte 
-                    (numero_offerta, versione, data_creazione, cantiere_id, cliente_id,
-                     stato, sconto_percentuale, sconto_fisso, totale_lordo, 
-                     totale_sconto, totale_cliente, json_strutturato, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                 (numero_variazione, nuova_versione, datetime.now().isoformat(),
-                  cant_id, cli_id, 'bozza', sc_perc, sc_fisso, tot_lordo,
-                  tot_sco, tot_cli, json.dumps(json_offerta),
-                  datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        offerta_variazione_id = c.lastrowid
-        
-        # Copia righe
-        c.execute('''SELECT codice_covolo, codice_fornitore, brand, categoria, descrizione,
-                            quantita, udm, prezzo_cliente, prezzo_rivenditore, nota
-                    FROM offerte_righe WHERE offerta_id = ?''', (offerta_id,))
-        righe = c.fetchall()
-        
-        for riga in righe:
-            c.execute('''INSERT INTO offerte_righe 
-                        (offerta_id, codice_covolo, codice_fornitore, brand, categoria, 
-                         descrizione, quantita, udm, prezzo_cliente, prezzo_rivenditore, nota)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                     (offerta_variazione_id,) + riga)
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'ok': True,
-            'offerta_variazione_id': offerta_variazione_id,
-            'numero_offerta': numero_variazione,
-            'versione': nuova_versione
-        }), 201
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/offerte/<int:offerta_id>', methods=['GET'])
-def leggi_offerta_endpoint(offerta_id):
-    """Legge dettagli offerta (per gestionale)"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        c.execute('''SELECT id, numero_offerta, data_creazione, stato, totale_cliente, 
-                            json_strutturato FROM offerte WHERE id = ?''', (offerta_id,))
-        row = c.fetchone()
-        conn.close()
-        
-        if not row:
-            return jsonify({'error': 'Offerta non trovata'}), 404
-        
-        oid, num_off, data_crea, stato, totale, json_str = row
-        json_offerta = json.loads(json_str)
-        
-        return jsonify({
-            'id': oid,
-            'numero_offerta': num_off,
-            'data_creazione': data_crea,
-            'stato': stato,
-            'totale_cliente': totale,
-            'offerta': json_offerta
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ============================================================================
-# GENERAZIONE PDF OFFERTE
-# ============================================================================
-
-@app.route('/api/cantieri/<int:cid>/pdf', methods=['GET'])
-def genera_offerta_pdf_endpoint(cid):
-    """Genera PDF offerta per cantiere"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Carica cantiere
-        c.execute('SELECT nome FROM cantieri WHERE id = ?', (cid,))
-        cant = c.fetchone()
-        if not cant:
-            return jsonify({'error': 'Cantiere non trovato'}), 404
-        
-        nome_cantiere = cant[0]
-        
-        # Carica righe
-        c.execute('SELECT id, brand, categoria, descrizione, importo FROM cantiere_righe WHERE cantiere_id = ? ORDER BY id', (cid,))
-        righe = [dict(zip(['id','brand','categoria','descrizione','importo'], r)) for r in c.fetchall()]
-        conn.close()
-        
-        if not righe:
-            return jsonify({'error': 'Cantiere vuoto'}), 400
-        
-        # Genera PDF usando reportlab
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import cm
-        from reportlab.lib.colors import HexColor, black
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-        from reportlab.lib.enums import TA_CENTER, TA_LEFT
-        import os
-        
-        output_path = f"/tmp/offerta_{nome_cantiere}_{cid}.pdf"
-        
-        doc = SimpleDocTemplate(
-            output_path,
-            pagesize=A4,
-            rightMargin=1.5*cm,
-            leftMargin=1.5*cm,
-            topMargin=1.5*cm,
-            bottomMargin=1.5*cm
-        )
-        
-        story = []
-        styles = getSampleStyleSheet()
-        
-        # Header con logo
-        logo_path = "/mnt/user-data/uploads/COVOLO2.png"
-        if os.path.exists(logo_path):
-            from reportlab.platypus import Image as RLImage
-            img_logo = RLImage(logo_path, width=3*cm, height=3*cm)
-            story.append(img_logo)
-            story.append(Spacer(1, 0.3*cm))
-        
-        # Titolo
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=28,
-            textColor=black,
-            spaceAfter=6,
-            alignment=TA_CENTER,
-            fontName='Helvetica-Bold'
-        )
-        story.append(Paragraph("PROPOSTA COMMERCIALE", title_style))
-        
-        # Data e numero
-        num_offerta = f"OFF-{datetime.now().strftime('%Y%m%d')}-{cid:04d}"
-        info_style = ParagraphStyle('Info', parent=styles['Normal'], fontSize=10, alignment=TA_CENTER)
-        story.append(Paragraph(f"Offerta: {num_offerta} | Data: {datetime.now().strftime('%d/%m/%Y')}", info_style))
-        story.append(Spacer(1, 0.5*cm))
-        
-        # Nome cantiere
-        cantiere_style = ParagraphStyle('Cantiere', parent=styles['Normal'], fontSize=14, 
-                                       textColor=HexColor("#EF4444"), alignment=TA_CENTER, fontName='Helvetica-Bold')
-        story.append(Paragraph(f"CANTIERE: {nome_cantiere.upper()}", cantiere_style))
-        story.append(Spacer(1, 0.8*cm))
-        
-        # Intro
-        intro_text = "Gentile Cliente, con piacere presentiamo una selezione di prodotti di alta qualità per il Suo prestigioso progetto."
-        intro_style = ParagraphStyle('Intro', parent=styles['Normal'], fontSize=11, alignment=TA_LEFT, spaceAfter=12)
-        story.append(Paragraph(intro_text, intro_style))
-        story.append(Spacer(1, 0.5*cm))
-        
-        # Page break
-        story.append(PageBreak())
-        
-        # Tabella prodotti
-        section_title = ParagraphStyle('SectionTitle', parent=styles['Heading2'], fontSize=13,
-                                      textColor=HexColor("#3B82F6"), fontName='Helvetica-Bold', spaceAfter=8)
-        story.append(Paragraph("DETTAGLIO OFFERTA", section_title))
-        
-        table_data = [['CODICE', 'BRAND', 'DESCRIZIONE', 'PREZZO', 'SUBTOTALE']]
-        totale = 0
-        
-        for riga in righe:
-            codice = riga['descrizione'].split(']')[0].lstrip('[') if '[' in riga['descrizione'] else '—'
-            desc = riga['descrizione'][:35] + ('...' if len(riga['descrizione']) > 35 else '')
-            prezzo = riga['importo'] or 0
-            totale += prezzo
-            
-            table_data.append([
-                codice,
-                riga['brand'] or '—',
-                desc,
-                f"€ {prezzo:.2f}",
-                f"€ {prezzo:.2f}"
-            ])
-        
-        # Riga totale
-        table_data.append(['', '', '', 'TOTALE', f'€ {totale:.2f}'])
-        
-        table = Table(table_data, colWidths=[1.5*cm, 1.8*cm, 4.5*cm, 1.8*cm, 1.8*cm])
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), HexColor("#3B82F6")),
-            ('TEXTCOLOR', (0, 0), (-1, 0), 'white'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
-            ('GRID', (0, 0), (-1, -2), 1, HexColor("#CCCCCC")),
-            ('BACKGROUND', (0, -1), (-1, -1), HexColor("#EF4444")),
-            ('TEXTCOLOR', (0, -1), (-1, -1), 'white'),
-            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, -1), (-1, -1), 11),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [HexColor("#F9FAFB"), 'white']),
-        ]))
-        
-        story.append(table)
-        story.append(Spacer(1, 1*cm))
-        
-        # Footer
-        footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, 
-                                     textColor=HexColor("#999999"), alignment=TA_CENTER)
-        story.append(Paragraph(
-            f"Proposta generata il {datetime.now().strftime('%d/%m/%Y %H:%M')} | "
-            f"Numero Offerta: {num_offerta}<br/>"
-            f"Per informazioni contattare il Consulente Covolo",
-            footer_style
-        ))
-        
-        # Build PDF
-        doc.build(story)
-        
-        # Invia file
-        return send_file(output_path, as_attachment=True, download_name=f"OFFERTA_{nome_cantiere}.pdf")
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-print("[LOG] All endpoints registered successfully!", file=sys.stderr, flush=True)
-print("[LOG] Starting Flask server on 0.0.0.0:10000...", file=sys.stderr, flush=True)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
