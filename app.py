@@ -11,7 +11,6 @@ from flask import Flask, render_template_string, request, jsonify, session
 import httpx
 import urllib.request
 import urllib.error
-from PIL import Image
 try:
     import openpyxl
     OPENPYXL_OK = True
@@ -81,19 +80,8 @@ def download_immagini_con_thumbnail(urls, max_size=(120, 120)):
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=8) as response:
                 img_data = response.read()
-            img = Image.open(io.BytesIO(img_data))
-            if img.mode in ('RGBA', 'LA', 'P'):
-                rgb_img = Image.new('RGB', img.size, (255, 255, 255))
-                if img.mode == 'RGBA':
-                    rgb_img.paste(img, mask=img.split()[-1])
-                else:
-                    rgb_img.paste(img)
-                img = rgb_img
-            img.thumbnail(max_size, Image.Resampling.LANCZOS)
-            buf = io.BytesIO()
-            img.save(buf, format='JPEG', quality=75)
-            buf.seek(0)
-            thumbnail_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+            # Usa diretto come base64 - no PIL!
+            thumbnail_b64 = base64.b64encode(img_data).decode('utf-8')
             risultati.append({'url': url, 'thumbnail_base64': thumbnail_b64, 'error': None})
         except Exception as e:
             risultati.append({'url': url, 'thumbnail_base64': None, 'error': str(e)[:30]})
