@@ -425,21 +425,24 @@ init_db()
 
 def dedup_brands_on_start():
     """Unifica brand duplicati case-insensitive all'avvio"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
-    dups = c.fetchall()
-    for lower_name, ids_str, names_str in dups:
-        ids = [int(x) for x in ids_str.split(',')]
-        names = names_str.split(',')
-        canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
-        canonical_id = ids[names.index(canonical_name)]
-        for i, bid in enumerate(ids):
-            if bid != canonical_id:
-                c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
-                c.execute("DELETE FROM aziende WHERE id=?", (bid,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT LOWER(nome), GROUP_CONCAT(id), GROUP_CONCAT(nome) FROM aziende GROUP BY LOWER(nome) HAVING COUNT(*) > 1")
+        dups = c.fetchall()
+        for lower_name, ids_str, names_str in dups:
+            ids = [int(x) for x in ids_str.split(',')]
+            names = names_str.split(',')
+            canonical_name = next((n for n in names if n in BRANDS_LIST), names[0])
+            canonical_id = ids[names.index(canonical_name)]
+            for i, bid in enumerate(ids):
+                if bid != canonical_id:
+                    c.execute("UPDATE documents SET azienda_id=? WHERE azienda_id=?", (canonical_id, bid))
+                    c.execute("DELETE FROM aziende WHERE id=?", (bid,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ Dedup brands warning (non-bloccante): {e}")
 
 dedup_brands_on_start()
 
