@@ -2785,6 +2785,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #e5e7e
       <div style="font-size:11px; color:#d1d5db; margin-top:2px;">Gestione offerta</div>
     </div>
     <div style="display:flex; gap:8px; align-items:center;">
+      <button id="btn-switch-semplice" onclick="switchModalita()" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap; font-size:10px;">🔄 PIANI</button>
       <select id="cantiere-stato" style="font-size:11px; padding:5px 8px;" onchange="updateCantiere()">
         <option value="bozza">Bozza</option>
         <option value="inviata">Inviata</option>
