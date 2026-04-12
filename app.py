@@ -3427,7 +3427,7 @@ function mostraGalleryImmagini(risultati, brand, codice, idxProdotto) {
   header.appendChild(title);
   header.appendChild(closeBtn);
   const gallery = document.createElement('div');
-  gallery.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:24px;';
+  gallery.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px;';
   risultati.forEach((result) => {
     const card = document.createElement('div');
     card.style.cssText = 'cursor:pointer;border-radius:8px;border:2px solid rgba(59,130,245,0.2);position:relative;overflow:hidden;';
