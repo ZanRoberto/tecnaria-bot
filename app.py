@@ -645,46 +645,6 @@ def create_piano(cid):
 # API PIANI/STANZE/VOCI — NUOVI ENDPOINTS
 # ---------------------------------------------------------------------------
 
-@app.route('/api/cantieri/<int:cid>/struttura', methods=['GET'])
-def get_struttura_piani(cid):
-    """GET gerarchia completa: piani → stanze → voci"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Carica piani
-        c.execute("SELECT id, numero, nome, totale_piano FROM piani WHERE cantiere_id = ? ORDER BY numero", (cid,))
-        piani_data = c.fetchall()
-        
-        piani = []
-        for pid, num, pnome, ptotal in piani_data:
-            # Carica stanze per piano
-            c.execute("SELECT id, nome, totale_stanza FROM stanze WHERE piano_id = ? ORDER BY id", (pid,))
-            stanze_data = c.fetchall()
-            
-            stanze = []
-            for sid, snome, stotal in stanze_data:
-                # Carica voci per stanza
-                c.execute("SELECT id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore FROM stanza_voci WHERE stanza_id = ? ORDER BY id", (sid,))
-                voci_data = c.fetchall()
-                
-                voci = []
-                for vid, vcod, vbr, vdesc, vqty, vprezzo, vsconto, vsub, vcol in voci_data:
-                    voci.append({
-                        'id': vid, 'codice': vcod, 'brand': vbr, 'desc': vdesc, 
-                        'qty': vqty, 'prezzo': vprezzo, 'sconto': vsconto, 
-                        'sub': vsub, 'colore': vcol
-                    })
-                
-                stanze.append({'id': sid, 'nome': snome, 'totale': stotal, 'voci': voci})
-            
-            piani.append({'id': pid, 'num': num, 'nome': pnome, 'totale': ptotal, 'stanze': stanze})
-        
-        conn.close()
-        return jsonify({'ok': True, 'piani': piani})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/piani/<int:pid>/stanze', methods=['POST'])
 def add_stanza(pid):
     """POST crea nuova stanza"""
