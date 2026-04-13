@@ -753,6 +753,193 @@ def delete_voce(vid):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+# =============================================================================
+# API PLANIMETRIA - VISION + AUTO-CREAZIONE PIANI/STANZE
+# =============================================================================
+
+@app.route('/api/analizza-planimetria', methods=['POST'])
+def analizza_planimetria():
+    """
+    Riceve un'immagine (PNG/JPG) di una planimetria in base64.
+    DeepSeek Vision analizza e crea automaticamente piani + stanze nel cantiere.
+    """
+    try:
+        data = request.get_json()
+        cantiere_id = data.get('cantiere_id')
+        immagine_base64 = data.get('immagine_base64')
+        
+        if not cantiere_id or not immagine_base64:
+            return jsonify({'ok': False, 'error': 'cantiere_id e immagine_base64 richiesti'}), 400
+        
+        if not DEEPSEEK_API_KEY:
+            return jsonify({'ok': False, 'error': 'API Key DeepSeek non configurata'}), 400
+        
+        # Estrai il base64 puro (rimuovi data:image/jpeg;base64, ecc.)
+        if ',' in immagine_base64:
+            immagine_base64 = immagine_base64.split(',', 1)[1]
+        
+        # Prompt per DeepSeek Vision
+        prompt = """Analizza questa planimetria architetturale e estrai la struttura.
+
+Rispondi SOLO in questo formato JSON, nient'altro:
+{
+  "piani": [
+    {
+      "numero": 1,
+      "nome": "Piano Terra",
+      "stanze": [
+        {"nome": "Bagno principale", "mq": 8},
+        {"nome": "Cucina", "mq": 15}
+      ]
+    },
+    {
+      "numero": 2,
+      "nome": "Primo Piano",
+      "stanze": [
+        {"nome": "Camera da letto", "mq": 20}
+      ]
+    }
+  ]
+}
+
+Se la planimetria non è leggibile, rispondi con un JSON valido ma vuoto:
+{"piani": []}
+
+IMPORTANTE: Restituisci SOLO il JSON, senza markdown o spiegazioni."""
+
+        # Chiama DeepSeek con Vision
+        headers = {
+            'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'model': 'deepseek-vision',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': prompt},
+                        {
+                            'type': 'image',
+                            'image_url': {
+                                'url': f'data:image/jpeg;base64,{immagine_base64}'
+                            }
+                        }
+                    ]
+                }
+            ],
+            'max_tokens': 2000,
+            'temperature': 0.3
+        }
+        
+        resp = httpx.post(
+            'https://api.deepseek.com/chat/completions',
+            json=payload,
+            headers=headers,
+            timeout=60
+        )
+        
+        if resp.status_code != 200:
+            return jsonify({
+                'ok': False,
+                'error': f'DeepSeek error {resp.status_code}: {resp.text}'
+            }), 500
+        
+        result = resp.json()
+        if 'choices' not in result or len(result['choices']) == 0:
+            return jsonify({'ok': False, 'error': 'No response from DeepSeek'}), 500
+        
+        risposta_text = result['choices'][0]['message']['content'].strip()
+        
+        # Estrai JSON dalla risposta (potrebbe avere markdown)
+        if '```json' in risposta_text:
+            risposta_text = risposta_text.split('```json')[1].split('```')[0].strip()
+        elif '```' in risposta_text:
+            risposta_text = risposta_text.split('```')[1].split('```')[0].strip()
+        
+        # Parse JSON
+        try:
+            struttura = json.loads(risposta_text)
+        except json.JSONDecodeError as je:
+            return jsonify({
+                'ok': False,
+                'error': f'JSON parsing failed: {str(je)}',
+                'raw': risposta_text
+            }), 400
+        
+        piani_data = struttura.get('piani', [])
+        
+        if not piani_data:
+            return jsonify({
+                'ok': True,
+                'piani_creati': 0,
+                'stanze_create': 0,
+                'message': 'Nessun piano rilevato dalla planimetria'
+            })
+        
+        # CREAZIONE nel DB
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        piani_creati = 0
+        stanze_create = 0
+        
+        for piano_data in piani_data:
+            numero = piano_data.get('numero', piani_creati + 1)
+            nome_piano = piano_data.get('nome', f'Piano {numero}')
+            
+            # Crea piano
+            c.execute(
+                'INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+                (
+                    cantiere_id,
+                    numero,
+                    nome_piano,
+                    0,  # totale iniziale
+                    datetime.now().isoformat(),
+                    datetime.now().isoformat()
+                )
+            )
+            piano_id = c.lastrowid
+            piani_creati += 1
+            
+            # Crea stanze
+            stanze_data = piano_data.get('stanze', [])
+            for stanza_data in stanze_data:
+                nome_stanza = stanza_data.get('nome', 'Stanza senza nome')
+                mq = stanza_data.get('mq', 0)
+                
+                c.execute(
+                    'INSERT INTO stanze (piano_id, nome, descrizione, totale_stanza, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+                    (
+                        piano_id,
+                        nome_stanza,
+                        f'{mq}mq' if mq > 0 else '',  # Metratura come descrizione
+                        0,  # totale iniziale
+                        datetime.now().isoformat(),
+                        datetime.now().isoformat()
+                    )
+                )
+                stanze_create += 1
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'ok': True,
+            'piani_creati': piani_creati,
+            'stanze_create': stanze_create,
+            'message': f'✅ Creati {piani_creati} piani e {stanze_create} stanze'
+        })
+        
+    except Exception as e:
+        print(f'[PLANIMETRIA ERROR] {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
 # API CANTIERI
 # ---------------------------------------------------------------------------
 
@@ -2580,10 +2767,33 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
     </div>
   </div>
 
-  <div class="drawer-body">
-    <div id="pannello-piani" style="flex:1; overflow-y:auto; padding:12px;">
+  <div class="drawer-body" style="display:flex; gap:8px;">
+    <!-- SINISTRA: PIANI/STANZE -->
+    <div id="pannello-piani" style="flex:1; overflow-y:auto; padding:12px; border-right:1px solid rgba(59,130,245,0.2);">
       <div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">
         ⏳ Caricamento struttura piani...
+      </div>
+    </div>
+    
+    <!-- DESTRA: LISTINO DINAMICO + CARICAMENTO PLANIMETRIA -->
+    <div style="flex:1; display:flex; flex-direction:column; gap:8px;">
+      <!-- CARICAMENTO PLANIMETRIA -->
+      <div style="background:rgba(139,92,246,0.15); border:1px solid rgba(139,92,246,0.3); border-radius:6px; padding:8px;">
+        <div style="font-size:10px; color:#8b5cf6; font-weight:700; text-transform:uppercase; margin-bottom:6px;">📁 Carica Planimetria</div>
+        <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:6px; border-radius:4px; cursor:pointer; font-weight:600; font-size:10px; text-align:center; margin-bottom:4px;">
+          Carica disegno
+          <input type="file" id="file-planimetria" accept=".png,.jpg,.jpeg,.pdf" style="display:none" onchange="caricaPlanimetria(this)">
+        </label>
+        <div id="planimetria-status" style="font-size:9px; color:#9ca3af;"></div>
+      </div>
+
+      <!-- LISTINO DINAMICO -->
+      <div style="background:rgba(59,130,245,0.1); border:1px solid rgba(59,130,245,0.2); border-radius:6px; padding:8px; flex:1; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="font-size:10px; color:#60a5fa; font-weight:700; text-transform:uppercase; margin-bottom:6px;">📋 Listino Rapido</div>
+        <input type="text" id="listino-piani-search" placeholder="Cerca prodotto..." oninput="filtraListinoPiani()" style="width:100%; margin-bottom:6px; font-size:10px;">
+        <div id="listino-piani-grid" style="flex:1; overflow-y:auto; display:grid; grid-template-columns:1fr; gap:4px;">
+          <div style="color:#6b7280; font-size:10px;">Seleziona una stanza per caricare il listino</div>
+        </div>
       </div>
     </div>
   </div>
@@ -4431,7 +4641,13 @@ function aggiungiStanzaUI(pianoId) {
 function aggiungiVoceStanza(stanzaId, stanzaNome) {
   if (!cantiereAttivo) return;
   stanzaAttivaPerCarrello = { id: stanzaId, nome: stanzaNome };
+  stanzaSelezionataPiani = { id: stanzaId, nome: stanzaNome };
   
+  // Carica il listino nella sidebar destra
+  listinoStorePiani = [];
+  filtraListinoPiani();
+  
+  // Mostra anche il form manuale (come prima)
   const formHtml = '<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:20px; width:400px; max-width:90vw; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce a ' + stanzaNome + '</div><button onclick="document.getElementById(\'form-voce-stanza\').remove()" style="background:#ef4444; color:white; border:none; width:24px; height:24px; border-radius:50%; cursor:pointer; font-size:14px; padding:0;">✕</button></div><div class="brand-autocomplete" style="margin-bottom:10px;"><input type="text" id="voce-brand-input" placeholder="Cerca brand..." autocomplete="off" oninput="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onfocus="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onblur="setTimeout(()=>closeAutocomplete(\'voce-brand-list\'),200)" style="width:100%; font-size:11px;"><input type="hidden" id="voce-brand-val"><div class="brand-dropdown-list" id="voce-brand-list"></div></div><input type="text" id="voce-codice" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:8px; font-size:11px;"><textarea id="voce-desc" placeholder="Descrizione prodotto..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px;"></textarea><div style="display:flex; gap:8px; margin-bottom:8px;"><input type="number" id="voce-qty" placeholder="Quantita" value="1" style="flex:1; font-size:11px;"><input type="number" id="voce-prezzo" placeholder="Prezzo €" value="0" style="flex:1; font-size:11px;"></div><button onclick="salvaVoceStanza()" class="btn-green" style="width:100%; padding:10px; font-weight:bold;">✓ Aggiungi voce</button></div>';
 
   document.body.insertAdjacentHTML('beforeend', formHtml);
@@ -4488,6 +4704,157 @@ function cancellaVoce(voceId, stanzaId) {
         alert('❌ ' + (d.error || 'Errore'));
       }
     });
+}
+
+// =============================================================================
+// LISTINO DINAMICO INTERFACCIA 2 (PIANI)
+// =============================================================================
+
+let listinoStorePiani = [];
+let stanzaSelezionataPiani = null;
+
+function aggiungiVoceStanzaFromListino(prodotto) {
+  if (!stanzaSelezionataPiani) {
+    alert('Seleziona prima una stanza cliccando "+ Voce"');
+    return;
+  }
+
+  const brand = selected.length > 0 ? selected[0] : 'Gessi';
+  const descrizione = '[' + (prodotto.codice || '—') + '] ' + (prodotto.nome || prodotto.descrizione || '');
+  const prezzo = prodotto.prezzo || 0;
+
+  fetch('/api/stanze/' + stanzaSelezionataPiani.id + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: prodotto.codice || '',
+      brand: brand,
+      descrizione: descrizione,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde'
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadInterfacciaPiani(cantiereAttivo);
+      document.getElementById('listino-piani-search').value = '';
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+function filtraListinoPiani() {
+  const sv = document.getElementById('listino-piani-search').value.toLowerCase();
+  const grid = document.getElementById('listino-piani-grid');
+  
+  if (!stanzaSelezionataPiani) {
+    grid.innerHTML = '<div style="color:#6b7280; font-size:10px;">Seleziona una stanza per caricare il listino</div>';
+    return;
+  }
+
+  if (listinoStorePiani.length === 0) {
+    grid.innerHTML = '<div style="color:#6b7280; font-size:10px;">⏳ Caricamento listino...</div>';
+    
+    // Carica listino del brand selezionato
+    const brand = selected.length > 0 ? selected[0] : 'Gessi';
+    fetch('/api/listino/' + encodeURIComponent(brand))
+      .then(r => r.json())
+      .then(d => {
+        listinoStorePiani = d.prodotti || [];
+        filtraListinoPiani(); // Ricorsivo per renderizzare
+      })
+      .catch(e => {
+        grid.innerHTML = '<div style="color:#ef4444; font-size:10px;">❌ ' + e.message + '</div>';
+      });
+    return;
+  }
+
+  let filtered = listinoStorePiani;
+  if (sv) {
+    filtered = listinoStorePiani.filter(p =>
+      (p.nome || '').toLowerCase().includes(sv) ||
+      (p.codice || '').toLowerCase().includes(sv) ||
+      (p.descrizione || '').toLowerCase().includes(sv)
+    );
+  }
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div style="color:#6b7280; font-size:10px;">Nessun prodotto trovato</div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.slice(0, 20).map(p => {
+    const prezzo = p.prezzo || 0;
+    const colore = prezzo > 500 ? '#10b981' : '#3b82f6';
+    return '<div style="background:rgba(30,41,59,0.9); border:1px solid rgba(59,130,245,0.2); border-radius:4px; padding:6px; cursor:pointer;" onclick="aggiungiVoceStanzaFromListino(this.parentElement.dataset.prod)" data-prod=\'' + JSON.stringify(p).replace(/'/g, "\\'") + '\'>' +
+      '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (p.nome || p.codice) + '</div>' +
+      '<div style="font-size:9px; color:#9ca3af;">[' + (p.codice || '—') + ']</div>' +
+      '<div style="font-size:11px; color:' + colore + '; font-weight:bold; margin-top:3px;">€' + parseFloat(prezzo).toFixed(0) + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+// =============================================================================
+// CARICAMENTO PLANIMETRIA CON DEEPSEEK VISION
+// =============================================================================
+
+async function caricaPlanimetria(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const statusEl = document.getElementById('planimetria-status');
+  statusEl.textContent = '⏳ Caricamento...';
+  statusEl.style.color = '#93c5fd';
+
+  // Converti immagine a base64
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const base64 = e.target.result;
+
+    try {
+      statusEl.textContent = '🤖 Analizzando disegno...';
+
+      // Chiama endpoint che userà DeepSeek Vision
+      const resp = await fetch('/api/analizza-planimetria', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          cantiere_id: cantiereAttivo,
+          immagine_base64: base64
+        })
+      });
+
+      const data = await resp.json();
+
+      if (!data.ok) {
+        statusEl.textContent = '❌ ' + (data.error || 'Errore');
+        statusEl.style.color = '#ef4444';
+        input.value = '';
+        return;
+      }
+
+      // CREAZIONE AUTOMATICA
+      statusEl.textContent = `✅ ${data.piani_creati} piani, ${data.stanze_create} stanze create!`;
+      statusEl.style.color = '#10b981';
+      input.value = '';
+
+      // Ricarica interfaccia
+      setTimeout(() => {
+        loadInterfacciaPiani(cantiereAttivo);
+      }, 1500);
+
+    } catch (err) {
+      statusEl.textContent = '❌ ' + err.message;
+      statusEl.style.color = '#ef4444';
+      input.value = '';
+    }
+  };
+
+  reader.readAsDataURL(file);
 }
 
 // ---------------------------------------------------------------------------
