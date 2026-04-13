@@ -762,7 +762,7 @@ def delete_voce(vid):
 def analizza_planimetria():
     """
     Riceve un'immagine (PNG/JPG) di una planimetria in base64.
-    DeepSeek Vision analizza e crea automaticamente piani + stanze nel cantiere.
+    OpenAI Vision analizza e crea automaticamente piani + stanze nel cantiere.
     """
     try:
         data = request.get_json()
@@ -772,14 +772,14 @@ def analizza_planimetria():
         if not cantiere_id or not immagine_base64:
             return jsonify({'ok': False, 'error': 'cantiere_id e immagine_base64 richiesti'}), 400
         
-        if not DEEPSEEK_API_KEY:
-            return jsonify({'ok': False, 'error': 'API Key DeepSeek non configurata'}), 400
+        if not OPENAI_API_KEY:
+            return jsonify({'ok': False, 'error': 'OPENAI_API_KEY non configurata'}), 400
         
         # Estrai il base64 puro (rimuovi data:image/jpeg;base64, ecc.)
         if ',' in immagine_base64:
             immagine_base64 = immagine_base64.split(',', 1)[1]
         
-        # Prompt per DeepSeek Vision
+        # Prompt per OpenAI Vision
         prompt = """Analizza questa planimetria architetturale e estrai la struttura.
 
 Rispondi SOLO in questo formato JSON, nient'altro:
@@ -848,12 +848,12 @@ IMPORTANTE: Restituisci SOLO il JSON, senza markdown o spiegazioni."""
         if resp.status_code != 200:
             return jsonify({
                 'ok': False,
-                'error': f'DeepSeek error {resp.status_code}: {resp.text}'
+                'error': f'OpenAI error {resp.status_code}: {resp.text}'
             }), 500
         
         result = resp.json()
         if 'choices' not in result or len(result['choices']) == 0:
-            return jsonify({'ok': False, 'error': 'No response from DeepSeek'}), 500
+            return jsonify({'ok': False, 'error': 'No response from OpenAI'}), 500
         
         risposta_text = result['choices'][0]['message']['content'].strip()
         
@@ -1852,7 +1852,7 @@ def parse_excel():
 
 @app.route('/api/arricchisci-prodotto', methods=['POST'])
 def arricchisci_prodotto():
-    """Prende codice+descrizione+prezzo e genera descrizione commerciale sintetica via DeepSeek"""
+    """Prende codice+descrizione+prezzo e genera descrizione commerciale sintetica via OpenAI"""
     data = request.get_json()
     codice = data.get('codice', '')
     descrizione = data.get('descrizione', '')
@@ -4807,7 +4807,9 @@ function filtraListinoPiani() {
 }
 
 // =============================================================================
-// CARICAMENTO PLANIMETRIA CON DEEPSEEK VISION
+# =============================================================================
+# API PLANIMETRIA - VISION + AUTO-CREAZIONE PIANI/STANZE (OpenAI gpt-4o)
+# =============================================================================
 // =============================================================================
 
 async function caricaPlanimetria(input) {
@@ -4826,7 +4828,7 @@ async function caricaPlanimetria(input) {
     try {
       statusEl.textContent = '🤖 Analizzando disegno...';
 
-      // Chiama endpoint che userà DeepSeek Vision
+      // Chiama endpoint che userà OpenAI Vision
       const resp = await fetch('/api/analizza-planimetria', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
