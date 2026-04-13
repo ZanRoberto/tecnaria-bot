@@ -762,7 +762,7 @@ def delete_voce(vid):
 def analizza_planimetria():
     """
     Riceve un'immagine (PNG/JPG) di una planimetria in base64.
-    OpenAI Vision analizza e crea automaticamente piani + stanze nel cantiere.
+    DeepSeek Vision analizza e crea automaticamente piani + stanze nel cantiere.
     """
     try:
         data = request.get_json()
@@ -848,12 +848,12 @@ IMPORTANTE: Restituisci SOLO il JSON, senza markdown o spiegazioni."""
         if resp.status_code != 200:
             return jsonify({
                 'ok': False,
-                'error': f'OpenAI error {resp.status_code}: {resp.text}'
+                'error': f'DeepSeek error {resp.status_code}: {resp.text}'
             }), 500
         
         result = resp.json()
         if 'choices' not in result or len(result['choices']) == 0:
-            return jsonify({'ok': False, 'error': 'No response from OpenAI'}), 500
+            return jsonify({'ok': False, 'error': 'No response from DeepSeek'}), 500
         
         risposta_text = result['choices'][0]['message']['content'].strip()
         
@@ -1852,7 +1852,7 @@ def parse_excel():
 
 @app.route('/api/arricchisci-prodotto', methods=['POST'])
 def arricchisci_prodotto():
-    """Prende codice+descrizione+prezzo e genera descrizione commerciale sintetica via OpenAI"""
+    """Prende codice+descrizione+prezzo e genera descrizione commerciale sintetica via DeepSeek"""
     data = request.get_json()
     codice = data.get('codice', '')
     descrizione = data.get('descrizione', '')
@@ -4807,9 +4807,7 @@ function filtraListinoPiani() {
 }
 
 // =============================================================================
-# =============================================================================
-# API PLANIMETRIA - VISION + AUTO-CREAZIONE PIANI/STANZE (OpenAI gpt-4o)
-# =============================================================================
+// CARICAMENTO PLANIMETRIA CON OPENAI VISION
 // =============================================================================
 
 async function caricaPlanimetria(input) {
@@ -4828,7 +4826,7 @@ async function caricaPlanimetria(input) {
     try {
       statusEl.textContent = '🤖 Analizzando disegno...';
 
-      // Chiama endpoint che userà OpenAI Vision
+      // Chiama endpoint che userà DeepSeek Vision
       const resp = await fetch('/api/analizza-planimetria', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
