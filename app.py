@@ -22,7 +22,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "tecnaria2024")
+SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "ZANNA1959?")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "").strip()
 
@@ -364,8 +364,9 @@ def login():
     data = request.get_json()
     username = data.get('username', '').strip()
     password = data.get('password', '').strip()
-    # Superadmin
-    if username == 'superadmin' and password == SUPERADMIN_PASSWORD:
+    
+    # BYPASS TEMPORANEO - accetta QUALUNQUE cosa per superadmin
+    if username == 'superadmin':
         session['user'] = {'id': 0, 'nome': 'Tecnaria', 'ruolo': 'superadmin', 'cliente_id': None}
         return jsonify({"ok": True, "ruolo": "superadmin", "nome": "Tecnaria"})
     conn = sqlite3.connect(DB_PATH)
