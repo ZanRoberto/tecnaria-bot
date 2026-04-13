@@ -20,8 +20,8 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "oracolo_covolo.db")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "tecnaria2024")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "").strip()
@@ -808,14 +808,18 @@ Se la planimetria non è leggibile, rispondi con un JSON valido ma vuoto:
 
 IMPORTANTE: Restituisci SOLO il JSON, senza markdown o spiegazioni."""
 
-        # Chiama DeepSeek con Vision
+        # ✅ Chiama OpenAI GPT-4 Vision (gpt-4o è più economico)
+        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+        if not OPENAI_API_KEY:
+            return jsonify({'ok': False, 'error': 'OPENAI_API_KEY non configurata'}), 400
+        
         headers = {
-            'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
+            'Authorization': f'Bearer {OPENAI_API_KEY}',
             'Content-Type': 'application/json'
         }
         
         payload = {
-            'model': 'deepseek-vision',
+            'model': 'gpt-4o',  # ✅ Miglior rapporto prezzo/performance
             'messages': [
                 {
                     'role': 'user',
@@ -835,7 +839,7 @@ IMPORTANTE: Restituisci SOLO il JSON, senza markdown o spiegazioni."""
         }
         
         resp = httpx.post(
-            'https://api.deepseek.com/chat/completions',
+            'https://api.openai.com/v1/chat/completions',
             json=payload,
             headers=headers,
             timeout=60
@@ -1475,15 +1479,19 @@ def scarica_immagini_gessi():
         traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
-def deepseek_ask(prompt):
-    if not DEEPSEEK_API_KEY:
-        return "Errore: API Key non configurata"
+def openai_ask(prompt):
+    if not OPENAI_API_KEY:
+        return "Errore: OPENAI_API_KEY non configurata"
     for attempt in range(2):
         try:
             resp = httpx.post(
-                DEEPSEEK_API_URL,
-                json={"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "max_tokens": 800},
-                headers={"Authorization": "Bearer " + DEEPSEEK_API_KEY},
+                "https://api.openai.com/v1/chat/completions",
+                json={
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 800
+                },
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
                 timeout=60
             )
             if resp.status_code == 200:
@@ -1492,9 +1500,9 @@ def deepseek_ask(prompt):
                     return data["choices"][0]["message"]["content"]
             return "Errore API: " + str(resp.status_code)
         except Exception as e:
-            print("[DEEPSEEK] Tentativo " + str(attempt + 1) + " fallito: " + str(e))
+            print("[OPENAI] Tentativo " + str(attempt + 1) + " fallito: " + str(e))
             if attempt == 1:
-                return "DeepSeek non risponde. Riprova tra qualche secondo."
+                return "OpenAI non risponde. Riprova tra qualche secondo."
     return "Errore sconosciuto"
 
 @app.route('/api/ask', methods=['POST'])
@@ -1584,7 +1592,7 @@ def ask():
 
     prompt += "\n\nREGOLE:\n- Prezzi da listino Excel = VERDE (affidabili)\n- Se il prezzo viene dal web, segnalalo come 'prezzo indicativo'\n- NON rimandare mai a siti esterni\n- Se trovi il prodotto nel listino, mostra: codice, nome, prezzo cliente, disponibilità\n- Risposta max 1200 caratteri, professionale"
 
-    answer = deepseek_ask(prompt)
+    answer = openai_ask(prompt)
 
     # Indica se i dati vengono dal listino o dal web
     fonte = "excel" if listino_context else ("doc" if doc_context else "web")
@@ -1870,7 +1878,7 @@ La descrizione deve:
 
 Rispondi SOLO con la descrizione commerciale, nient'altro."""
 
-    risposta = deepseek_ask(prompt)
+    risposta = openai_ask(prompt)
     return jsonify({"ok": True, "descrizione_ai": risposta.strip()})
 
 @app.route('/api/cantieri/<int:cid>/righe-da-ai', methods=['POST'])
