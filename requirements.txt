@@ -4,3 +4,4 @@ pydantic==2.12.5
 PyPDF2==3.0.1
 openpyxl==3.1.5
 python-docx==0.8.11
+gunicorn==21.2.0
