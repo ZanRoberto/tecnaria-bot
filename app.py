@@ -5096,23 +5096,56 @@ function aggiungiDaListino(idx) {
   const btn = document.getElementById('addbtn-' + idx);
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
 
-  fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ brand: listinoBrand, categoria: p.categoria||'', descrizione, importo })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      if (btn) { btn.textContent = '✓ Aggiunto'; btn.style.background = '#10b981'; }
-      const card = document.getElementById('pcard-' + idx);
-      if (card) card.style.opacity = '0.6';
-      loadRighe();
-      // Carica accessori consigliati
-      const prodottoId = p.codice || '';
-      if (prodottoId) caricaAccessoriProdotto(prodottoId, listinoBrand);
-    } else {
-      if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
+  // CONTROLLA MODALITA - se stanza è attiva, aggiungi alla STANZA
+  if (stanzaAttivaPerCarrello && stanzaAttivaPerCarrello.id) {
+    // MODALITA PIANI - aggiungi a stanza
+    fetch('/api/stanze/' + stanzaAttivaPerCarrello.id + '/voci', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        codice: p.codice || '',
+        brand: listinoBrand,
+        descrizione: descrizione,
+        quantita: 1,
+        prezzo_unitario: importo,
+        sconto_percentuale: 0,
+        colore: 'verde'
+      })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        if (btn) { btn.textContent = '✓ Aggiunto'; btn.style.background = '#10b981'; }
+        const card = document.getElementById('pcard-' + idx);
+        if (card) card.style.opacity = '0.6';
+        loadInterfacciaPiani(cantiereAttivo);
+        setTimeout(() => { chiudiListino(); }, 1000);
+      } else {
+        if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
+      }
+    });
+  } else {
+    // MODALITA SEMPLICE - aggiungi al carrello cantiere
+    fetch('/api/cantieri/' + cantiereAttivo + '/righe', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ brand: listinoBrand, categoria: p.categoria||'', descrizione, importo })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        if (btn) { btn.textContent = '✓ Aggiunto'; btn.style.background = '#10b981'; }
+        const card = document.getElementById('pcard-' + idx);
+        if (card) card.style.opacity = '0.6';
+        loadRighe();
+        // Carica accessori consigliati
+        const prodottoId = p.codice || '';
+        if (prodottoId) caricaAccessoriProdotto(prodottoId, listinoBrand);
+      } else {
+        if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
+      }
+    });
+  }
     }
     
     // Controlla abbinamenti e colora il bottone
