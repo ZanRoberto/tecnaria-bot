@@ -2969,16 +2969,19 @@ function openCantiere(id, nome, stato) {
 }
 
 function switchModalita() {
+  switchInterfaccia();
+}
+
+function switchInterfaccia(forzaNuovaModalita) {
   if (!cantiereAttivo) return;
   
   fetch('/api/cantieri/' + cantiereAttivo + '/modalita')
     .then(r => r.json())
     .then(d => {
       const modalitaAttuale = d.modalita || 'semplice';
-      const nuova = modalitaAttuale === 'semplice' ? 'piani' : 'semplice';
+      const nuova = forzaNuovaModalita || (modalitaAttuale === 'semplice' ? 'piani' : 'semplice');
       
-      const msg = `Convertire a modalità ${nuova.toUpperCase()}?\n\nI dati verranno preservati.`;
-      if (!confirm(msg)) return;
+      if (modalitaAttuale === nuova) return;  // Già in quella modalita
       
       fetch('/api/cantieri/' + cantiereAttivo + '/modalita', {
         method: 'PUT',
@@ -2988,18 +2991,23 @@ function switchModalita() {
       .then(r => r.json())
       .then(d => {
         if (d.ok) {
-          // Ricarica il cantiere con la nuova modalita
-          const nomeCantiere = document.getElementById('drawer-nome').textContent || 
-                               document.getElementById('drawer-piani-nome').textContent;
-          const stato = document.getElementById('cantiere-stato').value;
-          
-          // Chiudi drawer
+          // Chiudi il drawer attuale
           document.getElementById('cantiere-drawer').classList.remove('open');
           document.getElementById('cantiere-drawer-piani').classList.remove('open');
           
-          // Aspetta transizione
+          // Mostra il nuovo drawer dopo transizione
           setTimeout(() => {
-            openCantiere(cantiereAttivo, nomeCantiere, stato);
+            if (nuova === 'piani') {
+              // Apri drawer PIANI
+              document.getElementById('cantiere-drawer-piani').style.display = 'flex';
+              document.getElementById('cantiere-drawer-piani').classList.add('open');
+              loadInterfacciaPiani(cantiereAttivo);
+            } else {
+              // Apri drawer SEMPLICE
+              document.getElementById('cantiere-drawer').style.display = 'flex';
+              document.getElementById('cantiere-drawer').classList.add('open');
+              loadRighe();
+            }
           }, 300);
         } else {
           alert('❌ Errore: ' + d.error);
@@ -4278,6 +4286,209 @@ document.addEventListener('click', function(e) {
     qsr.style.display = 'none';
   }
 });
+
+// =============================================================================
+// INTERFACCIA 2 — PIANI/STANZE/VOCI
+// =============================================================================
+
+let pianiBrowserData = {};
+let stanzaAttivaPerCarrello = null;
+
+function loadInterfacciaPiani(cantiere_id) {
+  const pannello = document.getElementById('pannello-piani');
+  if (!pannello) return;
+
+  pannello.innerHTML = '<div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">⏳ Caricamento struttura piani...</div>';
+
+  fetch('/api/cantieri/' + cantiere_id + '/struttura')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) {
+        pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ Errore: ' + d.error + '</div>';
+        return;
+      }
+
+      pianiBrowserData = d.piani || [];
+      renderInterfacciaPiani();
+    })
+    .catch(e => {
+      pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ ' + e.message + '</div>';
+    });
+}
+
+function renderInterfacciaPiani() {
+  const pannello = document.getElementById('pannello-piani');
+  if (!pannello || !pianiBrowserData) return;
+
+  if (pianiBrowserData.length === 0) {
+    pannello.innerHTML = '<div style="padding:20px; text-align:center; color:#9ca3af;"><div style="font-size:14px; margin-bottom:12px;">📐 Nessun piano ancora</div><button onclick="aggiungiPianoUI()" class="btn-green" style="padding:8px 16px;">➕ Crea primo piano</button></div>';
+    return;
+  }
+
+  let html = '<div style="padding:0;">';
+
+  pianiBrowserData.forEach((piano, pIdx) => {
+    const isOpen = localStorage.getItem('piano_open_' + piano.id) === '1';
+    
+    html += '<div style="background:rgba(59,130,245,0.12); border:1px solid rgba(59,130,245,0.3); border-radius:8px; margin-bottom:12px; overflow:hidden;">' +
+      '<div onclick="togglePiano(' + piano.id + ')" style="padding:12px; background:rgba(59,130,245,0.2); cursor:pointer; display:flex; justify-content:space-between; align-items:center; user-select:none;">' +
+      '<div style="display:flex; align-items:center; gap:8px; flex:1;"><span style="font-size:14px; color:#60a5fa; font-weight:bold;">' + (isOpen ? '▼' : '▶') + ' ' + piano.nome + '</span><span style="font-size:10px; color:#9ca3af;">(' + piano.stanze.length + ' stanze)</span></div>' +
+      '<div style="font-size:12px; color:#10b981; font-weight:bold; background:rgba(16,185,129,0.2); padding:3px 8px; border-radius:4px;">€' + (piano.totale_piano || 0).toFixed(2) + '</div>' +
+      '</div>' +
+      '<div id="piano-body-' + piano.id + '" style="display:' + (isOpen ? 'block' : 'none') + '; padding:8px;">';
+
+    (piano.stanze || []).forEach((stanza, sIdx) => {
+      const stanzaOpen = localStorage.getItem('stanza_open_' + stanza.id) === '1';
+      const voci = stanza.voci || [];
+      
+      html += '<div style="background:rgba(30,41,59,0.8); border-left:3px solid #8b5cf6; border-radius:6px; margin-bottom:6px; overflow:hidden;">' +
+        '<div onclick="toggleStanza(' + stanza.id + ')" style="padding:8px 10px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; user-select:none; background:rgba(139,92,246,0.15);">' +
+        '<div style="display:flex; align-items:center; gap:6px; flex:1;"><span style="font-size:11px; color:#d1d5db; font-weight:bold;">' + (stanzaOpen ? '▼' : '▶') + ' 🏠 ' + stanza.nome + '</span></div>' +
+        '<div style="display:flex; gap:8px; align-items:center;"><span style="font-size:11px; color:#10b981; font-weight:bold;">€' + (stanza.totale_stanza || 0).toFixed(2) + '</span>' +
+        '<button onclick="event.stopPropagation(); aggiungiVoceStanza(' + stanza.id + ', \'' + stanza.nome.replace(/'/g, "\\'") + '\')" class="btn-green btn-sm" style="padding:2px 6px; font-size:9px; margin-bottom:0;">+ Voce</button></div>' +
+        '</div>' +
+        '<div id="stanza-body-' + stanza.id + '" style="display:' + (stanzaOpen ? 'block' : 'none') + '; padding:6px;">';
+
+      if (voci.length === 0) {
+        html += '<div style="padding:6px; font-size:10px; color:#6b7280; font-style:italic;">Nessuna voce</div>';
+      } else {
+        voci.forEach(voce => {
+          html += '<div style="padding:5px 6px; margin:3px 0; background:rgba(59,130,245,0.1); border-radius:4px; font-size:10px; color:#e0e0e0; display:flex; justify-content:space-between; align-items:center;">' +
+            '<div style="flex:1;"><div style="font-weight:600;">[' + (voce.codice||'—') + '] ' + (voce.brand || '—') + '</div>' +
+            '<div style="font-size:9px; color:#9ca3af;">' + voce.descrizione + '</div>' +
+            '<div style="font-size:9px; color:#6b7280; margin-top:2px;">Qty: ' + voce.quantita + ' | €' + voce.prezzo_unitario + ' = €' + voce.subtotale.toFixed(2) + '</div></div>' +
+            '<button onclick="cancellaVoce(' + voce.id + ', ' + stanza.id + ')" class="btn-red btn-sm" style="padding:2px 4px; font-size:8px; margin-bottom:0; white-space:nowrap;">✕</button>' +
+            '</div>';
+        });
+      }
+
+      html += '</div></div>';
+    });
+
+    html += '<button onclick="aggiungiStanzaUI(' + piano.id + ')" class="btn-purple btn-sm" style="width:100%; margin-top:6px; margin-bottom:0;">➕ Nuova stanza</button>' +
+      '</div></div>';
+  });
+
+  html += '<button onclick="aggiungiPianoUI()" class="btn-green" style="width:100%; margin-top:8px;">➕ Nuovo piano</button></div>';
+
+  pannello.innerHTML = html;
+}
+
+function togglePiano(pianoId) {
+  const body = document.getElementById('piano-body-' + pianoId);
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  localStorage.setItem('piano_open_' + pianoId, isOpen ? '0' : '1');
+}
+
+function toggleStanza(stanzaId) {
+  const body = document.getElementById('stanza-body-' + stanzaId);
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  localStorage.setItem('stanza_open_' + stanzaId, isOpen ? '0' : '1');
+}
+
+function aggiungiPianoUI() {
+  if (!cantiereAttivo) return;
+  const nome = prompt('Nome piano (es. "Piano Terra", "Primo Livello"):');
+  if (!nome || !nome.trim()) return;
+
+  fetch('/api/cantieri/' + cantiereAttivo + '/piani', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ numero: pianiBrowserData.length + 1, nome: nome.trim() })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadInterfacciaPiani(cantiereAttivo);
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+function aggiungiStanzaUI(pianoId) {
+  if (!cantiereAttivo) return;
+  const nome = prompt('Nome stanza (es. "Bagno principale", "Doccia"):');
+  if (!nome || !nome.trim()) return;
+
+  fetch('/api/piani/' + pianoId + '/stanze', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ nome: nome.trim() })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      loadInterfacciaPiani(cantiereAttivo);
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+function aggiungiVoceStanza(stanzaId, stanzaNome) {
+  if (!cantiereAttivo) return;
+  stanzaAttivaPerCarrello = { id: stanzaId, nome: stanzaNome };
+  
+  const formHtml = '<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:20px; width:400px; max-width:90vw; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce a ' + stanzaNome + '</div><button onclick="document.getElementById(\'form-voce-stanza\').remove()" style="background:#ef4444; color:white; border:none; width:24px; height:24px; border-radius:50%; cursor:pointer; font-size:14px; padding:0;">✕</button></div><div class="brand-autocomplete" style="margin-bottom:10px;"><input type="text" id="voce-brand-input" placeholder="Cerca brand..." autocomplete="off" oninput="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onfocus="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onblur="setTimeout(()=>closeAutocomplete(\'voce-brand-list\'),200)" style="width:100%; font-size:11px;"><input type="hidden" id="voce-brand-val"><div class="brand-dropdown-list" id="voce-brand-list"></div></div><input type="text" id="voce-codice" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:8px; font-size:11px;"><textarea id="voce-desc" placeholder="Descrizione prodotto..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px;"></textarea><div style="display:flex; gap:8px; margin-bottom:8px;"><input type="number" id="voce-qty" placeholder="Quantita" value="1" style="flex:1; font-size:11px;"><input type="number" id="voce-prezzo" placeholder="Prezzo €" value="0" style="flex:1; font-size:11px;"></div><button onclick="salvaVoceStanza()" class="btn-green" style="width:100%; padding:10px; font-weight:bold;">✓ Aggiungi voce</button></div>';
+
+  document.body.insertAdjacentHTML('beforeend', formHtml);
+}
+
+function salvaVoceStanza() {
+  if (!stanzaAttivaPerCarrello) return;
+
+  const brand = document.getElementById('voce-brand-val').value || document.getElementById('voce-brand-input').value;
+  const codice = document.getElementById('voce-codice').value.trim();
+  const desc = document.getElementById('voce-desc').value.trim();
+  const qty = parseFloat(document.getElementById('voce-qty').value) || 1;
+  const prezzo = parseFloat(document.getElementById('voce-prezzo').value) || 0;
+
+  if (!desc) {
+    alert('Inserisci almeno una descrizione');
+    return;
+  }
+
+  fetch('/api/stanze/' + stanzaAttivaPerCarrello.id + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: codice,
+      brand: brand,
+      descrizione: desc,
+      quantita: qty,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde'
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      document.getElementById('form-voce-stanza').remove();
+      stanzaAttivaPerCarrello = null;
+      loadInterfacciaPiani(cantiereAttivo);
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+function cancellaVoce(voceId, stanzaId) {
+  if (!confirm('Eliminare questa voce?')) return;
+
+  fetch('/api/stanza_voci/' + voceId, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        loadInterfacciaPiani(cantiereAttivo);
+      } else {
+        alert('❌ ' + (d.error || 'Errore'));
+      }
+    });
+}
 
 // ---------------------------------------------------------------------------
 // LISTINO DASHBOARD — flusso 1-click
