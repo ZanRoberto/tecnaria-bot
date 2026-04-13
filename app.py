@@ -822,7 +822,7 @@ IMPORTANTE: Restituisci SOLO il JSON, senza markdown o spiegazioni."""
                     'content': [
                         {'type': 'text', 'text': prompt},
                         {
-                            'type': 'image',
+                            'type': 'image_url',
                             'image_url': {
                                 'url': f'data:image/jpeg;base64,{immagine_base64}'
                             }
