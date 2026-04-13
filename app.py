@@ -809,7 +809,6 @@ Se la planimetria non è leggibile, rispondi con un JSON valido ma vuoto:
 IMPORTANTE: Restituisci SOLO il JSON, senza markdown o spiegazioni."""
 
         # ✅ Chiama OpenAI GPT-4 Vision (gpt-4o è più economico)
-        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
         if not OPENAI_API_KEY:
             return jsonify({'ok': False, 'error': 'OPENAI_API_KEY non configurata'}), 400
         
