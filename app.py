@@ -4962,7 +4962,6 @@ render();
 # ============================================================================
 
 @app.route('/api/cantieri/<int:cid>/struttura', methods=['GET'])
-@login_required
 def get_struttura_cantiere(cid):
     """Restituisce INTERA struttura piani/stanze/voci con totali"""
     conn = sqlite3.connect(DB_PATH)
@@ -5013,7 +5012,6 @@ def get_struttura_cantiere(cid):
     })
 
 @app.route('/api/cantieri/<int:cid>/piani', methods=['POST'])
-@login_required
 def crea_piano(cid):
     data = request.json
     nome_piano = data.get('nome', 'Piano')
@@ -5037,7 +5035,6 @@ def crea_piano(cid):
     return jsonify({'ok': True, 'piano_id': piano_id, 'numero': numero})
 
 @app.route('/api/piani/<int:pid>/stanze', methods=['POST'])
-@login_required
 def crea_stanza(pid):
     data = request.json
     nome_stanza = data.get('nome', 'Stanza')
@@ -5065,7 +5062,6 @@ def crea_stanza(pid):
     return jsonify({'ok': True, 'stanza_id': stanza_id})
 
 @app.route('/api/stanze/<int:sid>/voci', methods=['POST'])
-@login_required
 def aggiungi_voce(sid):
     data = request.json
     tipo = data.get('tipo', 'manuale')
