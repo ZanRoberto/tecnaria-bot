@@ -4647,22 +4647,180 @@ function aggiungiStanzaUI(pianoId) {
   });
 }
 
+
 function aggiungiVoceStanza(stanzaId, stanzaNome) {
   if (!cantiereAttivo) return;
   stanzaAttivaPerCarrello = { id: stanzaId, nome: stanzaNome };
   stanzaSelezionataPiani = { id: stanzaId, nome: stanzaNome };
   
-  // 🔴 RESETTA LISTINO — nuova stanza = scelta brand da capo
-  listinoStorePiani = [];
-  
-  // Mostra il form manuale con **selezione brand libera**
-  const formHtml = '<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:20px; width:450px; max-width:90vw; max-height:85vh; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5); overflow-y:auto;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce a ' + stanzaNome + '</div><div style="font-size:10px; color:#9ca3af; margin-top:4px;">Seleziona brand e carica prodotto</div></div><button onclick="document.getElementById(\'form-voce-stanza\').remove()" style="background:#ef4444; color:white; border:none; width:24px; height:24px; border-radius:50%; cursor:pointer; font-size:14px; padding:0;">✕</button></div><div style="background:rgba(59,130,245,0.1); padding:10px; border-radius:6px; margin-bottom:12px;"><div style="font-size:10px; color:#9ca3af; font-weight:600; margin-bottom:6px;">📋 STEP 1: Seleziona Brand</div><div class="brand-autocomplete" style="position:relative;"><input type="text" id="voce-brand-input" placeholder="Cerca brand o digita uno nuovo..." autocomplete="off" oninput="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onfocus="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onblur="setTimeout(()=>closeAutocomplete(\'voce-brand-list\'),200)" style="width:100%; font-size:11px; padding:8px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.4); color:white; border-radius:4px;"><input type="hidden" id="voce-brand-val"><div class="brand-dropdown-list" id="voce-brand-list" style="position:absolute; top:100%; left:0; right:0; background:#1e293b; border:1px solid rgba(59,130,245,0.5); border-top:none; border-radius:0 0 6px 6px; max-height:200px; overflow-y:auto; z-index:3000;"></div></div><div style="font-size:9px; color:#6b7280; margin-top:4px;">💡 Se non esiste, lo creiamo al volo</div></div><div style="background:rgba(139,92,246,0.1); padding:10px; border-radius:6px; margin-bottom:12px;"><div style="font-size:10px; color:#9ca3af; font-weight:600; margin-bottom:6px;">📦 STEP 2: Dati Prodotto</div><input type="text" id="voce-codice" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:8px; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"><textarea id="voce-desc" placeholder="Descrizione prodotto..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"></textarea></div><div style="background:rgba(16,185,129,0.1); padding:10px; border-radius:6px; margin-bottom:12px;"><div style="font-size:10px; color:#9ca3af; font-weight:600; margin-bottom:6px;">💰 STEP 3: Prezzo</div><div style="display:flex; gap:8px;"><input type="number" id="voce-qty" placeholder="Quantita" value="1" step="0.1" style="flex:1; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"><input type="number" id="voce-prezzo" placeholder="Prezzo €" value="0" step="0.01" style="flex:1; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"></div></div><div style="display:flex; gap:8px;"><button onclick="salvaVoceStanzaConNuovoBrand()" class="btn-green" style="flex:1; padding:10px; font-weight:bold; margin-bottom:0;">✓ Aggiungi voce</button><button onclick="apriModalListinoStanza()" class="btn-purple" style="flex:1; padding:10px; font-weight:bold; margin-bottom:0;">📋 O scegli dal listino</button></div></div>';
-
+  const formHtml = `<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:0; width:500px; max-width:90vw; max-height:90vh; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5); display:flex; flex-direction:column; overflow:hidden;">
+    <div style="padding:16px; border-bottom:1px solid rgba(59,130,245,0.3); display:flex; justify-content:space-between; align-items:center; background:rgba(59,130,245,0.1);">
+      <div><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce</div><div style="font-size:11px; color:#9ca3af; margin-top:2px;">🏠 ${stanzaNome}</div></div>
+      <button onclick="document.getElementById('form-voce-stanza').remove()" style="background:#ef4444; color:white; border:none; width:28px; height:28px; border-radius:50%; cursor:pointer; font-size:16px; padding:0;">✕</button>
+    </div>
+    <div id="voce-content" style="flex:1; overflow-y:auto; padding:16px;">
+      <div id="step-metodo">
+        <div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:12px;">SCEGLI COME AGGIUNGERE:</div>
+        <button onclick="mostraFormManuale()" style="width:100%; background:rgba(139,92,246,0.2); border:1px solid rgba(139,92,246,0.5); color:#a78bfa; padding:12px; border-radius:6px; cursor:pointer; margin-bottom:8px; font-weight:600; font-size:12px; text-align:left;">✍️ MANUALE<br><span style="font-size:10px; color:#9ca3af; font-weight:400;">Digita codice, descrizione e prezzo</span></button>
+        <button onclick="mostraModalListino()" style="width:100%; background:rgba(59,130,245,0.2); border:1px solid rgba(59,130,245,0.5); color:#93c5fd; padding:12px; border-radius:6px; cursor:pointer; font-weight:600; font-size:12px; text-align:left;">📋 DAL LISTINO<br><span style="font-size:10px; color:#9ca3af; font-weight:400;">Scegli brand e cerca nel catalogo</span></button>
+      </div>
+      <div id="step-manuale" style="display:none;">
+        <div style="font-size:12px; font-weight:bold; color:#a78bfa; margin-bottom:12px; display:flex; align-items:center; gap:6px;"><button onclick="tornaAMetodo()" style="background:rgba(139,92,246,0.3); border:none; color:#a78bfa; padding:2px 8px; border-radius:4px; cursor:pointer; font-size:11px; margin-bottom:0;">← Indietro</button> Inserimento manuale</div>
+        <div style="background:rgba(139,92,246,0.1); padding:10px; border-radius:6px; margin-bottom:12px;">
+          <div style="font-size:10px; color:#a78bfa; font-weight:600; margin-bottom:8px;">📦 BRAND</div>
+          <input type="text" id="voce-brand-input" placeholder="Cerca brand o digita uno nuovo..." autocomplete="off" oninput="filterAutocomplete('voce-brand-input','voce-brand-list','voce-brand-val')" onfocus="filterAutocomplete('voce-brand-input','voce-brand-list','voce-brand-val')" onblur="setTimeout(()=>closeAutocomplete('voce-brand-list'),200)" style="width:100%; font-size:11px; padding:8px; background:rgba(30,41,59,0.8); border:1px solid rgba(139,92,246,0.4); color:white; border-radius:4px;">
+          <input type="hidden" id="voce-brand-val">
+          <div class="brand-dropdown-list" id="voce-brand-list" style="position:absolute; top:100%; left:0; right:0; background:#1e293b; border:1px solid rgba(139,92,246,0.5); border-top:none; border-radius:0 0 6px 6px; max-height:180px; overflow-y:auto; z-index:3000; display:none;"></div>
+          <div style="font-size:9px; color:#6b7280; margin-top:4px;">💡 Se non esiste, lo creiamo</div>
+        </div>
+        <div style="background:rgba(59,130,245,0.1); padding:10px; border-radius:6px; margin-bottom:12px;">
+          <div style="font-size:10px; color:#93c5fd; font-weight:600; margin-bottom:8px;">📝 DETTAGLI PRODOTTO</div>
+          <input type="text" id="voce-codice" placeholder="Codice (opzionale)" style="width:100%; margin-bottom:8px; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;">
+          <textarea id="voce-desc" placeholder="Descrizione prodotto..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"></textarea>
+        </div>
+        <div style="background:rgba(16,185,129,0.1); padding:10px; border-radius:6px; margin-bottom:12px;">
+          <div style="font-size:10px; color:#10b981; font-weight:600; margin-bottom:8px;">💰 PREZZO E QUANTITÀ</div>
+          <div style="display:flex; gap:8px;"><div style="flex:1;"><div style="font-size:9px; color:#6b7280; margin-bottom:2px;">Quantità</div><input type="number" id="voce-qty" placeholder="1" value="1" step="0.1" style="width:100%; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"></div><div style="flex:1;"><div style="font-size:9px; color:#6b7280; margin-bottom:2px;">Prezzo €</div><input type="number" id="voce-prezzo" placeholder="0" value="0" step="0.01" style="width:100%; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"></div></div>
+        </div>
+        <button onclick="salvaVoceStanzaManuale()" class="btn-green" style="width:100%; padding:10px; font-weight:bold; margin-bottom:0; border-radius:6px;">✓ Salva voce</button>
+      </div>
+    </div>
+  </div>`;
   document.body.insertAdjacentHTML('beforeend', formHtml);
   document.getElementById('form-voce-stanza').onclick = (e) => e.stopPropagation();
 }
 
-function apriFormVoceStanzaConProdotto(prodotto) {
+function tornaAMetodo() {
+  document.getElementById('step-metodo').style.display = 'block';
+  document.getElementById('step-manuale').style.display = 'none';
+}
+
+function mostraFormManuale() {
+  document.getElementById('step-metodo').style.display = 'none';
+  document.getElementById('step-manuale').style.display = 'block';
+  if (selected && selected.length > 0) {
+    document.getElementById('voce-brand-input').value = selected[0];
+    document.getElementById('voce-brand-val').value = selected[0];
+  }
+}
+
+function mostraModalListino() {
+  if (!stanzaSelezionataPiani) return;
+  const form = document.getElementById('form-voce-stanza');
+  if (form) form.remove();
+  const modal = document.createElement('div');
+  modal.id = 'modal-scegli-brand';
+  modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#0f172e;border:2px solid #3b82f6;border-radius:12px;padding:20px;width:400px;max-width:90vw;z-index:5000;box-shadow:0 10px 40px rgba(0,0,0,0.5);';
+  modal.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;"><div style="font-size:14px;font-weight:bold;color:#60a5fa;">📋 Scegli brand</div><button onclick="document.getElementById('modal-scegli-brand').remove();aggiungiVoceStanza(${stanzaSelezionataPiani.id},'${stanzaSelezionataPiani.nome.replace(/'/g,"\\'")}')" style="background:#ef4444;color:white;border:none;width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:14px;padding:0;">✕</button></div><input type="text" id="search-brand-modal" placeholder="Cerca brand..." oninput="filtraBrandModal()" style="width:100%;padding:8px;background:rgba(30,41,59,0.8);border:1px solid rgba(59,130,245,0.3);color:white;border-radius:4px;margin-bottom:12px;font-size:11px;"><div id="brand-list-modal" style="max-height:300px;overflow-y:auto;"></div>`;
+  document.body.appendChild(modal);
+  filtraBrandModal();
+}
+
+function filtraBrandModal() {
+  const search = (document.getElementById('search-brand-modal') ? document.getElementById('search-brand-modal').value : '').toLowerCase();
+  const filtered = search ? BRANDS.filter(b => b.toLowerCase().includes(search)) : BRANDS;
+  const list = document.getElementById('brand-list-modal');
+  if (!list) return;
+  list.innerHTML = filtered.slice(0, 15).map(b => `<div style="padding:8px;background:rgba(59,130,245,0.1);border:1px solid rgba(59,130,245,0.2);border-radius:4px;margin-bottom:4px;cursor:pointer;font-size:11px;color:#e0e0e0;" onclick="apriListinoPerBrandStanza('${b.replace(/'/g,"\\'")}')">${b}</div>`).join('');
+}
+
+function apriListinoPerBrandStanza(brand) {
+  const modal = document.getElementById('modal-scegli-brand');
+  if (modal) modal.remove();
+  const liPanel = document.createElement('div');
+  liPanel.id = 'listino-stanza-modal';
+  liPanel.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:600px;max-width:90vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.5);z-index:5000;';
+  liPanel.innerHTML = `<div style="padding:16px;border-bottom:1px solid rgba(59,130,245,0.3);display:flex;justify-content:space-between;align-items:center;"><div style="font-size:14px;font-weight:bold;color:#60a5fa;">📋 ${brand}</div><button onclick="document.getElementById('listino-stanza-modal').remove();aggiungiVoceStanza(${stanzaSelezionataPiani.id},'${stanzaSelezionataPiani.nome.replace(/'/g,"\\'")}')" style="background:#ef4444;color:white;border:none;width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:14px;padding:0;">✕</button></div><div style="padding:12px;border-bottom:1px solid rgba(59,130,245,0.2);"><input type="text" id="listino-stanza-search" placeholder="Cerca prodotto..." oninput="filtraListinoStanzaReale()" style="width:100%;padding:8px;background:rgba(30,41,59,0.8);border:1px solid rgba(59,130,245,0.3);color:white;border-radius:4px;font-size:11px;"></div><div id="listino-stanza-grid" style="flex:1;overflow-y:auto;padding:12px;"></div>`;
+  document.body.appendChild(liPanel);
+  fetch('/api/listino/' + encodeURIComponent(brand))
+    .then(r => r.json())
+    .then(d => { window.listinoStanzaAttuale = d.prodotti || []; window.brandStanzaAttuale = brand; filtraListinoStanzaReale(); });
+}
+
+function filtraListinoStanzaReale() {
+  const grid = document.getElementById('listino-stanza-grid');
+  if (!grid || !window.listinoStanzaAttuale) return;
+  const sv = (document.getElementById('listino-stanza-search') ? document.getElementById('listino-stanza-search').value : '').toLowerCase();
+  let filtered = window.listinoStanzaAttuale;
+  if (sv) filtered = filtered.filter(p => (p.nome||'').toLowerCase().includes(sv) || (p.codice||'').toLowerCase().includes(sv));
+  if (filtered.length === 0) { grid.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;text-align:center;">Nessun prodotto</div>'; return; }
+  grid.innerHTML = filtered.slice(0, 30).map(p => `<div style="background:rgba(30,41,59,0.9);border:1px solid rgba(59,130,245,0.2);border-radius:6px;padding:10px;margin-bottom:6px;cursor:pointer;" onclick="selezionaProdottoStanza(${JSON.stringify(p).replace(/'/g,"\\'")})"><div style="font-size:11px;font-weight:600;color:#e0e0e0;">${p.nome||'—'}</div><div style="font-size:10px;color:#9ca3af;">[${p.codice||'—'}]</div><div style="font-size:12px;color:#10b981;font-weight:bold;margin-top:4px;">€${parseFloat(p.prezzo||0).toFixed(2)}</div></div>`).join('');
+}
+
+function selezionaProdottoStanza(prodotto) {
+  if (!stanzaSelezionataPiani) return;
+  const descrizione = (prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || '');
+  const prezzo = prodotto.prezzo || 0;
+  const brand = window.brandStanzaAttuale || 'Gessi';
+  fetch('/api/stanze/' + stanzaSelezionataPiani.id + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ codice: prodotto.codice || '', brand: brand, descrizione: descrizione, quantita: 1, prezzo_unitario: prezzo, sconto_percentuale: 0, colore: 'verde' })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      const modal = document.getElementById('listino-stanza-modal');
+      if (modal) modal.remove();
+      loadInterfacciaPiani(cantiereAttivo);
+      const msg = document.createElement('div');
+      msg.innerHTML = '✓ ' + descrizione;
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 2000);
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+function salvaVoceStanzaManuale() {
+  if (!stanzaAttivaPerCarrello) return;
+  const brandInput = document.getElementById('voce-brand-input').value.trim();
+  const brandVal = document.getElementById('voce-brand-val').value.trim();
+  const brand = brandVal || brandInput;
+  const codice = document.getElementById('voce-codice').value.trim();
+  const desc = document.getElementById('voce-desc').value.trim();
+  const qty = parseFloat(document.getElementById('voce-qty').value) || 1;
+  const prezzo = parseFloat(document.getElementById('voce-prezzo').value) || 0;
+  if (!brand) { alert('Seleziona o digita un brand'); return; }
+  if (!desc) { alert('Inserisci una descrizione'); return; }
+  if (!BRANDS.includes(brand)) {
+    fetch('/api/add-azienda', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ nome: brand }) })
+    .then(r => r.json())
+    .then(d => { if (d.ok) { if (!BRANDS.includes(brand)) BRANDS.push(brand); BRANDS.sort(); salvaVoceStanzaEseguiOra(brand, codice, desc, qty, prezzo); } });
+  } else {
+    salvaVoceStanzaEseguiOra(brand, codice, desc, qty, prezzo);
+  }
+}
+
+function salvaVoceStanzaEseguiOra(brand, codice, desc, qty, prezzo) {
+  if (!stanzaAttivaPerCarrello) return;
+  const descrizione = codice ? '[' + codice + '] ' + desc : desc;
+  fetch('/api/stanze/' + stanzaAttivaPerCarrello.id + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ codice: codice, brand: brand, descrizione: descrizione, quantita: qty, prezzo_unitario: prezzo, sconto_percentuale: 0, colore: 'verde' })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      const form = document.getElementById('form-voce-stanza');
+      if (form) form.remove();
+      stanzaAttivaPerCarrello = null;
+      loadInterfacciaPiani(cantiereAttivo);
+      const msg = document.createElement('div');
+      msg.innerHTML = '✓ Voce aggiunta';
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 2000);
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+
   if (!stanzaSelezionataPiani) {
     alert('Seleziona prima una stanza');
     return;
