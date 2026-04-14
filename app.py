@@ -4652,14 +4652,14 @@ function aggiungiVoceStanza(stanzaId, stanzaNome) {
   stanzaAttivaPerCarrello = { id: stanzaId, nome: stanzaNome };
   stanzaSelezionataPiani = { id: stanzaId, nome: stanzaNome };
   
-  // Carica il listino nella sidebar destra
+  // 🔴 RESETTA LISTINO — nuova stanza = scelta brand da capo
   listinoStorePiani = [];
-  filtraListinoPiani();
   
-  // Mostra anche il form manuale (come prima)
-  const formHtml = '<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:20px; width:400px; max-width:90vw; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce a ' + stanzaNome + '</div><button onclick="document.getElementById(\'form-voce-stanza\').remove()" style="background:#ef4444; color:white; border:none; width:24px; height:24px; border-radius:50%; cursor:pointer; font-size:14px; padding:0;">✕</button></div><div class="brand-autocomplete" style="margin-bottom:10px;"><input type="text" id="voce-brand-input" placeholder="Cerca brand..." autocomplete="off" oninput="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onfocus="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onblur="setTimeout(()=>closeAutocomplete(\'voce-brand-list\'),200)" style="width:100%; font-size:11px;"><input type="hidden" id="voce-brand-val"><div class="brand-dropdown-list" id="voce-brand-list"></div></div><input type="text" id="voce-codice" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:8px; font-size:11px;"><textarea id="voce-desc" placeholder="Descrizione prodotto..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px;"></textarea><div style="display:flex; gap:8px; margin-bottom:8px;"><input type="number" id="voce-qty" placeholder="Quantita" value="1" style="flex:1; font-size:11px;"><input type="number" id="voce-prezzo" placeholder="Prezzo €" value="0" style="flex:1; font-size:11px;"></div><button onclick="salvaVoceStanza()" class="btn-green" style="width:100%; padding:10px; font-weight:bold;">✓ Aggiungi voce</button></div>';
+  // Mostra il form manuale con **selezione brand libera**
+  const formHtml = '<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:20px; width:450px; max-width:90vw; max-height:85vh; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5); overflow-y:auto;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce a ' + stanzaNome + '</div><div style="font-size:10px; color:#9ca3af; margin-top:4px;">Seleziona brand e carica prodotto</div></div><button onclick="document.getElementById(\'form-voce-stanza\').remove()" style="background:#ef4444; color:white; border:none; width:24px; height:24px; border-radius:50%; cursor:pointer; font-size:14px; padding:0;">✕</button></div><div style="background:rgba(59,130,245,0.1); padding:10px; border-radius:6px; margin-bottom:12px;"><div style="font-size:10px; color:#9ca3af; font-weight:600; margin-bottom:6px;">📋 STEP 1: Seleziona Brand</div><div class="brand-autocomplete" style="position:relative;"><input type="text" id="voce-brand-input" placeholder="Cerca brand o digita uno nuovo..." autocomplete="off" oninput="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onfocus="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onblur="setTimeout(()=>closeAutocomplete(\'voce-brand-list\'),200)" style="width:100%; font-size:11px; padding:8px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.4); color:white; border-radius:4px;"><input type="hidden" id="voce-brand-val"><div class="brand-dropdown-list" id="voce-brand-list" style="position:absolute; top:100%; left:0; right:0; background:#1e293b; border:1px solid rgba(59,130,245,0.5); border-top:none; border-radius:0 0 6px 6px; max-height:200px; overflow-y:auto; z-index:3000;"></div></div><div style="font-size:9px; color:#6b7280; margin-top:4px;">💡 Se non esiste, lo creiamo al volo</div></div><div style="background:rgba(139,92,246,0.1); padding:10px; border-radius:6px; margin-bottom:12px;"><div style="font-size:10px; color:#9ca3af; font-weight:600; margin-bottom:6px;">📦 STEP 2: Dati Prodotto</div><input type="text" id="voce-codice" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:8px; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"><textarea id="voce-desc" placeholder="Descrizione prodotto..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"></textarea></div><div style="background:rgba(16,185,129,0.1); padding:10px; border-radius:6px; margin-bottom:12px;"><div style="font-size:10px; color:#9ca3af; font-weight:600; margin-bottom:6px;">💰 STEP 3: Prezzo</div><div style="display:flex; gap:8px;"><input type="number" id="voce-qty" placeholder="Quantita" value="1" step="0.1" style="flex:1; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"><input type="number" id="voce-prezzo" placeholder="Prezzo €" value="0" step="0.01" style="flex:1; font-size:11px; padding:6px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:4px;"></div></div><div style="display:flex; gap:8px;"><button onclick="salvaVoceStanzaConNuovoBrand()" class="btn-green" style="flex:1; padding:10px; font-weight:bold; margin-bottom:0;">✓ Aggiungi voce</button><button onclick="apriModalListinoStanza()" class="btn-purple" style="flex:1; padding:10px; font-weight:bold; margin-bottom:0;">📋 O scegli dal listino</button></div></div>';
 
   document.body.insertAdjacentHTML('beforeend', formHtml);
+  document.getElementById('form-voce-stanza').onclick = (e) => e.stopPropagation();
 }
 
 function apriFormVoceStanzaConProdotto(prodotto) {
@@ -4676,24 +4676,132 @@ function apriFormVoceStanzaConProdotto(prodotto) {
   const prezzoVal = prodotto.prezzo || 0;
   const brandVal = prodotto.brand || '';
   
-  const formHtml = '<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:20px; width:400px; max-width:90vw; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce a ' + stanzaNome + '</div><button onclick="document.getElementById(\'form-voce-stanza\').remove()" style="background:#ef4444; color:white; border:none; width:24px; height:24px; border-radius:50%; cursor:pointer; font-size:14px; padding:0;">✕</button></div><div style="background:rgba(59,130,245,0.1); padding:8px; border-radius:4px; margin-bottom:10px; font-size:10px; color:#60a5fa;"><strong>' + descVal + '</strong><br>€' + prezzoVal + '</div><input type="text" id="voce-codice" placeholder="Codice prodotto" value="' + codiceVal + '" style="width:100%; margin-bottom:8px; font-size:11px;"><textarea id="voce-desc" placeholder="Descrizione..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px;">' + descVal + '</textarea><div style="display:flex; gap:8px; margin-bottom:8px;"><input type="number" id="voce-qty" placeholder="Quantita" value="1" style="flex:1; font-size:11px;"><input type="number" id="voce-prezzo" placeholder="Prezzo €" value="' + prezzoVal + '" style="flex:1; font-size:11px;"></div><button onclick="salvaVoceStanza()" class="btn-green" style="width:100%; padding:10px; font-weight:bold;">✓ Aggiungi voce</button></div>';
+  const formHtml = '<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:20px; width:500px; max-width:90vw; max-height:85vh; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5); overflow-y:auto;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce a ' + stanzaNome + '</div><button onclick="document.getElementById(\'form-voce-stanza\').remove()" style="background:#ef4444; color:white; border:none; width:24px; height:24px; border-radius:50%; cursor:pointer; font-size:14px; padding:0;">✕</button></div><div style="background:rgba(59,130,245,0.1); padding:8px; border-radius:4px; margin-bottom:10px; font-size:10px; color:#60a5fa;"><strong>' + descVal + '</strong><br>€' + prezzoVal + '</div><input type="text" id="voce-codice" placeholder="Codice prodotto" value="' + codiceVal + '" style="width:100%; margin-bottom:8px; font-size:11px;"><textarea id="voce-desc" placeholder="Descrizione..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px;">' + descVal + '</textarea><div style="display:flex; gap:8px; margin-bottom:8px;"><input type="number" id="voce-qty" placeholder="Quantita" value="1" style="flex:1; font-size:11px;"><input type="number" id="voce-prezzo" placeholder="Prezzo €" value="' + prezzoVal + '" style="flex:1; font-size:11px;"></div><button onclick="salvaVoceStanza()" class="btn-green" style="width:100%; padding:10px; font-weight:bold;">✓ Aggiungi voce</button><hr style="border:none; border-top:1px solid rgba(59,130,245,0.3); margin:12px 0;"><div id="accessori-section-modal" style="display:none;"></div></div>';
   document.body.insertAdjacentHTML('beforeend', formHtml);
   document.getElementById('form-voce-stanza').onclick = (e) => e.stopPropagation();
+  
+  // 🔴 CARICA ABBINAMENTI E VISUALIZZALI NEL MODAL
+  if (prodotto.codice) {
+    caricaAccessoriProdottoNelModal(prodotto.codice);
+  }
 }
 
-function salvaVoceStanza() {
+function caricaAccessoriProdottoNelModal(prodottoId) {
+  if (!prodottoId) return;
+  
+  fetch('/api/abbina/' + encodeURIComponent(prodottoId))
+    .then(r => r.json())
+    .then(d => {
+      if (d.ufficiali && (d.ufficiali.length > 0 || d.alternative.length > 0 || d.esclusi.length > 0)) {
+        const modal = document.getElementById('accessori-section-modal');
+        if (modal) {
+          modal.style.display = 'block';
+          renderAccessoriHtmlNelModal(d.ufficiali, d.alternative, d.esclusi);
+        }
+      }
+    })
+    .catch(e => console.error('Errore caricamento abbinamenti:', e));
+}
+
+function renderAccessoriHtmlNelModal(ufficiali, alternative, esclusi) {
+  let html = '<div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:10px;">🔗 Abbinamenti disponibili</div>';
+
+  if (ufficiali && ufficiali.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#10b981; margin-bottom:6px;">✅ Abbinamenti Ufficiali</div>';
+    ufficiali.forEach(acc => {
+      html += '<div style="background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
+        '<div style="flex:1;">' +
+        '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:9px; color:#9ca3af;">' + (acc.id || '') + '</div>' +
+        '</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (alternative && alternative.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#f59e0b; margin-bottom:6px;">🔹 Alternative</div>';
+    alternative.forEach(acc => {
+      html += '<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:6px; padding:8px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">' +
+        '<div style="flex:1;">' +
+        '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:9px; color:#9ca3af;">' + (acc.id || '') + '</div>' +
+        '</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (esclusi && esclusi.length > 0) {
+    html += '<div style="margin-bottom:12px;">' +
+      '<div style="font-size:11px; font-weight:700; color:#ef4444; margin-bottom:6px;">❌ Non Compatibili</div>';
+    esclusi.forEach(acc => {
+      html += '<div style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:8px; margin-bottom:4px; opacity:0.6;">' +
+        '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (acc.nome || acc.id) + '</div>' +
+        '<div style="font-size:9px; color:#9ca3af;">' + (acc.id || '') + '</div>' +
+        '<div style="font-size:8px; color:#fca5a5; margin-top:2px;">⚠️ Non compatibile</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  const section = document.getElementById('accessori-section-modal');
+  if (section) {
+    section.innerHTML = html;
+  }
+}
+
+function salvaVoceStanzaConNuovoBrand() {
   if (!stanzaAttivaPerCarrello) return;
 
-  const brand = document.getElementById('voce-brand-val').value || document.getElementById('voce-brand-input').value;
+  // Brand può essere NUOVO (digitato a mano)
+  const brandInput = document.getElementById('voce-brand-input').value.trim();
+  const brandVal = document.getElementById('voce-brand-val').value.trim();
+  const brand = brandVal || brandInput;  // Priorità: selezionato dalla lista, altrimenti digita
+  
   const codice = document.getElementById('voce-codice').value.trim();
   const desc = document.getElementById('voce-desc').value.trim();
   const qty = parseFloat(document.getElementById('voce-qty').value) || 1;
   const prezzo = parseFloat(document.getElementById('voce-prezzo').value) || 0;
 
-  if (!desc) {
-    alert('Inserisci almeno una descrizione');
+  if (!brand) {
+    alert('Seleziona o digita un brand');
     return;
   }
+  if (!desc) {
+    alert('Inserisci una descrizione');
+    return;
+  }
+
+  // Se il brand è NUOVO (non in BRANDS), registralo
+  if (!BRANDS.includes(brand)) {
+    fetch('/api/add-azienda', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ nome: brand })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        // Aggiungi alla lista locale
+        if (!BRANDS.includes(brand)) BRANDS.push(brand);
+        BRANDS.sort();
+        // Ora salva la voce
+        salvaVoceStanzaEffettivamente(brand, codice, desc, qty, prezzo);
+      }
+    });
+  } else {
+    // Brand già esiste, salva direttamente
+    salvaVoceStanzaEffettivamente(brand, codice, desc, qty, prezzo);
+  }
+}
+
+function salvaVoceStanzaEffettivamente(brand, codice, desc, qty, prezzo) {
+  if (!stanzaAttivaPerCarrello) return;
+
+  const descrizione = codice ? '[' + codice + '] ' + desc : desc;
 
   fetch('/api/stanze/' + stanzaAttivaPerCarrello.id + '/voci', {
     method: 'POST',
@@ -4701,7 +4809,7 @@ function salvaVoceStanza() {
     body: JSON.stringify({
       codice: codice,
       brand: brand,
-      descrizione: desc,
+      descrizione: descrizione,
       quantita: qty,
       prezzo_unitario: prezzo,
       sconto_percentuale: 0,
@@ -4711,13 +4819,122 @@ function salvaVoceStanza() {
   .then(r => r.json())
   .then(d => {
     if (d.ok) {
-      document.getElementById('form-voce-stanza').remove();
+      const form = document.getElementById('form-voce-stanza');
+      if (form) form.remove();
       stanzaAttivaPerCarrello = null;
       loadInterfacciaPiani(cantiereAttivo);
+      
+      // Feedback
+      const msg = document.createElement('div');
+      msg.innerHTML = '✓ Voce aggiunta a ' + stanzaSelezionataPiani.nome;
+      msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;';
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 2000);
     } else {
       alert('❌ ' + (d.error || 'Errore'));
     }
   });
+}
+
+function apriModalListinoStanza() {
+  // Apri il listino filtrabile per la stanza corrente
+  if (!stanzaSelezionataPiani) return;
+  
+  const brand = document.getElementById('voce-brand-val').value || document.getElementById('voce-brand-input').value;
+  if (!brand) {
+    alert('Seleziona prima un brand');
+    return;
+  }
+
+  // Chiudi il form manuale
+  const form = document.getElementById('form-voce-stanza');
+  if (form) form.style.display = 'none';
+
+  // Carica listino per il brand scelto
+  listinoStorePiani = [];
+  listinoBrandPiani = brand;
+  
+  // Mostra il listino nella interfaccia
+  const liPanel = document.createElement('div');
+  liPanel.id = 'listino-stanza-modal';
+  liPanel.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:6000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  
+  liPanel.innerHTML = `<div style="background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:600px;max-width:90vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.5);">
+    <div style="padding:16px;border-bottom:1px solid rgba(59,130,245,0.3);display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-size:14px;font-weight:bold;color:#60a5fa;">📋 Listino ${brand}</div>
+      <button onclick="document.getElementById('listino-stanza-modal').remove();document.getElementById('form-voce-stanza').style.display=''" style="background:#ef4444;color:white;border:none;width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:14px;padding:0;">✕</button>
+    </div>
+    <div style="padding:12px;border-bottom:1px solid rgba(59,130,245,0.2);">
+      <input type="text" id="listino-stanza-search" placeholder="Cerca prodotto..." oninput="filtraListinoStanza()" style="width:100%;padding:8px;background:rgba(30,41,59,0.8);border:1px solid rgba(59,130,245,0.3);color:white;border-radius:4px;font-size:11px;">
+    </div>
+    <div id="listino-stanza-grid" style="flex:1;overflow-y:auto;padding:12px;"></div>
+  </div>`;
+  
+  document.body.appendChild(liPanel);
+  
+  // Carica listino
+  caricaListinoPerStanza(brand);
+}
+
+function caricaListinoPerStanza(brand) {
+  const grid = document.getElementById('listino-stanza-grid');
+  if (!grid) return;
+  
+  grid.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;text-align:center;">⏳ Caricamento listino ' + brand + '...</div>';
+  
+  fetch('/api/listino/' + encodeURIComponent(brand))
+    .then(r => r.json())
+    .then(d => {
+      listinoStorePiani = d.prodotti || [];
+      filtraListinoStanza();
+    })
+    .catch(e => {
+      grid.innerHTML = '<div style="color:#ef4444;font-size:11px;padding:20px 0;text-align:center;">❌ Errore caricamento</div>';
+    });
+}
+
+function filtraListinoStanza() {
+  const grid = document.getElementById('listino-stanza-grid');
+  if (!grid) return;
+  
+  const sv = (document.getElementById('listino-stanza-search') ? document.getElementById('listino-stanza-search').value : '').toLowerCase();
+  
+  let filtered = listinoStorePiani;
+  if (sv) {
+    filtered = listinoStorePiani.filter(p =>
+      (p.nome||'').toLowerCase().includes(sv) ||
+      (p.codice||'').toLowerCase().includes(sv)
+    );
+  }
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;text-align:center;">Nessun prodotto trovato</div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.slice(0, 30).map(p => {
+    const prezzo = p.prezzo || 0;
+    return '<div style="background:rgba(30,41,59,0.9);border:1px solid rgba(59,130,245,0.2);border-radius:6px;padding:10px;margin-bottom:6px;cursor:pointer;" onclick="selezionaProdottoPerStanza(' + JSON.stringify(p).replace(/'/g,"\\'").replace(/"/g,'\\"') + ')">' +
+      '<div style="font-size:11px;font-weight:600;color:#e0e0e0;">' + (p.nome||'—') + '</div>' +
+      '<div style="font-size:10px;color:#9ca3af;">[' + (p.codice||'—') + ']</div>' +
+      '<div style="font-size:12px;color:#10b981;font-weight:bold;margin-top:4px;">€' + parseFloat(prezzo).toFixed(2) + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function selezionaProdottoPerStanza(prodotto) {
+  // Carica il prodotto selezionato nel form
+  document.getElementById('voce-codice').value = prodotto.codice || '';
+  document.getElementById('voce-desc').value = (prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || '');
+  document.getElementById('voce-prezzo').value = prodotto.prezzo || 0;
+  
+  // Chiudi il modal listino
+  const modal = document.getElementById('listino-stanza-modal');
+  if (modal) modal.remove();
+  
+  // Mostra il form
+  const form = document.getElementById('form-voce-stanza');
+  if (form) form.style.display = 'block';
 }
 
 function cancellaVoce(voceId, stanzaId) {
