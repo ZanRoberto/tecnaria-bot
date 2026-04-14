@@ -22,7 +22,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "tecnaria2024")
+SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "ZANNA1959?")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "").strip()
 
@@ -249,8 +249,67 @@ def init_db():
         FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id)
     )''')
     
-    # Cliente default Covolo
-    c.execute("INSERT OR IGNORE INTO clienti (nome, slug) VALUES ('Covolo SRL', 'covolo')")
+    # TABELLE PIANI/STANZE/VOCI (MODALITA PIANI)
+    c.execute('''CREATE TABLE IF NOT EXISTS piani (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cantiere_id INTEGER NOT NULL,
+        numero INTEGER,
+        nome TEXT,
+        totale_piano REAL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (cantiere_id) REFERENCES cantieri(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS stanze (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        piano_id INTEGER NOT NULL,
+        nome TEXT,
+        descrizione TEXT,
+        totale_stanza REAL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (piano_id) REFERENCES piani(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS stanza_voci (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stanza_id INTEGER NOT NULL,
+        tipo TEXT,
+        codice TEXT,
+        brand TEXT,
+        descrizione TEXT,
+        quantita REAL DEFAULT 1,
+        udm TEXT,
+        prezzo_unitario REAL DEFAULT 0,
+        sconto_percentuale REAL DEFAULT 0,
+        sconto_fisso REAL DEFAULT 0,
+        subtotale REAL DEFAULT 0,
+        colore TEXT DEFAULT 'verde',
+        note TEXT,
+        immagine_b64 TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (stanza_id) REFERENCES stanze(id)
+    )''')
+    
+    # CARRELLO PER STANZE
+    c.execute('''CREATE TABLE IF NOT EXISTS carrello_stanze (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stanza_id INTEGER NOT NULL,
+        prodotto_codice TEXT,
+        prodotto_nome TEXT,
+        brand TEXT,
+        quantita REAL DEFAULT 1,
+        prezzo_unitario REAL DEFAULT 0,
+        sconto_percentuale REAL DEFAULT 0,
+        subtotale REAL DEFAULT 0,
+        colore TEXT DEFAULT 'verde',
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (stanza_id) REFERENCES stanze(id)
+    )''')
+    
     conn.commit()
     # Inizializza moduli per clienti esistenti
     c.execute("SELECT id FROM clienti")
@@ -351,6 +410,40 @@ def ricalcola_totali_stanza(stanza_id):
     
     c.execute("UPDATE cantieri SET data_aggiornamento = ? WHERE id = ?", 
               (datetime.now().isoformat(), cantiere_id))
+    
+    conn.commit()
+    conn.close()
+
+def ricalcola_totali_stanza(stanza_id):
+    """Ricalcola totale stanza da voci"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Somma subtotali voci
+    c.execute("SELECT COALESCE(SUM(subtotale), 0) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
+    total = c.fetchone()[0]
+    
+    # Aggiorna stanza
+    c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?", 
+              (total, datetime.now().isoformat(), stanza_id))
+    
+    # Trova piano e ricalcola anche lui
+    c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
+    piano_row = c.fetchone()
+    if piano_row:
+        piano_id = piano_row[0]
+        c.execute("SELECT COALESCE(SUM(totale_stanza), 0) FROM stanze WHERE piano_id = ?", (piano_id,))
+        piano_total = c.fetchone()[0]
+        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?", 
+                  (piano_total, datetime.now().isoformat(), piano_id))
+        
+        # Trova cantiere e ricalcola
+        c.execute("SELECT cantiere_id FROM piani WHERE id = ?", (piano_id,))
+        cant_row = c.fetchone()
+        if cant_row:
+            cantiere_id = cant_row[0]
+            c.execute("UPDATE cantieri SET data_aggiornamento = ? WHERE id = ?", 
+                      (datetime.now().isoformat(), cantiere_id))
     
     conn.commit()
     conn.close()
@@ -617,57 +710,6 @@ def get_struttura_piani(cid):
         
         conn.close()
         return jsonify({'ok': True, 'piani': piani}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/cantieri/<int:cid>/piani', methods=['POST'])
-def create_piano(cid):
-    """Crea un nuovo piano nel cantiere"""
-    try:
-        data = request.get_json()
-        numero = data.get('numero', 1)
-        nome = data.get('nome', f'Piano {numero}')
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)''',
-                 (cid, numero, nome, 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        piano_id = c.lastrowid
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'ok': True, 'piano_id': piano_id, 'numero': numero, 'nome': nome}), 201
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ---------------------------------------------------------------------------
-# API PIANI/STANZE/VOCI — NUOVI ENDPOINTS
-# ---------------------------------------------------------------------------
-
-@app.route('/api/piani/<int:pid>/stanze', methods=['POST'])
-def add_stanza(pid):
-    """POST crea nuova stanza"""
-    try:
-        data = request.get_json()
-        nome = data.get('nome', 'Stanza')
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Trova cantiere da piano
-        c.execute("SELECT cantiere_id FROM piani WHERE id = ?", (pid,))
-        cid = c.fetchone()[0]
-        
-        # Crea stanza
-        c.execute("INSERT INTO stanze (piano_id, nome, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                  (pid, nome, datetime.now().isoformat(), datetime.now().isoformat()))
-        sid = c.lastrowid
-        conn.commit()
-        conn.close()
-        
-        ricalcola_totali_stanza(sid)
-        return jsonify({'ok': True, 'stanza_id': sid})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -3179,7 +3221,7 @@ function openCantiere(id, nome, stato) {
           document.getElementById('btn-switch-indietro').textContent = '🔄 SEMPLICE';
           document.getElementById('cantiere-drawer-piani').style.display = 'flex';
           document.getElementById('cantiere-drawer-piani').classList.add('open');
-          loadStrutturaPiani(id);
+          loadInterfacciaPiani(id);
         }
       }, 50);
     });
@@ -3233,67 +3275,6 @@ function switchInterfaccia(forzaNuovaModalita) {
     });
 }
 
-function loadStrutturaPiani(cantiere_id) {
-  const pannello = document.getElementById('pannello-piani');
-  if (!pannello) return;
-  
-  pannello.innerHTML = '<div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">⏳ Caricamento...</div>';
-  
-  fetch('/api/cantieri/' + cantiere_id + '/struttura')
-    .then(r => r.json())
-    .then(d => {
-      if (!d.ok) {
-        pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ Errore: ' + d.error + '</div>';
-        return;
-      }
-      
-      const piani = d.piani || [];
-      let html = '';
-      
-      if (piani.length === 0) {
-        html = '<div style="color:#d1d5db; padding:12px; text-align:center; font-size:11px;">Nessun piano. Clicca "➕ Piano" per crearne uno.</div>';
-      } else {
-        piani.forEach(p => {
-          html += `<div style="background:rgba(59,130,245,0.15); border:1px solid rgba(59,130,245,0.3); border-radius:6px; margin-bottom:10px; padding:12px;">
-            <div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
-              <span>Piano ${p.numero}: ${p.nome}</span>
-              <span style="font-size:11px; color:#10b981; background:rgba(16,185,129,0.1); padding:4px 8px; border-radius:4px;">€${p.totale_piano.toFixed(2)}</span>
-            </div>`;
-          
-          const stanze = p.stanze || [];
-          stanze.forEach(s => {
-            html += `<div style="background:rgba(30,41,59,0.6); border-left:3px solid #8b5cf6; border-radius:4px; padding:8px; margin:6px 0; font-size:11px;">
-              <div style="color:#d1d5db; font-weight:bold; display:flex; justify-content:space-between; margin-bottom:4px;">
-                <span>🏠 ${s.nome}</span>
-                <span style="color:#10b981;">€${s.totale_stanza.toFixed(2)}</span>
-              </div>`;
-            
-            const voci = s.voci || [];
-            if (voci.length === 0) {
-              html += '<div style="padding:4px 0; font-size:10px; color:#9ca3af; font-style:italic;">Nessuna voce</div>';
-            } else {
-              voci.forEach(v => {
-                html += `<div style="padding:4px 0; font-size:10px; color:#e5e7eb; display:flex; justify-content:space-between; border-bottom:1px solid rgba(59,130,245,0.1);">
-                  <span>[${v.codice||'—'}] ${v.brand ? v.brand + ' - ' : ''}${v.descrizione}</span>
-                  <span style="color:#93c5fd; font-weight:bold;">€${v.subtotale.toFixed(2)}</span>
-                </div>`;
-              });
-            }
-            
-            html += `</div>`;
-          });
-          
-          html += `</div>`;
-        });
-      }
-      
-      pannello.innerHTML = html;
-    })
-    .catch(e => {
-      pannello.innerHTML = '<div style="color:#ef4444; padding:12px;">❌ ' + e.message + '</div>';
-    });
-}
-
 function aggiungiPianoModal() {
   if (!cantiereAttivo) return;
   const nome = prompt('Nome del piano (es. "Piano 1", "Primo livello"):');
@@ -3307,7 +3288,7 @@ function aggiungiPianoModal() {
   .then(r => r.json())
   .then(d => {
     if (d.ok) {
-      loadStrutturaPiani(cantiereAttivo);
+      loadInterfacciaPiani(cantiereAttivo);
     } else {
       alert('❌ Errore: ' + (d.error || 'Errore sconosciuto'));
     }
@@ -4647,17 +4628,22 @@ function aggiungiStanzaUI(pianoId) {
 
 function aggiungiVoceStanza(stanzaId, stanzaNome) {
   if (!cantiereAttivo) return;
+  
+  // Controlla che ci sia UN brand selezionato nella sidebar
+  if (!selected || selected.length === 0) {
+    alert('Seleziona un brand nella sidebar SX prima di aggiungere prodotti');
+    return;
+  }
+  
+  // Brand FISSO dal sidebar (il primo / l'unico selezionato)
+  const brandScelto = selected[0];
+  
+  // State: ricorda quale stanza stiamo riempiendo
   stanzaAttivaPerCarrello = { id: stanzaId, nome: stanzaNome };
   stanzaSelezionataPiani = { id: stanzaId, nome: stanzaNome };
   
-  // Carica il listino nella sidebar destra
-  listinoStorePiani = [];
-  filtraListinoPiani();
-  
-  // Mostra anche il form manuale (come prima)
-  const formHtml = '<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:20px; width:400px; max-width:90vw; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce a ' + stanzaNome + '</div><button onclick="document.getElementById(\'form-voce-stanza\').remove()" style="background:#ef4444; color:white; border:none; width:24px; height:24px; border-radius:50%; cursor:pointer; font-size:14px; padding:0;">✕</button></div><div class="brand-autocomplete" style="margin-bottom:10px;"><input type="text" id="voce-brand-input" placeholder="Cerca brand..." autocomplete="off" oninput="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onfocus="filterAutocomplete(\'voce-brand-input\',\'voce-brand-list\',\'voce-brand-val\')" onblur="setTimeout(()=>closeAutocomplete(\'voce-brand-list\'),200)" style="width:100%; font-size:11px;"><input type="hidden" id="voce-brand-val"><div class="brand-dropdown-list" id="voce-brand-list"></div></div><input type="text" id="voce-codice" placeholder="Codice prodotto (opzionale)" style="width:100%; margin-bottom:8px; font-size:11px;"><textarea id="voce-desc" placeholder="Descrizione prodotto..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px;"></textarea><div style="display:flex; gap:8px; margin-bottom:8px;"><input type="number" id="voce-qty" placeholder="Quantita" value="1" style="flex:1; font-size:11px;"><input type="number" id="voce-prezzo" placeholder="Prezzo €" value="0" style="flex:1; font-size:11px;"></div><button onclick="salvaVoceStanza()" class="btn-green" style="width:100%; padding:10px; font-weight:bold;">✓ Aggiungi voce</button></div>';
-
-  document.body.insertAdjacentHTML('beforeend', formHtml);
+  // Apri GRID FULLSCREEN con CARD del listino
+  apriGridProdottiStanza(brandScelto, stanzaId, stanzaNome);
 }
 
 function salvaVoceStanza() {
@@ -4697,6 +4683,139 @@ function salvaVoceStanza() {
       alert('❌ ' + (d.error || 'Errore'));
     }
   });
+}
+
+// ============================================================================
+// GRID PRODOTTI DA LISTINO PER STANZA (MODALITA' PIANI)
+// ============================================================================
+
+function apriGridProdottiStanza(brand, stanzaId, stanzaNome) {
+  // Modale fullscreen con GRID CARD di prodotti
+  const modalHtml = `
+    <div id="modal-grid-stanza" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:6000; display:flex; flex-direction:column; padding:0;">
+      <div style="background:#0f172e; border-bottom:2px solid #3b82f6; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+        <div style="font-size:16px; font-weight:bold; color:#60a5fa;">📋 Seleziona prodotti per: <strong>${stanzaNome}</strong> (${brand})</div>
+        <div style="display:flex; gap:12px; align-items:center;">
+          <input type="text" id="grid-search-stanza" placeholder="Cerca codice/nome..." style="padding:8px 12px; background:rgba(30,41,59,0.8); border:1px solid rgba(59,130,245,0.3); color:white; border-radius:6px; width:250px; font-size:11px;" oninput="filtraGridStanza()">
+          <button onclick="chiudiGridStanza()" style="background:#ef4444; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">✕ Chiudi</button>
+        </div>
+      </div>
+      <div id="grid-container-stanza" style="flex:1; overflow-y:auto; padding:20px; background:#0a0f23;">
+        <div style="color:#6b7280; text-align:center; padding:40px;">⏳ Caricamento listino...</div>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  
+  // Carica listino del brand
+  fetch('/api/listino/' + encodeURIComponent(brand))
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok || !d.prodotti) {
+        document.getElementById('grid-container-stanza').innerHTML = '<div style="color:#ef4444; text-align:center; padding:40px;">❌ Nessun listino trovato per ' + brand + '</div>';
+        return;
+      }
+      
+      window._gridProdottiStanza = d.prodotti;
+      window._gridBrandStanza = brand;
+      window._gridStanzaId = stanzaId;
+      
+      filtraGridStanza();
+    })
+    .catch(e => {
+      document.getElementById('grid-container-stanza').innerHTML = '<div style="color:#ef4444; text-align:center; padding:40px;">❌ ' + e.message + '</div>';
+    });
+}
+
+function filtraGridStanza() {
+  const search = (document.getElementById('grid-search-stanza') || {}).value || '';
+  const sv = search.toLowerCase();
+  
+  if (!window._gridProdottiStanza) return;
+  
+  const filtered = sv
+    ? window._gridProdottiStanza.filter(p => 
+        (p.codice || '').toLowerCase().includes(sv) ||
+        (p.nome || '').toLowerCase().includes(sv) ||
+        (p.descrizione || '').toLowerCase().includes(sv)
+      )
+    : window._gridProdottiStanza;
+  
+  renderGridStanza(filtered);
+}
+
+function renderGridStanza(prodotti) {
+  if (!prodotti || prodotti.length === 0) {
+    document.getElementById('grid-container-stanza').innerHTML = '<div style="color:#6b7280; text-align:center; padding:40px;">Nessun prodotto trovato</div>';
+    return;
+  }
+  
+  const html = `
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:16px;">
+      ${prodotti.map((p, idx) => `
+        <div style="background:#1e293b; border:1px solid #334155; border-radius:8px; padding:12px; cursor:pointer; transition:all 0.2s;" 
+             onmouseover="this.style.borderColor='#3b82f6'; this.style.boxShadow='0 0 15px rgba(59,130,245,0.3)'" 
+             onmouseout="this.style.borderColor='#334155'; this.style.boxShadow='none'"
+             onclick="aggiungiProdottoStanza(${idx})">
+          <div style="font-size:10px; color:#9ca3af; margin-bottom:4px; font-family:monospace;">${p.codice || '—'}</div>
+          <div style="font-size:12px; font-weight:600; color:#e0e0e0; margin-bottom:6px; line-height:1.3;">${p.nome || '—'}</div>
+          <div style="font-size:10px; color:#6b7280; margin-bottom:8px;">${p.categoria || ''}</div>
+          <div style="font-size:13px; color:#10b981; font-weight:bold;">€${p.prezzo ? parseFloat(p.prezzo).toFixed(0) : '—'}</div>
+          <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(59,130,245,0.2);">
+            <button style="width:100%; padding:6px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:11px; cursor:pointer; font-weight:600;">✓ Aggiungi</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+  
+  document.getElementById('grid-container-stanza').innerHTML = html;
+}
+
+function aggiungiProdottoStanza(idx) {
+  if (!window._gridProdottiStanza || !window._gridStanzaId) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
+  const stanzaId = window._gridStanzaId;
+  const brand = window._gridBrandStanza;
+  
+  const descrizione = (prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || '');
+  const prezzo = prodotto.prezzo || 0;
+  
+  // Salva nella stanza
+  fetch('/api/stanze/' + stanzaId + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: prodotto.codice || '',
+      brand: brand,
+      descrizione: descrizione,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde'
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      // FEEDBACK: prodotto aggiunto, modale rimane aperta per aggiungerne altri
+      alert('✓ Aggiunto: ' + (prodotto.nome || 'Prodotto'));
+      // Opzionale: ricarica grid
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+function chiudiGridStanza() {
+  const modal = document.getElementById('modal-grid-stanza');
+  if (modal) {
+    modal.remove();
+    // Ricarica la struttura piani
+    loadInterfacciaPiani(cantiereAttivo);
+  }
 }
 
 function cancellaVoce(voceId, stanzaId) {
