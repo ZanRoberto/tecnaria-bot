@@ -2295,6 +2295,11 @@ def cerca_immagine_prodotto():
         if not codice:
             return jsonify({'error': 'Codice prodotto richiesto'}), 400
         
+        # 🔑 ESTRAI SOLO LA PARTE PRIMA DEL # (es: 386610#031 → 386610)
+        codice_base = codice.split('#')[0].strip()
+        
+        print(f"🔑 Codice originale: {codice} → Codice base per ricerca: {codice_base}")
+        
         # Credenziali Google Custom Search
         API_KEY = os.getenv('GOOGLE_API_KEY')
         CSE_ID = os.getenv('GOOGLE_CSE_ID')
@@ -2302,8 +2307,10 @@ def cerca_immagine_prodotto():
         if not API_KEY or not CSE_ID:
             return jsonify({'error': 'Credenziali Google non configurate'}), 500
         
-        # Query di ricerca: codice + nome prodotto
-        query = f"{codice} {nome} {brand}".strip()
+        # Query di ricerca: SOLO codice base + brand (nome troppo generico)
+        query = f"{codice_base} {brand}".strip()
+        
+        print(f"🔍 Ricerca immagini per: {query}")
         
         import httpx
         
@@ -2314,8 +2321,10 @@ def cerca_immagine_prodotto():
             'cx': CSE_ID,
             'key': API_KEY,
             'searchType': 'image',
-            'num': 5  # Primi 5 risultati
+            'num': 10  # Cerca 10 per averne almeno 3 scaricabili
         }
+        
+        print(f"📡 Chiamando Google Custom Search con query: {query}")
         
         response = httpx.get(google_url, params=google_params, timeout=10.0)
         response.raise_for_status()
@@ -2323,55 +2332,154 @@ def cerca_immagine_prodotto():
         risultati_google = response.json()
         items = risultati_google.get('items', [])
         
+        print(f"📦 Google ha ritornato {len(items)} risultati")
+        
         if not items:
-            return jsonify({'ok': True, 'risultati': [], 'messaggio': 'Nessuna immagine trovata'}), 200
+            return jsonify({'ok': True, 'risultati': [], 'messaggio': f'Nessuna immagine trovata per {codice_base}'}), 200
         
-        # 2. Scarica e converti in Base64 le prime 3 immagini
+        # 2. Scarica e converti in Base64 le prime 3 immagini SCARICABILI
         risultati = []
+        errori = []
         
-        for item in items[:3]:
+        for idx, item in enumerate(items):
+            if len(risultati) >= 3:  # Stop quando ne hai 3 buone
+                break
+                
             try:
                 url_immagine = item.get('link', '')
                 fonte = item.get('displayLink', 'sconosciuta')
                 
                 if not url_immagine:
+                    print(f"⚠️ Item {idx}: URL vuoto, skip")
                     continue
                 
-                # Scarica l'immagine
-                img_response = httpx.get(url_immagine, timeout=5.0, follow_redirects=True)
-                img_response.raise_for_status()
+                print(f"🖼️ Tentando di scaricare ({idx+1}): {url_immagine[:60]}... da {fonte}")
+                
+                # Scarica l'immagine con User-Agent per evitare blocchi
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                
+                try:
+                    img_response = httpx.get(
+                        url_immagine, 
+                        timeout=8.0, 
+                        follow_redirects=True,
+                        headers=headers,
+                        verify=False  # Ignora verifiche SSL problematiche
+                    )
+                    img_response.raise_for_status()
+                except httpx.ReadTimeout:
+                    errori.append(f"Timeout su {fonte}")
+                    print(f"⏱️ Timeout scaricamento da {fonte}")
+                    continue
+                except httpx.HTTPError as he:
+                    errori.append(f"HTTP error {fonte}: {str(he)}")
+                    print(f"❌ HTTP error da {fonte}: {str(he)}")
+                    continue
                 
                 # Controlla content-type
-                content_type = img_response.headers.get('content-type', 'image/jpeg').split(';')[0]
+                content_type = img_response.headers.get('content-type', 'image/jpeg')
+                if ';' in content_type:
+                    content_type = content_type.split(';')[0]
+                
                 if 'image' not in content_type:
+                    errori.append(f"Content-type non immagine: {content_type}")
+                    print(f"⚠️ {fonte}: content-type non valido: {content_type}")
+                    continue
+                
+                # Controlla dimensione
+                img_data = img_response.content
+                if len(img_data) < 1000:  # Meno di 1KB = probabilmente non valida
+                    errori.append(f"Immagine troppo piccola da {fonte}")
+                    print(f"⚠️ {fonte}: immagine troppo piccola ({len(img_data)} bytes)")
+                    continue
+                
+                if len(img_data) > 5000000:  # Più di 5MB = troppo grande
+                    errori.append(f"Immagine troppo grande da {fonte}")
+                    print(f"⚠️ {fonte}: immagine troppo grande ({len(img_data)} bytes)")
                     continue
                 
                 # Converti in Base64
-                img_data = img_response.content
-                b64_data = base64.b64encode(img_data).decode('utf-8')
+                try:
+                    b64_data = base64.b64encode(img_data).decode('utf-8')
+                except Exception as be:
+                    errori.append(f"Errore encoding Base64 da {fonte}")
+                    print(f"❌ Errore encoding Base64 da {fonte}: {str(be)}")
+                    continue
                 
-                # Aggiungi ai risultati
+                # Aggiungi ai risultati SUCCESS
                 risultati.append({
                     'url': url_immagine,
                     'fonte': fonte,
                     'b64': b64_data,
-                    'content_type': content_type
+                    'content_type': content_type,
+                    'size': len(img_data)
                 })
                 
+                print(f"✅ {fonte}: scaricata ({len(img_data)} bytes, Base64: {len(b64_data)} chars)")
+                
             except Exception as e:
-                print(f"⚠️ Errore scaricamento immagine {url_immagine}: {str(e)}")
+                errori.append(f"Errore generale item {idx}: {str(e)}")
+                print(f"❌ Errore item {idx}: {str(e)}")
                 continue
+        
+        print(f"\n📊 RISULTATI: {len(risultati)} immagini scaricate, {len(errori)} errori")
         
         return jsonify({
             'ok': True,
             'risultati': risultati,
             'query': query,
-            'count': len(risultati)
+            'codice_base': codice_base,
+            'count': len(risultati),
+            'errori': errori,
+            'totale_cercate': len(items)
         }), 200
         
     except Exception as e:
-        print(f"❌ ERRORE cerca_immagine_prodotto: {str(e)}")
+        print(f"❌ ERRORE GRAVE cerca_immagine_prodotto: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': f"Errore ricerca: {str(e)}"}), 500
+
+# ---------------------------------------------------------------------------
+# GET ABBINAMENTI PER PRODOTTO
+# ---------------------------------------------------------------------------
+
+@app.route('/api/abbinamenti/<brand>/<codice>', methods=['GET'])
+def get_abbinamenti(brand, codice):
+    """Ritorna abbinamenti per un prodotto (da Excel o hardcoded)"""
+    try:
+        # TODO: implementare logica per caricare abbinamenti dal DB o Excel
+        # Per ora ritorna lista vuota
+        # In futuro: leggere da tabella abbinamenti_prodotto
+        
+        abbinamenti = [
+            {
+                'codice': 'ACC001',
+                'nome': 'Flessibile scarico',
+                'prezzo': 25,
+                'immagine_url': None
+            },
+            {
+                'codice': 'ACC002',
+                'nome': 'Rubinetteria cromata',
+                'prezzo': 45,
+                'immagine_url': None
+            },
+            {
+                'codice': 'ACC003',
+                'nome': 'Sigillante silicone',
+                'prezzo': 8,
+                'immagine_url': None
+            }
+        ]
+        
+        return jsonify({'ok': True, 'abbinamenti': abbinamenti}), 200
+        
+    except Exception as e:
+        print(f"❌ ERRORE get_abbinamenti: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 # ---------------------------------------------------------------------------
 # FRONTEND
@@ -5111,13 +5219,20 @@ function aggiornaDescrizioneSlider(idx, testoCompleto) {
   const textDiv = document.getElementById('desc-text-' + idx);
   const countSpan = document.getElementById('desc-count-' + idx);
   
-  if (!slider || !textDiv) return;
+  console.log('🎚️ Slider movimento idx=' + idx + ', elementi trovati:', {slider: !!slider, textDiv: !!textDiv, countSpan: !!countSpan});
+  
+  if (!slider || !textDiv) {
+    console.warn('⚠️ Slider o textDiv non trovati per idx', idx);
+    return;
+  }
   
   const numCaratteri = parseInt(slider.value);
   const testoTroncato = testoCompleto.substring(0, numCaratteri);
   
   textDiv.textContent = testoTroncato + (numCaratteri < testoCompleto.length ? '' : '');
   countSpan.textContent = numCaratteri;
+  
+  console.log('✅ Descrizione aggiornata: ' + numCaratteri + ' caratteri');
 }
 
 function aggiungiProdottoStanza(idx) {
