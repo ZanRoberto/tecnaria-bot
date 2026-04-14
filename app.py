@@ -2280,6 +2280,100 @@ def get_abbinamenti_prodotto(codice_prodotto):
     })
 
 # ---------------------------------------------------------------------------
+# CERCA IMMAGINE PRODOTTO — GOOGLE CUSTOM SEARCH
+# ---------------------------------------------------------------------------
+
+@app.route('/api/cerca-immagine-prodotto', methods=['POST'])
+def cerca_immagine_prodotto():
+    """Ricerca immagine per codice prodotto su Google Images + scarica Base64"""
+    try:
+        data = request.get_json()
+        codice = data.get('codice', '').strip()
+        nome = data.get('nome', '').strip()
+        brand = data.get('brand', '').strip()
+        
+        if not codice:
+            return jsonify({'error': 'Codice prodotto richiesto'}), 400
+        
+        # Credenziali Google Custom Search
+        API_KEY = os.getenv('GOOGLE_API_KEY')
+        CSE_ID = os.getenv('GOOGLE_CSE_ID')
+        
+        if not API_KEY or not CSE_ID:
+            return jsonify({'error': 'Credenziali Google non configurate'}), 500
+        
+        # Query di ricerca: codice + nome prodotto
+        query = f"{codice} {nome} {brand}".strip()
+        
+        import httpx
+        
+        # 1. Chiama Google Custom Search API
+        google_url = "https://www.googleapis.com/customsearch/v1"
+        google_params = {
+            'q': query,
+            'cx': CSE_ID,
+            'key': API_KEY,
+            'searchType': 'image',
+            'num': 5  # Primi 5 risultati
+        }
+        
+        response = httpx.get(google_url, params=google_params, timeout=10.0)
+        response.raise_for_status()
+        
+        risultati_google = response.json()
+        items = risultati_google.get('items', [])
+        
+        if not items:
+            return jsonify({'ok': True, 'risultati': [], 'messaggio': 'Nessuna immagine trovata'}), 200
+        
+        # 2. Scarica e converti in Base64 le prime 3 immagini
+        risultati = []
+        
+        for item in items[:3]:
+            try:
+                url_immagine = item.get('link', '')
+                fonte = item.get('displayLink', 'sconosciuta')
+                
+                if not url_immagine:
+                    continue
+                
+                # Scarica l'immagine
+                img_response = httpx.get(url_immagine, timeout=5.0, follow_redirects=True)
+                img_response.raise_for_status()
+                
+                # Controlla content-type
+                content_type = img_response.headers.get('content-type', 'image/jpeg').split(';')[0]
+                if 'image' not in content_type:
+                    continue
+                
+                # Converti in Base64
+                img_data = img_response.content
+                b64_data = base64.b64encode(img_data).decode('utf-8')
+                
+                # Aggiungi ai risultati
+                risultati.append({
+                    'url': url_immagine,
+                    'fonte': fonte,
+                    'b64': b64_data,
+                    'content_type': content_type
+                })
+                
+            except Exception as e:
+                print(f"⚠️ Errore scaricamento immagine {url_immagine}: {str(e)}")
+                continue
+        
+        return jsonify({
+            'ok': True,
+            'risultati': risultati,
+            'query': query,
+            'count': len(risultati)
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ ERRORE cerca_immagine_prodotto: {str(e)}")
+        return jsonify({'error': f"Errore ricerca: {str(e)}"}), 500
+
+# ---------------------------------------------------------------------------
 # FRONTEND
 # ---------------------------------------------------------------------------
 
@@ -4892,15 +4986,34 @@ function renderGridStanza(prodotti) {
             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px; font-family:monospace; font-weight:bold;">${p.codice || '—'}</div>
             <div style="font-size:11px; font-weight:600; color:#e0e0e0; margin-bottom:6px; line-height:1.3; min-height:32px;">${p.nome || '—'}</div>
             
-            <!-- DESCRIZIONE BREVE -->
-            <div style="font-size:9px; color:#9ca3af; margin-bottom:8px; line-height:1.3; max-height:40px; overflow:hidden;">
-              ${p.descrizione ? p.descrizione.substring(0, 60) + (p.descrizione.length > 60 ? '...' : '') : ''}
+            <!-- DESCRIZIONE CON SLIDER INTERATTIVO -->
+            <div style="margin-bottom:8px;">
+              <div id="desc-text-${idx}" style="font-size:9px; color:#9ca3af; line-height:1.4; margin-bottom:6px; min-height:24px; max-height:60px; overflow-y:auto; padding-right:4px;">
+                ${p.descrizione ? p.descrizione.substring(0, 100) : 'Nessuna descrizione'}
+              </div>
+              
+              <!-- SLIDER CARATTERI -->
+              <div style="display:flex; align-items:center; gap:6px; padding:4px 0;">
+                <span style="font-size:7px; color:#6b7280; white-space:nowrap;">50</span>
+                <input type="range" id="desc-slider-${idx}" 
+                       min="50" max="${p.descrizione ? p.descrizione.length : 100}" value="100" step="10"
+                       style="flex:1; height:4px; cursor:pointer; accent-color:#8b5cf6;"
+                       oninput="aggiornaDescrizioneSlider(${idx}, '${p.descrizione ? p.descrizione.replace(/'/g, "\\'") : ''}')">
+                <span id="desc-count-${idx}" style="font-size:7px; color:#c084fc; font-weight:bold; white-space:nowrap; width:25px; text-align:right;">100</span>
+                <span style="font-size:7px; color:#6b7280; white-space:nowrap;">All</span>
+              </div>
             </div>
             
             <!-- BADGE COLORE/TIPO -->
             <div style="font-size:8px; color:#6b7280; margin-bottom:8px; display:flex; gap:4px; flex-wrap:wrap;">
               ${p.categoria ? `<span style="background:rgba(59,130,245,0.2); padding:2px 6px; border-radius:3px;">${p.categoria}</span>` : ''}
               ${p.tipo ? `<span style="background:rgba(168,85,247,0.2); padding:2px 6px; border-radius:3px;">${p.tipo}</span>` : ''}
+            </div>
+            
+            <!-- ABBINAMENTI PREVIEW (se ce ne sono) -->
+            <div id="abbinamenti-preview-${idx}" style="font-size:8px; color:#c084fc; margin-bottom:8px; display:none;">
+              <div style="font-weight:bold; margin-bottom:2px;">🔗 Abbinamenti:</div>
+              <div id="abbinamenti-list-${idx}" style="display:flex; gap:2px; flex-wrap:wrap; max-height:30px; overflow:hidden;"></div>
             </div>
             
             <!-- PREZZO -->
@@ -4957,11 +5070,28 @@ function caricaAbbinationiPerCards(prodotti) {
       .then(d => {
         const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
         
-        // Se ci sono abbinamenti, mostra il bottone
+        // Se ci sono abbinamenti:
         if (abbinamenti && abbinamenti.length > 0) {
+          // 1. Mostra bottone Abbina
           const btnAbbina = document.getElementById('btn-abbina-' + idx);
           if (btnAbbina) {
             btnAbbina.style.display = 'block';
+          }
+          
+          // 2. Mostra preview abbinamenti nella card
+          const previewDiv = document.getElementById('abbinamenti-preview-' + idx);
+          const listDiv = document.getElementById('abbinamenti-list-' + idx);
+          
+          if (previewDiv && listDiv) {
+            previewDiv.style.display = 'block';
+            
+            // Mostra max 3 abbinamenti
+            const abbinatiMostrarti = abbinamenti.slice(0, 3);
+            const html = abbinatiMostrarti.map(a => 
+              `<span style="background:rgba(192,132,252,0.3); padding:1px 4px; border-radius:2px; white-space:nowrap;">${a.nome || a.codice}</span>`
+            ).join('');
+            
+            listDiv.innerHTML = html + (abbinamenti.length > 3 ? `<span style="color:#6b7280; font-size:7px;">+${abbinamenti.length - 3}</span>` : '');
           }
         }
       })
@@ -4970,6 +5100,24 @@ function caricaAbbinationiPerCards(prodotti) {
         console.log('⚠️ Abbinamenti non trovati per:', p.codice);
       });
   });
+}
+
+// ============================================================================
+// SLIDER DESCRIZIONE — AGGIORNA TESTO AL MOVIMENTO
+// ============================================================================
+
+function aggiornaDescrizioneSlider(idx, testoCompleto) {
+  const slider = document.getElementById('desc-slider-' + idx);
+  const textDiv = document.getElementById('desc-text-' + idx);
+  const countSpan = document.getElementById('desc-count-' + idx);
+  
+  if (!slider || !textDiv) return;
+  
+  const numCaratteri = parseInt(slider.value);
+  const testoTroncato = testoCompleto.substring(0, numCaratteri);
+  
+  textDiv.textContent = testoTroncato + (numCaratteri < testoCompleto.length ? '' : '');
+  countSpan.textContent = numCaratteri;
 }
 
 function aggiungiProdottoStanza(idx) {
