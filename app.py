@@ -22,7 +22,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "tecnaria2024")
+SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "ZANNA1959?")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "").strip()
 
