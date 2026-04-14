@@ -5040,6 +5040,10 @@ function apriGridProdottiStanza(brand, stanzaId, stanzaNome) {
       window._gridStanzaId = stanzaId;
       
       filtraGridStanza();
+      
+      // 🔑 CARICA ABBINAMENTI PER TUTTE LE CARD
+      console.log('📦 Caricamento abbinamenti per ' + d.prodotti.length + ' prodotti...');
+      caricaAbbinationiPerCards(d.prodotti);
     })
     .catch(e => {
       document.getElementById('grid-container-stanza').innerHTML = '<div style="color:#ef4444; text-align:center; padding:40px;">❌ ' + e.message + '</div>';
