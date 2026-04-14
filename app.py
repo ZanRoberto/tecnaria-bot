@@ -23,6 +23,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "tecnaria2024")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "").strip()
 
@@ -752,6 +754,106 @@ def delete_voce(vid):
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+# STRUTTURA PIANI + MODALITA + VISION OPENAI
+@app.route('/api/cantieri/<int:cid>/struttura', methods=['GET'])
+def get_struttura(cid):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, numero, nome, totale_piano FROM piani WHERE cantiere_id = ? ORDER BY numero", (cid,))
+        piani = []
+        for pid, num, nome, tot in c.fetchall():
+            c.execute("SELECT id, nome, descrizione, totale_stanza FROM stanze WHERE piano_id = ?", (pid,))
+            stanze = []
+            for sid, snome, sdesc, stot in c.fetchall():
+                c.execute("SELECT id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale FROM stanza_voci WHERE stanza_id = ?", (sid,))
+                voci = [{'id': v[0], 'codice': v[1], 'brand': v[2], 'descrizione': v[3], 'quantita': v[4], 'prezzo_unitario': v[5], 'sconto_percentuale': v[6], 'subtotale': v[7]} for v in c.fetchall()]
+                stanze.append({'id': sid, 'nome': snome, 'descrizione': sdesc, 'totale_stanza': stot, 'voci': voci})
+            piani.append({'id': pid, 'numero': num, 'nome': nome, 'totale_piano': tot, 'stanze': stanze})
+        conn.close()
+        return jsonify({'ok': True, 'piani': piani})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cantieri/<int:cid>/modalita', methods=['GET'])
+def get_modalita(cid):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT modalita FROM cantieri WHERE id = ?", (cid,))
+        row = c.fetchone()
+        conn.close()
+        modalita = row[0] if row else 'semplice'
+        return jsonify({'modalita': modalita})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cantieri/<int:cid>/modalita', methods=['PUT'])
+def set_modalita(cid):
+    try:
+        data = request.get_json()
+        modalita = data.get('modalita', 'semplice')
+        if modalita not in ['semplice', 'piani']:
+            return jsonify({'error': 'Modalita non valida'}), 400
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE cantieri SET modalita = ?, data_aggiornamento = ? WHERE id = ?", (modalita, datetime.now().isoformat(), cid))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'modalita': modalita})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analizza-planimetria', methods=['POST'])
+def analizza_planimetria():
+    try:
+        data = request.get_json()
+        cid = data.get('cantiere_id')
+        img_b64 = data.get('immagine_base64', '')
+        if not cid or not img_b64 or not OPENAI_API_KEY:
+            return jsonify({'ok': False, 'error': 'Dati incompleti o OPENAI_API_KEY mancante'}), 400
+        if ',' in img_b64:
+            img_b64 = img_b64.split(',', 1)[1]
+        prompt = """Analizza questa planimetria e estrai la struttura. Rispondi SOLO in JSON:
+{"piani": [{"numero": 1, "nome": "Piano Terra", "stanze": [{"nome": "Bagno", "mq": 8}]}]}
+Se non leggibile, rispondi {"piani": []}"""
+        headers = {'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'}
+        payload = {'model': OPENAI_MODEL, 'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}, {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{img_b64}'}}]}], 'max_tokens': 2000, 'temperature': 0.3}
+        resp = httpx.post('https://api.openai.com/v1/chat/completions', json=payload, headers=headers, timeout=60)
+        if resp.status_code != 200:
+            return jsonify({'ok': False, 'error': f'OpenAI error {resp.status_code}'}), 500
+        result = resp.json()
+        if 'choices' not in result or not result['choices']:
+            return jsonify({'ok': False, 'error': 'No response'}), 500
+        text = result['choices'][0]['message']['content'].strip()
+        if '```json' in text:
+            text = text.split('```json')[1].split('```')[0].strip()
+        elif '```' in text:
+            text = text.split('```')[1].split('```')[0].strip()
+        try:
+            struct = json.loads(text)
+        except:
+            return jsonify({'ok': False, 'error': 'JSON parse failed'}), 400
+        piani_data = struct.get('piani', [])
+        if not piani_data:
+            return jsonify({'ok': True, 'piani_creati': 0, 'stanze_create': 0, 'message': 'Nessun piano'})
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        piani_creati = 0
+        stanze_create = 0
+        for p_data in piani_data:
+            c.execute('INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', (cid, p_data.get('numero', piani_creati+1), p_data.get('nome', f'Piano {piani_creati+1}'), 0, datetime.now().isoformat(), datetime.now().isoformat()))
+            pid = c.lastrowid
+            piani_creati += 1
+            for s_data in p_data.get('stanze', []):
+                c.execute('INSERT INTO stanze (piano_id, nome, descrizione, totale_stanza, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', (pid, s_data.get('nome', 'Stanza'), f"{s_data.get('mq', 0)}mq" if s_data.get('mq') else '', 0, datetime.now().isoformat(), datetime.now().isoformat()))
+                stanze_create += 1
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'piani_creati': piani_creati, 'stanze_create': stanze_create, 'message': f'✅ Creati {piani_creati} piani'})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 # API CANTIERI
 # ---------------------------------------------------------------------------
