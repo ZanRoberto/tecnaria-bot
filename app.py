@@ -2771,484 +2771,6 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 .excel-actions { display: flex; gap: 4px; margin-top: 6px; }
 </style>
 </head>
-<body>
-
-<!-- LOGIN OVERLAY -->
-<div class="login-overlay" id="login-overlay">
-  <div class="login-box">
-    <div class="login-title">Oracolo Covolo</div>
-    <div style="margin-bottom: 12px;">
-      <input type="text" id="login-user" placeholder="Username" style="width: 100%; margin-bottom: 8px;" onkeypress="if(event.key==='Enter') doLogin()">
-      <input type="password" id="login-pwd" placeholder="Password" style="width: 100%;" onkeypress="if(event.key==='Enter') doLogin()">
-    </div>
-    <button onclick="doLogin()" style="width: 100%; padding: 10px; font-size: 13px;">Accedi</button>
-    <div id="login-error" style="color: #ef4444; font-size: 11px; margin-top: 8px; text-align: center;"></div>
-    <div style="font-size: 10px; color: #4b5563; margin-top: 16px; text-align: center;">Oracolo Covolo — Tecnaria</div>
-  </div>
-</div>
-
-<div class="container" id="main-app" style="display: none;">
-  <!-- SIDEBAR SX -->
-  <div class="sidebar">
-    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-      <span id="user-label" style="font-size: 11px; color: #60a5fa; font-weight: 600;"></span>
-      <button onclick="doLogout()" class="btn-sm btn-gray">Esci</button>
-    </div>
-    <h2>Seleziona brand</h2>
-    <button onclick="toggleDropdown()" style="width: 100%;">Seleziona Brand</button>
-    <div id="dropdown" class="dropdown">
-      <!-- TAB BAR -->
-      <div style="display:flex; gap:4px; margin-bottom:8px;">
-        <button id="tab-brand" onclick="switchTab('brand')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:#3b82f6;">Per nome</button>
-        <button id="tab-cat" onclick="switchTab('cat')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:rgba(59,130,245,0.3);">Per categoria</button>
-      </div>
-      <!-- TAB BRAND -->
-      <div id="tab-content-brand">
-        <input type="text" id="search" placeholder="Ricerca brand..." onkeyup="filterBrands()" style="width: 100%; margin-bottom: 6px;">
-        <div id="brands-list"></div>
-      </div>
-      <!-- TAB CATEGORIA -->
-      <div id="tab-content-cat" style="display:none;">
-        <input type="text" id="search-cat" placeholder="Es: rubinetteria, piastrelle, doccia..." onkeyup="filterPerCategoria()" style="width: 100%; margin-bottom: 6px;">
-        <div id="cat-results"></div>
-      </div>
-    </div>
-    <div id="selected"></div>
-    <div id="brand-loading-status" style="font-size:11px; color:#10b981; margin-bottom:8px;"></div>
-    <h2>Gruppi salvati</h2>
-    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
-      <input type="text" id="group-name" placeholder="Nome gruppo..." style="flex: 1;">
-      <button onclick="saveGroup()" class="btn-green btn-sm" style="margin-bottom:0;">Salva</button>
-    </div>
-    <div id="saved-groups" style="max-height: 120px; overflow-y: auto; font-size: 11px;"></div>
-    <h2 style="margin-top: 10px;">Protezione cassetto</h2>
-    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
-      <input type="password" id="admin-pwd" placeholder="Password admin..." style="flex: 1;">
-      <button onclick="setAdminPassword()" class="btn-green btn-sm" style="margin-bottom:0;">Proteggi</button>
-    </div>
-    <h2>Nuovo cassetto</h2>
-    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
-      <input type="text" id="new-cassetto" placeholder="Nome cassetto..." style="flex: 1;">
-      <button onclick="addCassetto()" class="btn-green btn-sm" style="margin-bottom:0;">+</button>
-    </div>
-    <h2>Accesso privato</h2>
-    <input type="password" id="access-code" placeholder="Codice accesso..." style="width: 100%; margin-bottom: 6px;">
-    <button onclick="toggleAccess()" style="width: 100%;">Attiva</button>
-    <div style="font-size: 10px; color: #9ca3af; margin-top: 4px;" id="access-status">Accesso: PUBBLICO</div>
-    <h2 style="margin-top: 10px;">Web search</h2>
-    <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()">ON</button>
-    <h2>Upload documenti</h2>
-    <div class="brand-autocomplete" style="margin-bottom:6px;">
-      <input type="text" id="upload-brand-input" placeholder="Cerca brand..." autocomplete="off"
-        oninput="filterAutocomplete('upload-brand-input','upload-brand-list','upload-brand-val')"
-        onfocus="filterAutocomplete('upload-brand-input','upload-brand-list','upload-brand-val')"
-        onblur="setTimeout(()=>closeAutocomplete('upload-brand-list'),200)"
-        style="width:100%;">
-      <input type="hidden" id="upload-brand-val">
-      <div class="brand-dropdown-list" id="upload-brand-list"></div>
-    </div>
-    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
-      Upload Doc <input type="file" id="file-doc" style="display:none" onchange="doUpload(this, 'doc')">
-    </label>
-    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
-      Upload Excel <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
-    </label>
-    <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
-    <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
-    <button onclick="caricaAbbinamentiEProdotti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Listino + Abbinamenti</button>
-    <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
-    <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica URL Immagini Gessi</button>
-  </div>
-
-  <!-- CENTRO -->
-  <div class="main">
-    <div class="title">Oracolo Covolo</div>
-    <div class="btn-3pulsanti" id="btn-3pulsanti">
-      <button class="btn-green" onclick="generateOfferta()">OFFERTA</button>
-      <button class="btn-green" onclick="generateAnalisi()">ANALISI</button>
-      <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
-      <button style="background:#8b5cf6;" onclick="apriListino()">📋 LISTINO</button>
-    </div>
-    <div class="chat-area" id="chat"></div>
-    <div class="input-area">
-      <input type="text" id="question" placeholder="Domanda libera o cerca prodotto..." onkeypress="if(event.key==='Enter') ask()" oninput="cercaRapidaListino(this.value)" style="flex: 1;">
-      <button onclick="ask()" style="width: 100px;">Invia</button>
-    </div>
-    <!-- RISULTATI RICERCA RAPIDA LISTINO -->
-    <div id="quick-search-results" style="display:none; background:rgba(15,23,46,0.98); border:1px solid rgba(59,130,245,0.3); border-radius:6px; margin-top:4px; max-height:280px; overflow-y:auto; z-index:100;">
-    </div>
-  </div>
-
-  <!-- PANNELLO LISTINO -->
-  <div class="listino-panel" id="listino-panel">
-    <div class="listino-header">
-      <span id="listino-brand-tag" class="listino-brand-tag">—</span>
-      <input type="text" id="listino-search" class="listino-search" placeholder="Cerca prodotto per nome, codice, collezione..." oninput="filtraListino()">
-      <!-- SELETTORE LISTINO -->
-      <div style="display:flex;gap:4px;flex-shrink:0;">
-        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;">👤 Cliente</button>
-        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.3);border-radius:4px;color:#f59e0b;">🏪 Rivenditore</button>
-      </div>
-      <button onclick="chiudiListino()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
-    </div>
-
-    <!-- FILTRI LINEA + CATEGORIA + RICERCA -->
-    <div style="padding:8px 18px; background:rgba(15,23,46,0.8); border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0;">
-      <div id="filtri-linea" class="filtri-bar" style="margin-bottom:6px;"></div>
-      <div id="filtri-cat" class="filtri-bar" style="margin-bottom:6px;"></div>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <input type="text" id="listino-search" class="listino-search" style="flex:1;" placeholder="Cerca nome, codice..." oninput="filtraListino()">
-        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;white-space:nowrap;">👤 Cliente</button>
-        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.2);border-radius:4px;color:#f59e0b;white-space:nowrap;">🏪 Riv.</button>
-      </div>
-    </div>
-
-    <!-- DOMANDE RAPIDE AI -->
-    <div style="padding:6px 18px; border-bottom:1px solid rgba(59,130,245,0.1); flex-shrink:0;">
-      <div class="domande-bar" id="domande-bar"></div>
-    </div>
-
-    <!-- GRIGLIA PRODOTTI -->
-    <div class="listino-body">
-      <div id="listino-count" style="font-size:10px; color:#6b7280; margin-bottom:8px;"></div>
-      <div class="prodotti-grid" id="prodotti-grid"></div>
-    </div>
-  </div>
-
-  <!-- PANNELLO GESTIONE DOCUMENTI -->
-  <div id="gestisci-doc-panel" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:2000; align-items:center; justify-content:center;">
-    <div style="background:#0f172e; border:1px solid rgba(59,130,245,0.4); border-radius:12px; width:700px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column;">
-      <!-- Header -->
-      <div style="padding:16px 20px; border-bottom:1px solid rgba(59,130,245,0.2); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
-        <div style="font-size:14px; font-weight:700; color:#60a5fa;">📁 Gestione Documenti</div>
-        <button onclick="chiudiGestisciDoc()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
-      </div>
-      <!-- Filtro brand -->
-      <div style="padding:12px 20px; border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0; display:flex; gap:8px;">
-        <input type="text" id="filtro-doc-brand" placeholder="Filtra per brand (lascia vuoto per tutti)..." style="flex:1; font-size:11px;" oninput="filtraDocumenti()">
-        <button onclick="filtraDocumenti()" style="margin-bottom:0; padding:6px 12px; font-size:11px;">🔍 Cerca</button>
-        <button onclick="filtraDocumenti(true)" class="btn-gray" style="margin-bottom:0; padding:6px 12px; font-size:11px;">Tutti</button>
-      </div>
-      <!-- Lista documenti -->
-      <div id="doc-list-panel" style="flex:1; overflow-y:auto; padding:12px 20px;"></div>
-    </div>
-  </div>
-
-  <!-- PANNELLO DX -->
-  <div class="rightpanel" id="rightpanel">
-    
-    <!-- CLIENTI PRIVATI (Finale | Acquirente | Rivenditore) -->
-    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px;">
-      <div style="font-size: 11px; font-weight: 700; color: #93c5fd; text-transform: uppercase; margin-bottom: 8px;">👤 Clienti</div>
-      
-      <div style="margin-bottom: 8px;">
-        <button onclick="caricaClientiPrivati()" class="btn-green" style="width: 100%; font-size: 10px; margin-bottom: 6px;">🔄 Ricarica Clienti</button>
-        <button onclick="mostraFormNuovoCliente()" class="btn-purple btn-sm" style="width: 100%; margin-bottom: 0;">➕ Nuovo Cliente</button>
-      </div>
-      
-      <div id="form-nuovo-cliente" style="display: none; background: rgba(139,92,246,0.1); padding: 8px; border-radius: 6px; margin-bottom: 8px;">
-        <input type="text" id="new-cli-nome" placeholder="Nome / Ragione Sociale" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <input type="text" id="new-cli-cognome" placeholder="Cognome / Azienda" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <select id="new-cli-tipo" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-          <option value="finale">Cliente Finale</option>
-          <option value="acquirente">Acquirente Particolare</option>
-          <option value="rivenditore">Rivenditore</option>
-        </select>
-        <input type="email" id="new-cli-email" placeholder="Email" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <input type="tel" id="new-cli-tel" placeholder="Telefono" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <input type="text" id="new-cli-ind" placeholder="Indirizzo" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <button onclick="creaNewCliente()" class="btn-green" style="width: 100%; font-size: 10px; margin-bottom: 4px;">Crea Cliente</button>
-        <button onclick="toggleFormNuovoCliente()" class="btn-gray" style="width: 100%; font-size: 10px; margin-bottom: 0;">Annulla</button>
-      </div>
-      
-      <div id="clienti-privati-lista" style="max-height: 400px; overflow-y: auto; border: 1px solid rgba(59,130,245,0.2); border-radius: 4px; padding: 6px;">
-        <div style="text-align: center; color: #9ca3af; font-size: 11px; padding: 12px;">Caricamento...</div>
-      </div>
-    </div>
-    
-    <!-- INTERFACCIA CLIENTE ATTIVO -->
-    <div id="interfaccia-cliente" style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: none;"></div>
-    
-    <!-- PIANI INLINE (solo per Cliente Finale) -->
-    <div id="piani-inline-container" style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: none;"></div>
-
-    <div style="font-size: 13px; font-weight: 700; color: #93c5fd; margin-bottom: 10px;">Moduli</div>
-
-    <!-- SUPERADMIN PANEL -->
-    <div id="sa-panel" style="display:none;">
-      <div class="module-box">
-        <div class="module-header" onclick="toggleModule('sa-config')">
-          <span class="module-title">Config Superadmin</span>
-          <span style="font-size:10px; color:#8b5cf6;">SA</span>
-        </div>
-        <div class="module-body" id="sa-config">
-          <div style="margin-bottom: 8px;">
-            <select id="sa-cliente-sel" style="width:100%; margin-bottom:6px;" onchange="loadSAModuli()">
-              <option value="">-- Seleziona cliente --</option>
-            </select>
-            <div id="sa-moduli-list" style="font-size:11px;"></div>
-          </div>
-          <div style="border-top: 1px solid rgba(59,130,245,0.2); padding-top: 8px; margin-top: 4px;">
-            <div style="font-size: 11px; font-weight: 600; color: #9ca3af; margin-bottom: 6px;">Nuovo utente</div>
-            <input type="text" id="sa-u-nome" placeholder="Nome..." style="width:100%; margin-bottom:4px;">
-            <input type="text" id="sa-u-username" placeholder="Username..." style="width:100%; margin-bottom:4px;">
-            <input type="password" id="sa-u-pwd" placeholder="Password..." style="width:100%; margin-bottom:4px;">
-            <select id="sa-u-ruolo" style="width:100%; margin-bottom:4px;">
-              <option value="commerciale">Commerciale</option>
-              <option value="admin">Admin cliente</option>
-            </select>
-            <select id="sa-u-cliente" style="width:100%; margin-bottom:6px;">
-              <option value="">-- Cliente --</option>
-            </select>
-            <button onclick="saAddUtente()" class="btn-green" style="width:100%;">Crea utente</button>
-          </div>
-          <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
-            <button onclick="dedupBrands()" class="btn-red" style="width:100%; font-size:10px;">🧹 Unifica brand duplicati</button>
-            <div id="dedup-result" style="font-size:10px; color:#10b981; margin-top:4px;"></div>
-          </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- CANTIERI -->
-    <div class="module-box" id="mod-cantieri" style="display:none;">
-      <div class="module-header" onclick="toggleModule('cantieri-body')">
-        <span class="module-title">Cantieri</span>
-        <span id="cantieri-count" style="font-size:10px; color:#9ca3af;">0</span>
-      </div>
-      <div class="module-body" id="cantieri-body">
-        <div style="display: flex; gap: 4px; margin-bottom: 8px;">
-          <input type="text" id="new-cantiere" placeholder="Nome cantiere / cliente..." style="flex:1;">
-          <button onclick="addCantiere()" class="btn-green btn-sm" style="margin-bottom:0;">+</button>
-        </div>
-        <div id="cantieri-list"></div>
-      </div>
-    </div>
-
-    <!-- BI -->
-    <div class="module-box" id="mod-bi" style="display:none;">
-      <div class="module-header" onclick="toggleModule('bi-body'); loadBI();">
-        <span class="module-title">BI / Statistiche</span>
-        <span style="font-size:10px; color:#9ca3af;">admin</span>
-      </div>
-      <div class="module-body" id="bi-body">
-        <div id="bi-stats"></div>
-        <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
-          <div style="font-size:11px; font-weight:600; color:#9ca3af; margin-bottom:6px;">Pulizia archivio</div>
-          <input type="date" id="bi-da" style="width:100%; margin-bottom:4px;">
-          <input type="date" id="bi-a" style="width:100%; margin-bottom:4px;">
-          <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">Stati da eliminare:</div>
-          <label style="font-size:10px; display:block;"><input type="checkbox" value="vinta" id="del-vinta"> Vinte</label>
-          <label style="font-size:10px; display:block;"><input type="checkbox" value="persa" id="del-persa"> Perse</label>
-          <label style="font-size:10px; display:block; margin-bottom:6px;"><input type="checkbox" value="bozza" id="del-bozza"> Bozze</label>
-          <button onclick="biCancella()" class="btn-red" style="width:100%; font-size:10px;">Cancella selezionati</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- COMMERCIALI -->
-    <div class="module-box" id="mod-commerciali" style="display:none;">
-      <div class="module-header" onclick="toggleModule('comm-body')">
-        <span class="module-title">Commerciali</span>
-        <span style="font-size:10px; color:#9ca3af;">admin</span>
-      </div>
-      <div class="module-body" id="comm-body">
-        <div id="comm-list" style="font-size:11px;"></div>
-      </div>
-    </div>
-
-  </div>
-</div>
-
-<!-- DRAWER DETTAGLIO CANTIERE -->
-<div class="cantiere-drawer" id="cantiere-drawer">
-  <div class="drawer-header">
-    <div>
-      <div class="drawer-title" id="drawer-nome"></div>
-      <div style="font-size:11px; color:#9ca3af; margin-top:2px;">Gestione offerta</div>
-    </div>
-    <div style="display:flex; gap:8px; align-items:center;">
-      <button id="btn-switch-modalita" onclick="switchModalita()" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap; font-size:10px;">🔄 PIANI</button>
-      <select id="cantiere-stato" style="font-size:11px; padding:5px 8px;" onchange="updateCantiere()">
-        <option value="bozza">Bozza</option>
-        <option value="inviata">Inviata</option>
-        <option value="vinta">Vinta</option>
-        <option value="persa">Persa</option>
-      </select>
-      <button onclick="closeCantiere()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
-    </div>
-  </div>
-
-  <div class="drawer-body">
-    <!-- RIGHE ESISTENTI -->
-    <div class="drawer-section">
-      <div class="drawer-section-title">Elementi nel carrello</div>
-      <div id="righe-list"></div>
-      <div class="totale-bar" id="totale-bar" style="display:none;">
-        <span style="font-size:12px; color:#9ca3af;">Totale offerta</span>
-        <span style="font-size:15px; font-weight:700; color:#10b981;" id="totale-valore">€0</span>
-      </div>
-    </div>
-
-    <!-- ACCESSORI CONSIGLIATI -->
-    <div class="drawer-section" id="accessori-section" style="display:block;">
-      <div class="drawer-section-title">
-        🔗 Accessori Consigliati
-      </div>
-      <div id="accessori-panel" style="display:block;max-height:300px;overflow-y:auto;">
-        <div id="pannello-titolo" style="padding:8px;background:rgba(59,130,246,0.1);border-left:3px solid #3b82f6;margin-bottom:12px;border-radius:4px;"></div>
-        <div id="sezioneUfficiali"></div>
-        <div id="sezioneAlternative"></div>
-      </div>
-    </div>
-
-    <!-- AGGIUNGI RIGA -->
-    <div class="drawer-section">
-      <div class="drawer-section-title">Aggiungi elemento</div>
-      <div class="form-row">
-        <div class="brand-autocomplete" style="flex:1;">
-          <input type="text" id="riga-brand-input" placeholder="Cerca brand..." autocomplete="off"
-            oninput="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
-            onfocus="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
-            onblur="setTimeout(()=>closeAutocomplete('riga-brand-list'),200)"
-            onchange="aggiornaCampiExtra()"
-            style="width:100%;">
-          <input type="hidden" id="riga-brand-val" onchange="aggiornaCampiExtra()">
-          <div class="brand-dropdown-list" id="riga-brand-list"></div>
-        </div>
-        <input type="text" id="riga-categoria" placeholder="Categoria (es. sanitari)" style="flex:1;">
-      </div>
-      <input type="text" id="riga-descrizione" placeholder="Descrizione prodotto..." style="width:100%; margin-bottom:8px;">
-
-      <!-- CAMPI EXTRA PIASTRELLE -->
-      <div id="extra-piastrelle" style="display:none; background:rgba(59,130,245,0.08); border:1px solid rgba(59,130,245,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
-        <div style="font-size:10px; color:#60a5fa; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli piastrella / rivestimento</div>
-        <div class="form-row">
-          <input type="text" id="extra-formato" placeholder="Formato (es. 60x120 cm)" style="flex:1;">
-          <input type="text" id="extra-finitura" placeholder="Finitura (es. lappato, opaco)" style="flex:1;">
-        </div>
-        <input type="text" id="extra-colore" placeholder="Colore / tono (es. grigio cemento, effetto marmo)" style="width:100%;">
-      </div>
-
-      <!-- CAMPI EXTRA LEGNO / PARQUET -->
-      <div id="extra-legno" style="display:none; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
-        <div style="font-size:10px; color:#10b981; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli legno / parquet</div>
-        <div class="form-row">
-          <input type="text" id="extra-essenza" placeholder="Essenza (es. rovere, noce, frassino)" style="flex:1;">
-          <input type="text" id="extra-legno-finitura" placeholder="Finitura (es. oliato, laccato)" style="flex:1;">
-        </div>
-        <div class="form-row">
-          <input type="text" id="extra-legno-formato" placeholder="Formato doga (es. 190x1900 mm)" style="flex:1;">
-          <input type="text" id="extra-legno-tono" placeholder="Tono (es. sbiancato, miele, wengè)" style="flex:1;">
-        </div>
-      </div>
-
-      <!-- CAMPI EXTRA VINILICO/TECNICO -->
-      <div id="extra-vinilico" style="display:none; background:rgba(139,92,246,0.08); border:1px solid rgba(139,92,246,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
-        <div style="font-size:10px; color:#8b5cf6; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli pavimento tecnico / vinilico</div>
-        <div class="form-row">
-          <input type="text" id="extra-vin-formato" placeholder="Formato" style="flex:1;">
-          <input type="text" id="extra-vin-spessore" placeholder="Spessore (es. 5mm)" style="flex:1;">
-        </div>
-        <input type="text" id="extra-vin-effetto" placeholder="Effetto (es. legno, pietra, cemento)" style="width:100%;">
-      </div>
-
-      <div class="form-row">
-        <input type="number" id="riga-importo" placeholder="Importo €" style="flex:1;">
-        <button onclick="addRiga()" class="btn-green" style="flex:1; margin-bottom:0;">+ Aggiungi</button>
-      </div>
-    </div>
-    <!-- AGGIUNGI MANUALE / VOCE LIBERA -->
-    <div class="drawer-section">
-      <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleExcelPanel()">
-        ⚡ Importa da Excel / Voce libera
-        <span id="excel-panel-arrow" style="float:right; color:#9ca3af;">▼</span>
-      </div>
-      <div id="excel-panel" style="display:none;">
-        <!-- Upload Excel -->
-        <div style="margin-bottom:8px;">
-          <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:7px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
-            📊 Carica Excel prodotti
-            <input type="file" id="excel-listino" accept=".xlsx,.xls" style="display:none" onchange="caricaExcelListino(this)">
-          </label>
-          <div id="excel-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px;"></div>
-        </div>
-
-        <!-- Lista righe Excel -->
-        <div id="excel-righe-list" style="max-height:340px; overflow-y:auto;"></div>
-
-        <!-- Separatore -->
-        <div style="border-top:1px solid rgba(59,130,245,0.15); margin: 10px 0 8px 0;"></div>
-
-        <!-- Voce manuale libera -->
-        <div style="font-size:10px; color:#9ca3af; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Voce manuale (trasporto, manodopera, ecc.)</div>
-        <input type="text" id="voce-desc" placeholder="Descrizione voce..." style="width:100%; margin-bottom:6px;">
-        <div class="form-row">
-          <input type="number" id="voce-importo" placeholder="Importo €" style="flex:1;">
-          <button onclick="addVoceManuale()" class="btn-purple" style="flex:1; margin-bottom:0; font-size:11px;">+ Aggiungi</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="drawer-footer">
-    <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta AI</button>
-    <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">Elimina cantiere</button>
-  </div>
-</div>
-
-<!-- DRAWER PIANI/STANZE/VOCI (NASCOSTO FINCHE NON CLICCHI SWITCH) -->
-<div class="cantiere-drawer" id="cantiere-drawer-piani" style="display:none;">
-  <div class="drawer-header">
-    <div>
-      <div class="drawer-title" id="drawer-piani-nome"></div>
-      <div style="font-size:11px; color:#9ca3af; margin-top:2px;">Modalità Piani/Stanze</div>
-    </div>
-    <div style="display:flex; gap:8px; align-items:center;">
-      <button id="btn-switch-indietro" onclick="switchModalita()" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap; font-size:10px;">🔄 SEMPLICE</button>
-      <button onclick="closeCantiere()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
-    </div>
-  </div>
-
-  <div class="drawer-body" style="display:flex; gap:8px;">
-    <!-- SINISTRA: PIANI/STANZE -->
-    <div id="pannello-piani" style="flex:1; overflow-y:auto; padding:12px; border-right:1px solid rgba(59,130,245,0.2);">
-      <div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">
-        ⏳ Caricamento struttura piani...
-      </div>
-    </div>
-    
-    <!-- DESTRA: LISTINO DINAMICO + CARICAMENTO PLANIMETRIA -->
-    <div style="flex:1; display:flex; flex-direction:column; gap:8px;">
-      <!-- CARICAMENTO PLANIMETRIA -->
-      <div style="background:rgba(139,92,246,0.15); border:1px solid rgba(139,92,246,0.3); border-radius:6px; padding:8px;">
-        <div style="font-size:10px; color:#8b5cf6; font-weight:700; text-transform:uppercase; margin-bottom:6px;">📁 Carica Planimetria</div>
-        <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:6px; border-radius:4px; cursor:pointer; font-weight:600; font-size:10px; text-align:center; margin-bottom:4px;">
-          Carica disegno
-          <input type="file" id="file-planimetria" accept=".png,.jpg,.jpeg,.pdf" style="display:none" onchange="caricaPlanimetria(this)">
-        </label>
-        <div id="planimetria-status" style="font-size:9px; color:#9ca3af;"></div>
-      </div>
-
-      <!-- LISTINO DINAMICO -->
-      <div style="background:rgba(59,130,245,0.1); border:1px solid rgba(59,130,245,0.2); border-radius:6px; padding:8px; flex:1; display:flex; flex-direction:column; overflow:hidden;">
-        <div style="font-size:10px; color:#60a5fa; font-weight:700; text-transform:uppercase; margin-bottom:6px;">📋 Listino Rapido</div>
-        <input type="text" id="listino-piani-search" placeholder="Cerca prodotto..." oninput="filtraListinoPiani()" style="width:100%; margin-bottom:6px; font-size:10px;">
-        <div id="listino-piani-grid" style="flex:1; overflow-y:auto; display:grid; grid-template-columns:1fr; gap:4px;">
-          <div style="color:#6b7280; font-size:10px;">Seleziona una stanza per caricare il listino</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="drawer-footer">
-    <button onclick="aggiungiPianoModal()" class="btn-green" style="flex:1; font-size:11px; margin-bottom:0;">➕ Piano</button>
-    <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta</button>
-    <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">✕ Elimina</button>
-  </div>
-</div>
-
 <script>
 let BRANDS = [];
 let selected = [];
@@ -5943,6 +5465,484 @@ fetch('/api/me').then(r => r.json()).then(d => {
   }
 });
 </script>
+<body>
+
+<!-- LOGIN OVERLAY -->
+<div class="login-overlay" id="login-overlay">
+  <div class="login-box">
+    <div class="login-title">Oracolo Covolo</div>
+    <div style="margin-bottom: 12px;">
+      <input type="text" id="login-user" placeholder="Username" style="width: 100%; margin-bottom: 8px;" onkeypress="if(event.key==='Enter') doLogin()">
+      <input type="password" id="login-pwd" placeholder="Password" style="width: 100%;" onkeypress="if(event.key==='Enter') doLogin()">
+    </div>
+    <button onclick="doLogin()" style="width: 100%; padding: 10px; font-size: 13px;">Accedi</button>
+    <div id="login-error" style="color: #ef4444; font-size: 11px; margin-top: 8px; text-align: center;"></div>
+    <div style="font-size: 10px; color: #4b5563; margin-top: 16px; text-align: center;">Oracolo Covolo — Tecnaria</div>
+  </div>
+</div>
+
+<div class="container" id="main-app" style="display: none;">
+  <!-- SIDEBAR SX -->
+  <div class="sidebar">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+      <span id="user-label" style="font-size: 11px; color: #60a5fa; font-weight: 600;"></span>
+      <button onclick="doLogout()" class="btn-sm btn-gray">Esci</button>
+    </div>
+    <h2>Seleziona brand</h2>
+    <button onclick="toggleDropdown()" style="width: 100%;">Seleziona Brand</button>
+    <div id="dropdown" class="dropdown">
+      <!-- TAB BAR -->
+      <div style="display:flex; gap:4px; margin-bottom:8px;">
+        <button id="tab-brand" onclick="switchTab('brand')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:#3b82f6;">Per nome</button>
+        <button id="tab-cat" onclick="switchTab('cat')" style="flex:1; padding:4px; font-size:10px; margin-bottom:0; background:rgba(59,130,245,0.3);">Per categoria</button>
+      </div>
+      <!-- TAB BRAND -->
+      <div id="tab-content-brand">
+        <input type="text" id="search" placeholder="Ricerca brand..." onkeyup="filterBrands()" style="width: 100%; margin-bottom: 6px;">
+        <div id="brands-list"></div>
+      </div>
+      <!-- TAB CATEGORIA -->
+      <div id="tab-content-cat" style="display:none;">
+        <input type="text" id="search-cat" placeholder="Es: rubinetteria, piastrelle, doccia..." onkeyup="filterPerCategoria()" style="width: 100%; margin-bottom: 6px;">
+        <div id="cat-results"></div>
+      </div>
+    </div>
+    <div id="selected"></div>
+    <div id="brand-loading-status" style="font-size:11px; color:#10b981; margin-bottom:8px;"></div>
+    <h2>Gruppi salvati</h2>
+    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+      <input type="text" id="group-name" placeholder="Nome gruppo..." style="flex: 1;">
+      <button onclick="saveGroup()" class="btn-green btn-sm" style="margin-bottom:0;">Salva</button>
+    </div>
+    <div id="saved-groups" style="max-height: 120px; overflow-y: auto; font-size: 11px;"></div>
+    <h2 style="margin-top: 10px;">Protezione cassetto</h2>
+    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+      <input type="password" id="admin-pwd" placeholder="Password admin..." style="flex: 1;">
+      <button onclick="setAdminPassword()" class="btn-green btn-sm" style="margin-bottom:0;">Proteggi</button>
+    </div>
+    <h2>Nuovo cassetto</h2>
+    <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+      <input type="text" id="new-cassetto" placeholder="Nome cassetto..." style="flex: 1;">
+      <button onclick="addCassetto()" class="btn-green btn-sm" style="margin-bottom:0;">+</button>
+    </div>
+    <h2>Accesso privato</h2>
+    <input type="password" id="access-code" placeholder="Codice accesso..." style="width: 100%; margin-bottom: 6px;">
+    <button onclick="toggleAccess()" style="width: 100%;">Attiva</button>
+    <div style="font-size: 10px; color: #9ca3af; margin-top: 4px;" id="access-status">Accesso: PUBBLICO</div>
+    <h2 style="margin-top: 10px;">Web search</h2>
+    <button id="web-toggle" class="toggle-btn toggle-on" onclick="toggleWeb()">ON</button>
+    <h2>Upload documenti</h2>
+    <div class="brand-autocomplete" style="margin-bottom:6px;">
+      <input type="text" id="upload-brand-input" placeholder="Cerca brand..." autocomplete="off"
+        oninput="filterAutocomplete('upload-brand-input','upload-brand-list','upload-brand-val')"
+        onfocus="filterAutocomplete('upload-brand-input','upload-brand-list','upload-brand-val')"
+        onblur="setTimeout(()=>closeAutocomplete('upload-brand-list'),200)"
+        style="width:100%;">
+      <input type="hidden" id="upload-brand-val">
+      <div class="brand-dropdown-list" id="upload-brand-list"></div>
+    </div>
+    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
+      Upload Doc <input type="file" id="file-doc" style="display:none" onchange="doUpload(this, 'doc')">
+    </label>
+    <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
+      Upload Excel <input type="file" id="file-excel" accept=".xlsx,.xls,.csv" style="display:none" onchange="doUpload(this, 'excel')">
+    </label>
+    <div id="upload-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
+    <button onclick="apriGestisciDoc()" style="width:100%; background:#ef4444; margin-top:6px;">Gestisci Documenti</button>
+    <button onclick="caricaAbbinamentiEProdotti()" style="width:100%; background:#f59e0b; margin-top:6px; font-weight:600; font-size:11px;">📋 Carica Listino + Abbinamenti</button>
+    <div id="abbinamenti-status" style="font-size:10px; color:#9ca3af; margin-top:2px;"></div>
+    <button onclick="scaricaImmaginiGessi()" style="width:100%; background:#06b6d4; margin-top:6px; font-weight:600; font-size:11px;">🖼️ Scarica URL Immagini Gessi</button>
+  </div>
+
+  <!-- CENTRO -->
+  <div class="main">
+    <div class="title">Oracolo Covolo</div>
+    <div class="btn-3pulsanti" id="btn-3pulsanti">
+      <button class="btn-green" onclick="generateOfferta()">OFFERTA</button>
+      <button class="btn-green" onclick="generateAnalisi()">ANALISI</button>
+      <button class="btn-green" onclick="generateProposta()">PROPOSTA</button>
+      <button style="background:#8b5cf6;" onclick="apriListino()">📋 LISTINO</button>
+    </div>
+    <div class="chat-area" id="chat"></div>
+    <div class="input-area">
+      <input type="text" id="question" placeholder="Domanda libera o cerca prodotto..." onkeypress="if(event.key==='Enter') ask()" oninput="cercaRapidaListino(this.value)" style="flex: 1;">
+      <button onclick="ask()" style="width: 100px;">Invia</button>
+    </div>
+    <!-- RISULTATI RICERCA RAPIDA LISTINO -->
+    <div id="quick-search-results" style="display:none; background:rgba(15,23,46,0.98); border:1px solid rgba(59,130,245,0.3); border-radius:6px; margin-top:4px; max-height:280px; overflow-y:auto; z-index:100;">
+    </div>
+  </div>
+
+  <!-- PANNELLO LISTINO -->
+  <div class="listino-panel" id="listino-panel">
+    <div class="listino-header">
+      <span id="listino-brand-tag" class="listino-brand-tag">—</span>
+      <input type="text" id="listino-search" class="listino-search" placeholder="Cerca prodotto per nome, codice, collezione..." oninput="filtraListino()">
+      <!-- SELETTORE LISTINO -->
+      <div style="display:flex;gap:4px;flex-shrink:0;">
+        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;">👤 Cliente</button>
+        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.3);border-radius:4px;color:#f59e0b;">🏪 Rivenditore</button>
+      </div>
+      <button onclick="chiudiListino()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+    </div>
+
+    <!-- FILTRI LINEA + CATEGORIA + RICERCA -->
+    <div style="padding:8px 18px; background:rgba(15,23,46,0.8); border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0;">
+      <div id="filtri-linea" class="filtri-bar" style="margin-bottom:6px;"></div>
+      <div id="filtri-cat" class="filtri-bar" style="margin-bottom:6px;"></div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="text" id="listino-search" class="listino-search" style="flex:1;" placeholder="Cerca nome, codice..." oninput="filtraListino()">
+        <button id="btn-listino-cliente" onclick="setListinoTipo('cliente')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:#3b82f6;border-radius:4px;white-space:nowrap;">👤 Cliente</button>
+        <button id="btn-listino-riv" onclick="setListinoTipo('rivenditore')" style="padding:5px 10px;font-size:10px;margin-bottom:0;background:rgba(245,158,11,0.2);border-radius:4px;color:#f59e0b;white-space:nowrap;">🏪 Riv.</button>
+      </div>
+    </div>
+
+    <!-- DOMANDE RAPIDE AI -->
+    <div style="padding:6px 18px; border-bottom:1px solid rgba(59,130,245,0.1); flex-shrink:0;">
+      <div class="domande-bar" id="domande-bar"></div>
+    </div>
+
+    <!-- GRIGLIA PRODOTTI -->
+    <div class="listino-body">
+      <div id="listino-count" style="font-size:10px; color:#6b7280; margin-bottom:8px;"></div>
+      <div class="prodotti-grid" id="prodotti-grid"></div>
+    </div>
+  </div>
+
+  <!-- PANNELLO GESTIONE DOCUMENTI -->
+  <div id="gestisci-doc-panel" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:2000; align-items:center; justify-content:center;">
+    <div style="background:#0f172e; border:1px solid rgba(59,130,245,0.4); border-radius:12px; width:700px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column;">
+      <!-- Header -->
+      <div style="padding:16px 20px; border-bottom:1px solid rgba(59,130,245,0.2); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+        <div style="font-size:14px; font-weight:700; color:#60a5fa;">📁 Gestione Documenti</div>
+        <button onclick="chiudiGestisciDoc()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+      </div>
+      <!-- Filtro brand -->
+      <div style="padding:12px 20px; border-bottom:1px solid rgba(59,130,245,0.15); flex-shrink:0; display:flex; gap:8px;">
+        <input type="text" id="filtro-doc-brand" placeholder="Filtra per brand (lascia vuoto per tutti)..." style="flex:1; font-size:11px;" oninput="filtraDocumenti()">
+        <button onclick="filtraDocumenti()" style="margin-bottom:0; padding:6px 12px; font-size:11px;">🔍 Cerca</button>
+        <button onclick="filtraDocumenti(true)" class="btn-gray" style="margin-bottom:0; padding:6px 12px; font-size:11px;">Tutti</button>
+      </div>
+      <!-- Lista documenti -->
+      <div id="doc-list-panel" style="flex:1; overflow-y:auto; padding:12px 20px;"></div>
+    </div>
+  </div>
+
+  <!-- PANNELLO DX -->
+  <div class="rightpanel" id="rightpanel">
+    
+    <!-- CLIENTI PRIVATI (Finale | Acquirente | Rivenditore) -->
+    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px;">
+      <div style="font-size: 11px; font-weight: 700; color: #93c5fd; text-transform: uppercase; margin-bottom: 8px;">👤 Clienti</div>
+      
+      <div style="margin-bottom: 8px;">
+        <button onclick="caricaClientiPrivati()" class="btn-green" style="width: 100%; font-size: 10px; margin-bottom: 6px;">🔄 Ricarica Clienti</button>
+        <button onclick="mostraFormNuovoCliente()" class="btn-purple btn-sm" style="width: 100%; margin-bottom: 0;">➕ Nuovo Cliente</button>
+      </div>
+      
+      <div id="form-nuovo-cliente" style="display: none; background: rgba(139,92,246,0.1); padding: 8px; border-radius: 6px; margin-bottom: 8px;">
+        <input type="text" id="new-cli-nome" placeholder="Nome / Ragione Sociale" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <input type="text" id="new-cli-cognome" placeholder="Cognome / Azienda" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <select id="new-cli-tipo" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+          <option value="finale">Cliente Finale</option>
+          <option value="acquirente">Acquirente Particolare</option>
+          <option value="rivenditore">Rivenditore</option>
+        </select>
+        <input type="email" id="new-cli-email" placeholder="Email" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <input type="tel" id="new-cli-tel" placeholder="Telefono" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <input type="text" id="new-cli-ind" placeholder="Indirizzo" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <button onclick="creaNewCliente()" class="btn-green" style="width: 100%; font-size: 10px; margin-bottom: 4px;">Crea Cliente</button>
+        <button onclick="toggleFormNuovoCliente()" class="btn-gray" style="width: 100%; font-size: 10px; margin-bottom: 0;">Annulla</button>
+      </div>
+      
+      <div id="clienti-privati-lista" style="max-height: 400px; overflow-y: auto; border: 1px solid rgba(59,130,245,0.2); border-radius: 4px; padding: 6px;">
+        <div style="text-align: center; color: #9ca3af; font-size: 11px; padding: 12px;">Caricamento...</div>
+      </div>
+    </div>
+    
+    <!-- INTERFACCIA CLIENTE ATTIVO -->
+    <div id="interfaccia-cliente" style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: none;"></div>
+    
+    <!-- PIANI INLINE (solo per Cliente Finale) -->
+    <div id="piani-inline-container" style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: none;"></div>
+
+    <div style="font-size: 13px; font-weight: 700; color: #93c5fd; margin-bottom: 10px;">Moduli</div>
+
+    <!-- SUPERADMIN PANEL -->
+    <div id="sa-panel" style="display:none;">
+      <div class="module-box">
+        <div class="module-header" onclick="toggleModule('sa-config')">
+          <span class="module-title">Config Superadmin</span>
+          <span style="font-size:10px; color:#8b5cf6;">SA</span>
+        </div>
+        <div class="module-body" id="sa-config">
+          <div style="margin-bottom: 8px;">
+            <select id="sa-cliente-sel" style="width:100%; margin-bottom:6px;" onchange="loadSAModuli()">
+              <option value="">-- Seleziona cliente --</option>
+            </select>
+            <div id="sa-moduli-list" style="font-size:11px;"></div>
+          </div>
+          <div style="border-top: 1px solid rgba(59,130,245,0.2); padding-top: 8px; margin-top: 4px;">
+            <div style="font-size: 11px; font-weight: 600; color: #9ca3af; margin-bottom: 6px;">Nuovo utente</div>
+            <input type="text" id="sa-u-nome" placeholder="Nome..." style="width:100%; margin-bottom:4px;">
+            <input type="text" id="sa-u-username" placeholder="Username..." style="width:100%; margin-bottom:4px;">
+            <input type="password" id="sa-u-pwd" placeholder="Password..." style="width:100%; margin-bottom:4px;">
+            <select id="sa-u-ruolo" style="width:100%; margin-bottom:4px;">
+              <option value="commerciale">Commerciale</option>
+              <option value="admin">Admin cliente</option>
+            </select>
+            <select id="sa-u-cliente" style="width:100%; margin-bottom:6px;">
+              <option value="">-- Cliente --</option>
+            </select>
+            <button onclick="saAddUtente()" class="btn-green" style="width:100%;">Crea utente</button>
+          </div>
+          <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
+            <button onclick="dedupBrands()" class="btn-red" style="width:100%; font-size:10px;">🧹 Unifica brand duplicati</button>
+            <div id="dedup-result" style="font-size:10px; color:#10b981; margin-top:4px;"></div>
+          </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CANTIERI -->
+    <div class="module-box" id="mod-cantieri" style="display:none;">
+      <div class="module-header" onclick="toggleModule('cantieri-body')">
+        <span class="module-title">Cantieri</span>
+        <span id="cantieri-count" style="font-size:10px; color:#9ca3af;">0</span>
+      </div>
+      <div class="module-body" id="cantieri-body">
+        <div style="display: flex; gap: 4px; margin-bottom: 8px;">
+          <input type="text" id="new-cantiere" placeholder="Nome cantiere / cliente..." style="flex:1;">
+          <button onclick="addCantiere()" class="btn-green btn-sm" style="margin-bottom:0;">+</button>
+        </div>
+        <div id="cantieri-list"></div>
+      </div>
+    </div>
+
+    <!-- BI -->
+    <div class="module-box" id="mod-bi" style="display:none;">
+      <div class="module-header" onclick="toggleModule('bi-body'); loadBI();">
+        <span class="module-title">BI / Statistiche</span>
+        <span style="font-size:10px; color:#9ca3af;">admin</span>
+      </div>
+      <div class="module-body" id="bi-body">
+        <div id="bi-stats"></div>
+        <div style="border-top:1px solid rgba(59,130,245,0.2); padding-top:8px; margin-top:8px;">
+          <div style="font-size:11px; font-weight:600; color:#9ca3af; margin-bottom:6px;">Pulizia archivio</div>
+          <input type="date" id="bi-da" style="width:100%; margin-bottom:4px;">
+          <input type="date" id="bi-a" style="width:100%; margin-bottom:4px;">
+          <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">Stati da eliminare:</div>
+          <label style="font-size:10px; display:block;"><input type="checkbox" value="vinta" id="del-vinta"> Vinte</label>
+          <label style="font-size:10px; display:block;"><input type="checkbox" value="persa" id="del-persa"> Perse</label>
+          <label style="font-size:10px; display:block; margin-bottom:6px;"><input type="checkbox" value="bozza" id="del-bozza"> Bozze</label>
+          <button onclick="biCancella()" class="btn-red" style="width:100%; font-size:10px;">Cancella selezionati</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- COMMERCIALI -->
+    <div class="module-box" id="mod-commerciali" style="display:none;">
+      <div class="module-header" onclick="toggleModule('comm-body')">
+        <span class="module-title">Commerciali</span>
+        <span style="font-size:10px; color:#9ca3af;">admin</span>
+      </div>
+      <div class="module-body" id="comm-body">
+        <div id="comm-list" style="font-size:11px;"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- DRAWER DETTAGLIO CANTIERE -->
+<div class="cantiere-drawer" id="cantiere-drawer">
+  <div class="drawer-header">
+    <div>
+      <div class="drawer-title" id="drawer-nome"></div>
+      <div style="font-size:11px; color:#9ca3af; margin-top:2px;">Gestione offerta</div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button id="btn-switch-modalita" onclick="switchModalita()" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap; font-size:10px;">🔄 PIANI</button>
+      <select id="cantiere-stato" style="font-size:11px; padding:5px 8px;" onchange="updateCantiere()">
+        <option value="bozza">Bozza</option>
+        <option value="inviata">Inviata</option>
+        <option value="vinta">Vinta</option>
+        <option value="persa">Persa</option>
+      </select>
+      <button onclick="closeCantiere()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+    </div>
+  </div>
+
+  <div class="drawer-body">
+    <!-- RIGHE ESISTENTI -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Elementi nel carrello</div>
+      <div id="righe-list"></div>
+      <div class="totale-bar" id="totale-bar" style="display:none;">
+        <span style="font-size:12px; color:#9ca3af;">Totale offerta</span>
+        <span style="font-size:15px; font-weight:700; color:#10b981;" id="totale-valore">€0</span>
+      </div>
+    </div>
+
+    <!-- ACCESSORI CONSIGLIATI -->
+    <div class="drawer-section" id="accessori-section" style="display:block;">
+      <div class="drawer-section-title">
+        🔗 Accessori Consigliati
+      </div>
+      <div id="accessori-panel" style="display:block;max-height:300px;overflow-y:auto;">
+        <div id="pannello-titolo" style="padding:8px;background:rgba(59,130,246,0.1);border-left:3px solid #3b82f6;margin-bottom:12px;border-radius:4px;"></div>
+        <div id="sezioneUfficiali"></div>
+        <div id="sezioneAlternative"></div>
+      </div>
+    </div>
+
+    <!-- AGGIUNGI RIGA -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Aggiungi elemento</div>
+      <div class="form-row">
+        <div class="brand-autocomplete" style="flex:1;">
+          <input type="text" id="riga-brand-input" placeholder="Cerca brand..." autocomplete="off"
+            oninput="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
+            onfocus="filterAutocomplete('riga-brand-input','riga-brand-list','riga-brand-val')"
+            onblur="setTimeout(()=>closeAutocomplete('riga-brand-list'),200)"
+            onchange="aggiornaCampiExtra()"
+            style="width:100%;">
+          <input type="hidden" id="riga-brand-val" onchange="aggiornaCampiExtra()">
+          <div class="brand-dropdown-list" id="riga-brand-list"></div>
+        </div>
+        <input type="text" id="riga-categoria" placeholder="Categoria (es. sanitari)" style="flex:1;">
+      </div>
+      <input type="text" id="riga-descrizione" placeholder="Descrizione prodotto..." style="width:100%; margin-bottom:8px;">
+
+      <!-- CAMPI EXTRA PIASTRELLE -->
+      <div id="extra-piastrelle" style="display:none; background:rgba(59,130,245,0.08); border:1px solid rgba(59,130,245,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
+        <div style="font-size:10px; color:#60a5fa; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli piastrella / rivestimento</div>
+        <div class="form-row">
+          <input type="text" id="extra-formato" placeholder="Formato (es. 60x120 cm)" style="flex:1;">
+          <input type="text" id="extra-finitura" placeholder="Finitura (es. lappato, opaco)" style="flex:1;">
+        </div>
+        <input type="text" id="extra-colore" placeholder="Colore / tono (es. grigio cemento, effetto marmo)" style="width:100%;">
+      </div>
+
+      <!-- CAMPI EXTRA LEGNO / PARQUET -->
+      <div id="extra-legno" style="display:none; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
+        <div style="font-size:10px; color:#10b981; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli legno / parquet</div>
+        <div class="form-row">
+          <input type="text" id="extra-essenza" placeholder="Essenza (es. rovere, noce, frassino)" style="flex:1;">
+          <input type="text" id="extra-legno-finitura" placeholder="Finitura (es. oliato, laccato)" style="flex:1;">
+        </div>
+        <div class="form-row">
+          <input type="text" id="extra-legno-formato" placeholder="Formato doga (es. 190x1900 mm)" style="flex:1;">
+          <input type="text" id="extra-legno-tono" placeholder="Tono (es. sbiancato, miele, wengè)" style="flex:1;">
+        </div>
+      </div>
+
+      <!-- CAMPI EXTRA VINILICO/TECNICO -->
+      <div id="extra-vinilico" style="display:none; background:rgba(139,92,246,0.08); border:1px solid rgba(139,92,246,0.2); border-radius:6px; padding:8px; margin-bottom:8px;">
+        <div style="font-size:10px; color:#8b5cf6; font-weight:700; margin-bottom:6px; text-transform:uppercase;">Dettagli pavimento tecnico / vinilico</div>
+        <div class="form-row">
+          <input type="text" id="extra-vin-formato" placeholder="Formato" style="flex:1;">
+          <input type="text" id="extra-vin-spessore" placeholder="Spessore (es. 5mm)" style="flex:1;">
+        </div>
+        <input type="text" id="extra-vin-effetto" placeholder="Effetto (es. legno, pietra, cemento)" style="width:100%;">
+      </div>
+
+      <div class="form-row">
+        <input type="number" id="riga-importo" placeholder="Importo €" style="flex:1;">
+        <button onclick="addRiga()" class="btn-green" style="flex:1; margin-bottom:0;">+ Aggiungi</button>
+      </div>
+    </div>
+    <!-- AGGIUNGI MANUALE / VOCE LIBERA -->
+    <div class="drawer-section">
+      <div class="drawer-section-title" style="cursor:pointer;" onclick="toggleExcelPanel()">
+        ⚡ Importa da Excel / Voce libera
+        <span id="excel-panel-arrow" style="float:right; color:#9ca3af;">▼</span>
+      </div>
+      <div id="excel-panel" style="display:none;">
+        <!-- Upload Excel -->
+        <div style="margin-bottom:8px;">
+          <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:7px; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px; text-align:center; margin-bottom:6px;">
+            📊 Carica Excel prodotti
+            <input type="file" id="excel-listino" accept=".xlsx,.xls" style="display:none" onchange="caricaExcelListino(this)">
+          </label>
+          <div id="excel-status" style="font-size:10px; color:#9ca3af; margin-bottom:6px;"></div>
+        </div>
+
+        <!-- Lista righe Excel -->
+        <div id="excel-righe-list" style="max-height:340px; overflow-y:auto;"></div>
+
+        <!-- Separatore -->
+        <div style="border-top:1px solid rgba(59,130,245,0.15); margin: 10px 0 8px 0;"></div>
+
+        <!-- Voce manuale libera -->
+        <div style="font-size:10px; color:#9ca3af; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px;">Voce manuale (trasporto, manodopera, ecc.)</div>
+        <input type="text" id="voce-desc" placeholder="Descrizione voce..." style="width:100%; margin-bottom:6px;">
+        <div class="form-row">
+          <input type="number" id="voce-importo" placeholder="Importo €" style="flex:1;">
+          <button onclick="addVoceManuale()" class="btn-purple" style="flex:1; margin-bottom:0; font-size:11px;">+ Aggiungi</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer-footer">
+    <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta AI</button>
+    <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">Elimina cantiere</button>
+  </div>
+</div>
+
+<!-- DRAWER PIANI/STANZE/VOCI (NASCOSTO FINCHE NON CLICCHI SWITCH) -->
+<div class="cantiere-drawer" id="cantiere-drawer-piani" style="display:none;">
+  <div class="drawer-header">
+    <div>
+      <div class="drawer-title" id="drawer-piani-nome"></div>
+      <div style="font-size:11px; color:#9ca3af; margin-top:2px;">Modalità Piani/Stanze</div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button id="btn-switch-indietro" onclick="switchModalita()" class="btn-purple btn-sm" style="margin-bottom:0; white-space:nowrap; font-size:10px;">🔄 SEMPLICE</button>
+      <button onclick="closeCantiere()" class="btn-gray btn-sm" style="margin-bottom:0;">✕ Chiudi</button>
+    </div>
+  </div>
+
+  <div class="drawer-body" style="display:flex; gap:8px;">
+    <!-- SINISTRA: PIANI/STANZE -->
+    <div id="pannello-piani" style="flex:1; overflow-y:auto; padding:12px; border-right:1px solid rgba(59,130,245,0.2);">
+      <div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">
+        ⏳ Caricamento struttura piani...
+      </div>
+    </div>
+    
+    <!-- DESTRA: LISTINO DINAMICO + CARICAMENTO PLANIMETRIA -->
+    <div style="flex:1; display:flex; flex-direction:column; gap:8px;">
+      <!-- CARICAMENTO PLANIMETRIA -->
+      <div style="background:rgba(139,92,246,0.15); border:1px solid rgba(139,92,246,0.3); border-radius:6px; padding:8px;">
+        <div style="font-size:10px; color:#8b5cf6; font-weight:700; text-transform:uppercase; margin-bottom:6px;">📁 Carica Planimetria</div>
+        <label style="display:block; width:100%; background:#8b5cf6; color:white; padding:6px; border-radius:4px; cursor:pointer; font-weight:600; font-size:10px; text-align:center; margin-bottom:4px;">
+          Carica disegno
+          <input type="file" id="file-planimetria" accept=".png,.jpg,.jpeg,.pdf" style="display:none" onchange="caricaPlanimetria(this)">
+        </label>
+        <div id="planimetria-status" style="font-size:9px; color:#9ca3af;"></div>
+      </div>
+
+      <!-- LISTINO DINAMICO -->
+      <div style="background:rgba(59,130,245,0.1); border:1px solid rgba(59,130,245,0.2); border-radius:6px; padding:8px; flex:1; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="font-size:10px; color:#60a5fa; font-weight:700; text-transform:uppercase; margin-bottom:6px;">📋 Listino Rapido</div>
+        <input type="text" id="listino-piani-search" placeholder="Cerca prodotto..." oninput="filtraListinoPiani()" style="width:100%; margin-bottom:6px; font-size:10px;">
+        <div id="listino-piani-grid" style="flex:1; overflow-y:auto; display:grid; grid-template-columns:1fr; gap:4px;">
+          <div style="color:#6b7280; font-size:10px;">Seleziona una stanza per caricare il listino</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer-footer">
+    <button onclick="aggiungiPianoModal()" class="btn-green" style="flex:1; font-size:11px; margin-bottom:0;">➕ Piano</button>
+    <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta</button>
+    <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">✕ Elimina</button>
+  </div>
+</div>
+
 
 <!-- ============================================================================
      MODAL ABBINAMENTI — HTML/CSS/JavaScript
