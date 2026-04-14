@@ -2280,6 +2280,208 @@ def get_abbinamenti_prodotto(codice_prodotto):
     })
 
 # ---------------------------------------------------------------------------
+# CERCA IMMAGINE PRODOTTO — GOOGLE CUSTOM SEARCH
+# ---------------------------------------------------------------------------
+
+@app.route('/api/cerca-immagine-prodotto', methods=['POST'])
+def cerca_immagine_prodotto():
+    """Ricerca immagine per codice prodotto su Google Images + scarica Base64"""
+    try:
+        data = request.get_json()
+        codice = data.get('codice', '').strip()
+        nome = data.get('nome', '').strip()
+        brand = data.get('brand', '').strip()
+        
+        if not codice:
+            return jsonify({'error': 'Codice prodotto richiesto'}), 400
+        
+        # 🔑 ESTRAI SOLO LA PARTE PRIMA DEL # (es: 386610#031 → 386610)
+        codice_base = codice.split('#')[0].strip()
+        
+        print(f"🔑 Codice originale: {codice} → Codice base per ricerca: {codice_base}")
+        
+        # Credenziali Google Custom Search
+        API_KEY = os.getenv('GOOGLE_API_KEY')
+        CSE_ID = os.getenv('GOOGLE_CSE_ID')
+        
+        if not API_KEY or not CSE_ID:
+            return jsonify({'error': 'Credenziali Google non configurate'}), 500
+        
+        # Query di ricerca: SOLO codice base + brand (nome troppo generico)
+        query = f"{codice_base} {brand}".strip()
+        
+        print(f"🔍 Ricerca immagini per: {query}")
+        
+        import httpx
+        
+        # 1. Chiama Google Custom Search API
+        google_url = "https://www.googleapis.com/customsearch/v1"
+        google_params = {
+            'q': query,
+            'cx': CSE_ID,
+            'key': API_KEY,
+            'searchType': 'image',
+            'num': 10  # Cerca 10 per averne almeno 3 scaricabili
+        }
+        
+        print(f"📡 Chiamando Google Custom Search con query: {query}")
+        
+        response = httpx.get(google_url, params=google_params, timeout=10.0)
+        response.raise_for_status()
+        
+        risultati_google = response.json()
+        items = risultati_google.get('items', [])
+        
+        print(f"📦 Google ha ritornato {len(items)} risultati")
+        
+        if not items:
+            return jsonify({'ok': True, 'risultati': [], 'messaggio': f'Nessuna immagine trovata per {codice_base}'}), 200
+        
+        # 2. Scarica e converti in Base64 le prime 3 immagini SCARICABILI
+        risultati = []
+        errori = []
+        
+        for idx, item in enumerate(items):
+            if len(risultati) >= 3:  # Stop quando ne hai 3 buone
+                break
+                
+            try:
+                url_immagine = item.get('link', '')
+                fonte = item.get('displayLink', 'sconosciuta')
+                
+                if not url_immagine:
+                    print(f"⚠️ Item {idx}: URL vuoto, skip")
+                    continue
+                
+                print(f"🖼️ Tentando di scaricare ({idx+1}): {url_immagine[:60]}... da {fonte}")
+                
+                # Scarica l'immagine con User-Agent per evitare blocchi
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                
+                try:
+                    img_response = httpx.get(
+                        url_immagine, 
+                        timeout=8.0, 
+                        follow_redirects=True,
+                        headers=headers,
+                        verify=False  # Ignora verifiche SSL problematiche
+                    )
+                    img_response.raise_for_status()
+                except httpx.ReadTimeout:
+                    errori.append(f"Timeout su {fonte}")
+                    print(f"⏱️ Timeout scaricamento da {fonte}")
+                    continue
+                except httpx.HTTPError as he:
+                    errori.append(f"HTTP error {fonte}: {str(he)}")
+                    print(f"❌ HTTP error da {fonte}: {str(he)}")
+                    continue
+                
+                # Controlla content-type
+                content_type = img_response.headers.get('content-type', 'image/jpeg')
+                if ';' in content_type:
+                    content_type = content_type.split(';')[0]
+                
+                if 'image' not in content_type:
+                    errori.append(f"Content-type non immagine: {content_type}")
+                    print(f"⚠️ {fonte}: content-type non valido: {content_type}")
+                    continue
+                
+                # Controlla dimensione
+                img_data = img_response.content
+                if len(img_data) < 1000:  # Meno di 1KB = probabilmente non valida
+                    errori.append(f"Immagine troppo piccola da {fonte}")
+                    print(f"⚠️ {fonte}: immagine troppo piccola ({len(img_data)} bytes)")
+                    continue
+                
+                if len(img_data) > 5000000:  # Più di 5MB = troppo grande
+                    errori.append(f"Immagine troppo grande da {fonte}")
+                    print(f"⚠️ {fonte}: immagine troppo grande ({len(img_data)} bytes)")
+                    continue
+                
+                # Converti in Base64
+                try:
+                    b64_data = base64.b64encode(img_data).decode('utf-8')
+                except Exception as be:
+                    errori.append(f"Errore encoding Base64 da {fonte}")
+                    print(f"❌ Errore encoding Base64 da {fonte}: {str(be)}")
+                    continue
+                
+                # Aggiungi ai risultati SUCCESS
+                risultati.append({
+                    'url': url_immagine,
+                    'fonte': fonte,
+                    'b64': b64_data,
+                    'content_type': content_type,
+                    'size': len(img_data)
+                })
+                
+                print(f"✅ {fonte}: scaricata ({len(img_data)} bytes, Base64: {len(b64_data)} chars)")
+                
+            except Exception as e:
+                errori.append(f"Errore generale item {idx}: {str(e)}")
+                print(f"❌ Errore item {idx}: {str(e)}")
+                continue
+        
+        print(f"\n📊 RISULTATI: {len(risultati)} immagini scaricate, {len(errori)} errori")
+        
+        return jsonify({
+            'ok': True,
+            'risultati': risultati,
+            'query': query,
+            'codice_base': codice_base,
+            'count': len(risultati),
+            'errori': errori,
+            'totale_cercate': len(items)
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ ERRORE GRAVE cerca_immagine_prodotto: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f"Errore ricerca: {str(e)}"}), 500
+
+# ---------------------------------------------------------------------------
+# GET ABBINAMENTI PER PRODOTTO
+# ---------------------------------------------------------------------------
+
+@app.route('/api/abbinamenti/<brand>/<codice>', methods=['GET'])
+def get_abbinamenti(brand, codice):
+    """Ritorna abbinamenti per un prodotto (da Excel o hardcoded)"""
+    try:
+        # TODO: implementare logica per caricare abbinamenti dal DB o Excel
+        # Per ora ritorna lista vuota
+        # In futuro: leggere da tabella abbinamenti_prodotto
+        
+        abbinamenti = [
+            {
+                'codice': 'ACC001',
+                'nome': 'Flessibile scarico',
+                'prezzo': 25,
+                'immagine_url': None
+            },
+            {
+                'codice': 'ACC002',
+                'nome': 'Rubinetteria cromata',
+                'prezzo': 45,
+                'immagine_url': None
+            },
+            {
+                'codice': 'ACC003',
+                'nome': 'Sigillante silicone',
+                'prezzo': 8,
+                'immagine_url': None
+            }
+        ]
+        
+        return jsonify({'ok': True, 'abbinamenti': abbinamenti}), 200
+        
+    except Exception as e:
+        print(f"❌ ERRORE get_abbinamenti: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# ---------------------------------------------------------------------------
 # FRONTEND
 # ---------------------------------------------------------------------------
 
@@ -2849,7 +3051,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 
   <div class="drawer-footer">
     <button onclick="aggiungiPianoModal()" class="btn-green" style="flex:1; font-size:11px; margin-bottom:0;">➕ Piano</button>
-    <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta</button>
+    <button onclick="generaOffertaPiani()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta AI</button>
     <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">✕ Elimina</button>
   </div>
 </div>
@@ -3508,6 +3710,122 @@ function generaOffertaCantiere() {
     closeCantiere();
     askDirect(domanda, brands);
   });
+}
+
+// ============================================================================
+// GENERA OFFERTA AI — MODALITA PIANI
+// ============================================================================
+
+function generaOffertaPiani() {
+  if (!cantiereAttivo) {
+    alert('❌ Nessun cantiere selezionato');
+    return;
+  }
+  
+  console.log('🚀 generaOffertaPiani avviata per cantiere:', cantiereAttivo);
+  
+  // Carica la struttura completa PIANI > STANZE > VOCI
+  fetch('/api/cantieri/' + cantiereAttivo + '/struttura')
+    .then(r => {
+      console.log('📡 Response status:', r.status);
+      return r.json();
+    })
+    .then(d => {
+      console.log('📦 Dati ricevuti:', d);
+      
+      if (!d.ok) {
+        alert('❌ Errore API: ' + (d.error || 'Sconosciuto'));
+        return;
+      }
+      
+      if (!d.piani || d.piani.length === 0) {
+        alert('❌ Nessun piano trovato nel cantiere');
+        return;
+      }
+      
+      const cantiereNome = document.getElementById('drawer-piani-nome') 
+        ? document.getElementById('drawer-piani-nome').textContent 
+        : 'Cantiere ' + cantiereAttivo;
+      const piani = d.piani || [];
+      
+      console.log('🎯 Cantiere:', cantiereNome);
+      console.log('📐 Piani trovati:', piani.length);
+      
+      // Costruisci il riepilogo strutturato
+      let riepilogo = '';
+      let totaleGlobale = 0;
+      const brands = new Set();
+      
+      piani.forEach(piano => {
+        riepilogo += `\n📐 PIANO: ${piano.nome} (${piano.stanze.length} stanze)\n`;
+        riepilogo += `${'─'.repeat(60)}\n`;
+        
+        const stanze = piano.stanze || [];
+        let totalePiano = 0;
+        
+        stanze.forEach(stanza => {
+          riepilogo += `  🏠 ${stanza.nome}\n`;
+          const voci = stanza.voci || [];
+          
+          let totaleStanza = 0;
+          voci.forEach(voce => {
+            const subtotale = (voce.quantita || 1) * (voce.prezzo_unitario || 0);
+            totaleStanza += subtotale;
+            totalePiano += subtotale;
+            totaleGlobale += subtotale;
+            
+            if (voce.brand) brands.add(voce.brand);
+            
+            riepilogo += `     [${voce.codice || '—'}] ${voce.brand || '—'} — ${voce.descrizione || '—'}\n`;
+            riepilogo += `     Qty: ${voce.quantita} × €${(voce.prezzo_unitario || 0).toFixed(2)} = €${subtotale.toFixed(2)}\n`;
+          });
+          
+          riepilogo += `  💰 SUBTOTALE ${stanza.nome}: €${totaleStanza.toFixed(2)}\n\n`;
+        });
+        
+        riepilogo += `📊 TOTALE ${piano.nome}: €${totalePiano.toFixed(2)}\n`;
+        riepilogo += `${'═'.repeat(60)}\n`;
+      });
+      
+      riepilogo += `\n🎯 TOTALE CANTIERE: €${totaleGlobale.toFixed(2)}\n`;
+      
+      const brandsArray = Array.from(brands);
+      
+      console.log('✅ Riepilogo costruito, lunghezza:', riepilogo.length);
+      console.log('🏷️ Brands:', brandsArray);
+      
+      // Costruisci il prompt per l'IA
+      const domanda = `Genera una proposta commerciale professionale e convincente da presentare al cliente per il cantiere "${cantiereNome}".
+
+STRUTTURA DEL PROGETTO:
+${riepilogo}
+
+ISTRUZIONI:
+1. Crea un'introduzione elegante e professionale che evidenzi il valore della soluzione proposta
+2. Organizza il contenuto per PIANO e STANZA in modo visibile e facile da seguire
+3. Per ogni voce includi: codice prodotto, brand, descrizione accurata e prezzo
+4. Aggiungi note su qualità, caratteristiche tecniche e vantaggi
+5. Evidenzia i subtotali per ogni stanza e il totale finale
+6. Chiudi con una call to action professionale per convertire il cliente
+7. Tono: elegante, orientato al valore, ricco di dettagli ma leggibile
+
+BRANDS PROPOSTI: ${brandsArray.join(', ') || 'Vari'}
+
+Genera il testo da presentare direttamente al cliente.`;
+      
+      console.log('💬 Prompt creato, lunghezza:', domanda.length);
+      
+      // Chiudi il drawer e invia all'IA
+      document.getElementById('cantiere-drawer-piani').classList.remove('open');
+      setTimeout(() => {
+        console.log('📤 Invio a askDirect...');
+        askDirect(domanda, brandsArray);
+      }, 300);
+    })
+    .catch(e => {
+      console.error('❌ ERRORE FETCH:', e);
+      alert('❌ Errore: ' + e.message);
+    });
 }
 
 function askDirect(domanda, brands) {
@@ -4752,18 +5070,92 @@ function renderGridStanza(prodotti) {
   }
   
   const html = `
-    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:16px;">
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:16px;">
       ${prodotti.map((p, idx) => `
-        <div style="background:#1e293b; border:1px solid #334155; border-radius:8px; padding:12px; cursor:pointer; transition:all 0.2s;" 
+        <div style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden; cursor:pointer; transition:all 0.2s; display:flex; flex-direction:column;" 
              onmouseover="this.style.borderColor='#3b82f6'; this.style.boxShadow='0 0 15px rgba(59,130,245,0.3)'" 
              onmouseout="this.style.borderColor='#334155'; this.style.boxShadow='none'"
-             onclick="aggiungiProdottoStanza(${idx})">
-          <div style="font-size:10px; color:#9ca3af; margin-bottom:4px; font-family:monospace;">${p.codice || '—'}</div>
-          <div style="font-size:12px; font-weight:600; color:#e0e0e0; margin-bottom:6px; line-height:1.3;">${p.nome || '—'}</div>
-          <div style="font-size:10px; color:#6b7280; margin-bottom:8px;">${p.categoria || ''}</div>
-          <div style="font-size:13px; color:#10b981; font-weight:bold;">€${p.prezzo ? parseFloat(p.prezzo).toFixed(0) : '—'}</div>
-          <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(59,130,245,0.2);">
-            <button style="width:100%; padding:6px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:11px; cursor:pointer; font-weight:600;">✓ Aggiungi</button>
+             data-product-idx="${idx}">
+          
+          <!-- IMMAGINE THUMBNAIL -->
+          <div style="width:100%; height:160px; background:rgba(30,41,59,0.8); display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; border-bottom:1px solid #334155;">
+            ${p.immagine_url ? 
+              `<img src="${p.immagine_url}" style="width:100%; height:100%; object-fit:cover; transition:transform 0.3s;" 
+                    onmouseover="this.style.transform='scale(1.05)'" 
+                    onmouseout="this.style.transform='scale(1)'" />` 
+              : 
+              `<div style="color:#6b7280; font-size:40px;">📦</div>`
+            }
+            <div style="position:absolute; top:8px; right:8px; background:#10b981; color:white; padding:4px 8px; border-radius:4px; font-size:9px; font-weight:bold;">✓ DISPONIBILE</div>
+          </div>
+          
+          <!-- CONTENUTO CARD -->
+          <div style="padding:12px; flex:1; display:flex; flex-direction:column;">
+            <div style="font-size:10px; color:#9ca3af; margin-bottom:4px; font-family:monospace; font-weight:bold;">${p.codice || '—'}</div>
+            <div style="font-size:11px; font-weight:600; color:#e0e0e0; margin-bottom:6px; line-height:1.3; min-height:32px;">${p.nome || '—'}</div>
+            
+            <!-- DESCRIZIONE CON SLIDER INTERATTIVO -->
+            <div style="margin-bottom:8px;">
+              <div id="desc-text-${idx}" style="font-size:9px; color:#9ca3af; line-height:1.4; margin-bottom:6px; min-height:24px; max-height:60px; overflow-y:auto; padding-right:4px;">
+                ${p.descrizione ? p.descrizione.substring(0, 100) : 'Nessuna descrizione'}
+              </div>
+              
+              <!-- SLIDER CARATTERI -->
+              <div style="display:flex; align-items:center; gap:6px; padding:4px 0;">
+                <span style="font-size:7px; color:#6b7280; white-space:nowrap;">50</span>
+                <input type="range" id="desc-slider-${idx}" 
+                       min="50" max="${p.descrizione ? p.descrizione.length : 100}" value="100" step="10"
+                       style="flex:1; height:4px; cursor:pointer; accent-color:#8b5cf6;"
+                       oninput="aggiornaDescrizioneSlider(${idx}, '${p.descrizione ? p.descrizione.replace(/'/g, "\\'") : ''}')">
+                <span id="desc-count-${idx}" style="font-size:7px; color:#c084fc; font-weight:bold; white-space:nowrap; width:25px; text-align:right;">100</span>
+                <span style="font-size:7px; color:#6b7280; white-space:nowrap;">All</span>
+              </div>
+            </div>
+            
+            <!-- BADGE COLORE/TIPO -->
+            <div style="font-size:8px; color:#6b7280; margin-bottom:8px; display:flex; gap:4px; flex-wrap:wrap;">
+              ${p.categoria ? `<span style="background:rgba(59,130,245,0.2); padding:2px 6px; border-radius:3px;">${p.categoria}</span>` : ''}
+              ${p.tipo ? `<span style="background:rgba(168,85,247,0.2); padding:2px 6px; border-radius:3px;">${p.tipo}</span>` : ''}
+            </div>
+            
+            <!-- ABBINAMENTI PREVIEW (se ce ne sono) -->
+            <div id="abbinamenti-preview-${idx}" style="font-size:8px; color:#c084fc; margin-bottom:8px; display:none;">
+              <div style="font-weight:bold; margin-bottom:2px;">🔗 Abbinamenti:</div>
+              <div id="abbinamenti-list-${idx}" style="display:flex; gap:2px; flex-wrap:wrap; max-height:30px; overflow:hidden;"></div>
+            </div>
+            
+            <!-- PREZZO -->
+            <div style="font-size:14px; color:#10b981; font-weight:bold; margin-bottom:12px;">€${p.prezzo ? parseFloat(p.prezzo).toFixed(0) : '—'}</div>
+            
+            <!-- BOTTONI AZIONI -->
+            <div style="display:flex; gap:6px; margin-top:auto; flex-direction:column;">
+              <div style="display:flex; gap:6px;">
+                <button id="btn-abbina-${idx}" onclick="event.stopPropagation(); apriModaleAbbinamenti(${idx})" 
+                        style="flex:1; padding:6px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s; display:none;" 
+                        onmouseover="this.style.background='#dc2626'" 
+                        onmouseout="this.style.background='#ef4444'">
+                  🔗 Abbina
+                </button>
+                <button onclick="event.stopPropagation(); aggiungiProdottoStanza(${idx})" 
+                        style="flex:1; padding:6px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                        onmouseover="this.style.background='#2563eb'" 
+                        onmouseout="this.style.background='#3b82f6'">
+                  ✓ Aggiungi
+                </button>
+                <button onclick="event.stopPropagation(); aggiungiAlCarrello(${idx})" 
+                        style="flex:1; padding:6px; background:#10b981; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                        onmouseover="this.style.background='#059669'" 
+                        onmouseout="this.style.background='#10b981'">
+                  🛒 Carrello
+                </button>
+              </div>
+              <button onclick="event.stopPropagation(); apriModaleImmagine(${idx})" 
+                      style="width:100%; padding:6px; background:#8b5cf6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                      onmouseover="this.style.background='#7c3aed'" 
+                      onmouseout="this.style.background='#8b5cf6'">
+                🖼️ Cerca Immagine
+              </button>
+            </div>
           </div>
         </div>
       `).join('')}
@@ -4771,6 +5163,76 @@ function renderGridStanza(prodotti) {
   `;
   
   document.getElementById('grid-container-stanza').innerHTML = html;
+  
+  // DOPO il render, carica gli abbinamenti e mostra/nascondi bottone
+  caricaAbbinationiPerCards(prodotti);
+}
+
+function caricaAbbinationiPerCards(prodotti) {
+  const brand = window._gridBrandStanza;
+  if (!brand) return;
+  
+  prodotti.forEach((p, idx) => {
+    fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(p.codice))
+      .then(r => r.json())
+      .then(d => {
+        const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
+        
+        // Se ci sono abbinamenti:
+        if (abbinamenti && abbinamenti.length > 0) {
+          // 1. Mostra bottone Abbina
+          const btnAbbina = document.getElementById('btn-abbina-' + idx);
+          if (btnAbbina) {
+            btnAbbina.style.display = 'block';
+          }
+          
+          // 2. Mostra preview abbinamenti nella card
+          const previewDiv = document.getElementById('abbinamenti-preview-' + idx);
+          const listDiv = document.getElementById('abbinamenti-list-' + idx);
+          
+          if (previewDiv && listDiv) {
+            previewDiv.style.display = 'block';
+            
+            // Mostra max 3 abbinamenti
+            const abbinatiMostrarti = abbinamenti.slice(0, 3);
+            const html = abbinatiMostrarti.map(a => 
+              `<span style="background:rgba(192,132,252,0.3); padding:1px 4px; border-radius:2px; white-space:nowrap;">${a.nome || a.codice}</span>`
+            ).join('');
+            
+            listDiv.innerHTML = html + (abbinamenti.length > 3 ? `<span style="color:#6b7280; font-size:7px;">+${abbinamenti.length - 3}</span>` : '');
+          }
+        }
+      })
+      .catch(e => {
+        // Silenzioso se fallisce
+        console.log('⚠️ Abbinamenti non trovati per:', p.codice);
+      });
+  });
+}
+
+// ============================================================================
+// SLIDER DESCRIZIONE — AGGIORNA TESTO AL MOVIMENTO
+// ============================================================================
+
+function aggiornaDescrizioneSlider(idx, testoCompleto) {
+  const slider = document.getElementById('desc-slider-' + idx);
+  const textDiv = document.getElementById('desc-text-' + idx);
+  const countSpan = document.getElementById('desc-count-' + idx);
+  
+  console.log('🎚️ Slider movimento idx=' + idx + ', elementi trovati:', {slider: !!slider, textDiv: !!textDiv, countSpan: !!countSpan});
+  
+  if (!slider || !textDiv) {
+    console.warn('⚠️ Slider o textDiv non trovati per idx', idx);
+    return;
+  }
+  
+  const numCaratteri = parseInt(slider.value);
+  const testoTroncato = testoCompleto.substring(0, numCaratteri);
+  
+  textDiv.textContent = testoTroncato + (numCaratteri < testoCompleto.length ? '' : '');
+  countSpan.textContent = numCaratteri;
+  
+  console.log('✅ Descrizione aggiornata: ' + numCaratteri + ' caratteri');
 }
 
 function aggiungiProdottoStanza(idx) {
@@ -4794,15 +5256,501 @@ function aggiungiProdottoStanza(idx) {
       quantita: 1,
       prezzo_unitario: prezzo,
       sconto_percentuale: 0,
-      colore: 'verde'
+      colore: 'verde',
+      immagine_url: prodotto.immagine_url || ''
     })
   })
   .then(r => r.json())
   .then(d => {
     if (d.ok) {
-      // FEEDBACK: prodotto aggiunto, modale rimane aperta per aggiungerne altri
       alert('✓ Aggiunto: ' + (prodotto.nome || 'Prodotto'));
-      // Opzionale: ricarica grid
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+// ============================================================================
+// MODALE RICERCA IMMAGINE
+// ============================================================================
+
+function apriModaleImmagine(idx) {
+  if (!window._gridProdottiStanza) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
+  const brand = window._gridBrandStanza;
+  
+  const modalHtml = `
+    <div id="modal-immagine" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:7500; display:flex; flex-direction:column; padding:0;">
+      
+      <!-- HEADER -->
+      <div style="background:#0f172e; border-bottom:2px solid #8b5cf6; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+        <div style="font-size:14px; font-weight:bold; color:#c084fc;">🖼️ Gestisci Immagine: <strong>${prodotto.nome}</strong></div>
+        <button onclick="chiudiModaleImmagine()" style="background:#ef4444; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">✕ Chiudi</button>
+      </div>
+      
+      <!-- CONTENUTO -->
+      <div style="display:flex; gap:20px; flex:1; overflow:hidden; padding:20px;">
+        
+        <!-- SINISTRA: ANTEPRIMA IMMAGINE -->
+        <div style="flex:0 0 300px; display:flex; flex-direction:column; background:rgba(30,41,59,0.6); border:1px solid #334155; border-radius:8px; padding:16px; overflow-y:auto;">
+          <div style="font-size:12px; font-weight:bold; color:#c084fc; margin-bottom:12px;">📸 Anteprima</div>
+          
+          <div id="anteprima-immagine" style="width:100%; aspect-ratio:1; background:rgba(59,130,245,0.1); border-radius:6px; display:flex; align-items:center; justify-content:center; margin-bottom:12px; overflow:hidden; border:2px dashed #334155;">
+            ${prodotto.immagine_url ? 
+              `<img src="${prodotto.immagine_url}" style="width:100%; height:100%; object-fit:cover;" />` 
+              : 
+              `<div style="color:#6b7280; text-align:center; font-size:40px;">📦<div style="font-size:11px; margin-top:8px; color:#9ca3af;">Ricerca in corso...</div></div>`
+            }
+          </div>
+          
+          <div style="font-size:10px; color:#9ca3af; margin-top:auto;">
+            <div style="font-weight:bold; margin-bottom:4px; color:#d1d5db;">Info Prodotto:</div>
+            Codice: <strong>${prodotto.codice}</strong><br>
+            Brand: <strong>${brand}</strong><br>
+            Nome: <strong>${prodotto.nome}</strong>
+          </div>
+        </div>
+        
+        <!-- DESTRA: RISULTATI RICERCA -->
+        <div style="flex:1; display:flex; flex-direction:column;">
+          <div style="font-size:12px; font-weight:bold; color:#c084fc; margin-bottom:12px;">🔍 Ricerca Automatica</div>
+          
+          <div style="background:rgba(30,41,59,0.6); border:1px solid #334155; border-radius:8px; padding:16px; flex:1; display:flex; flex-direction:column; overflow:hidden;">
+            <div id="ricerca-status" style="font-size:10px; color:#93c5fd; margin-bottom:12px; text-align:center;">⏳ Ricerca immagini per: <strong>${prodotto.codice}</strong></div>
+            
+            <div id="risultati-grid" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:12px; flex:1; overflow-y:auto; margin-bottom:12px;"></div>
+            
+            <!-- Metodo alternativo: Incolla URL manuale -->
+            <div style="border-top:1px solid #334155; padding-top:12px; margin-top:12px;">
+              <div style="font-size:9px; font-weight:bold; color:#d1d5db; margin-bottom:6px;">O Incolla URL manuale:</div>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="url-immagine-input" placeholder="https://example.com/image.jpg" style="flex:1; padding:8px; background:rgba(30,41,59,0.8); border:1px solid #334155; color:white; border-radius:4px; font-size:10px;" value="${prodotto.immagine_url || ''}">
+                <button onclick="salvaURLImmagineManuale('${idx}')" style="padding:8px 12px; background:#10b981; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:600; font-size:10px;">✓ Salva</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- FOOTER -->
+      <div style="background:#0f172e; border-top:2px solid #8b5cf6; padding:16px 20px; display:flex; gap:12px; justify-content:flex-end; flex-shrink:0;">
+        <button onclick="chiudiModaleImmagine()" style="padding:10px 20px; background:#6b7280; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✕ Chiudi</button>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  
+  // RICERCA AUTOMATICA subito
+  cercaImmaginiAutomatica(idx, prodotto, brand);
+}
+
+function cercaImmaginiAutomatica(idx, prodotto, brand) {
+  const codice = prodotto.codice;
+  const nome = prodotto.nome;
+  
+  console.log('🔍 Ricerca automatica per:', codice, nome);
+  
+  // Chiama backend per cercare immagini
+  fetch('/api/cerca-immagine-prodotto', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: codice,
+      nome: nome,
+      brand: brand
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    console.log('📦 Risultati ricerca:', d);
+    
+    const statusEl = document.getElementById('ricerca-status');
+    const gridEl = document.getElementById('risultati-grid');
+    
+    if (!d.ok || !d.risultati || d.risultati.length === 0) {
+      statusEl.innerHTML = '❌ Nessuna immagine trovata. Incolla URL manuale.';
+      return;
+    }
+    
+    statusEl.innerHTML = `✅ Trovate ${d.risultati.length} immagini`;
+    
+    // Renderizza risultati
+    const html = d.risultati.map((ris, ridx) => `
+      <div style="background:#1e293b; border:1px solid #334155; border-radius:6px; overflow:hidden; cursor:pointer; transition:all 0.2s;" 
+           onmouseover="this.style.borderColor='#3b82f6'; this.style.boxShadow='0 0 10px rgba(59,130,245,0.3)'" 
+           onmouseout="this.style.borderColor='#334155'; this.style.boxShadow='none'"
+           onclick="selezionaImmagineRicerca(${idx}, '${ris.url}', '${ris.b64.substring(0, 50)}...', ${ridx})">
+        <div style="width:100%; aspect-ratio:1; background:#0a0f23; overflow:hidden; display:flex; align-items:center; justify-content:center;">
+          <img src="data:image/jpeg;base64,${ris.b64}" style="width:100%; height:100%; object-fit:cover;" />
+        </div>
+        <div style="padding:8px; background:rgba(59,130,245,0.1); border-top:1px solid #334155;">
+          <div style="font-size:8px; color:#9ca3af; margin-bottom:2px;">${ris.fonte}</div>
+          <button style="width:100%; padding:4px; background:#10b981; color:white; border:none; border-radius:3px; font-size:9px; cursor:pointer; font-weight:600;">✓ Seleziona</button>
+        </div>
+      </div>
+    `).join('');
+    
+    gridEl.innerHTML = html;
+  })
+  .catch(e => {
+    console.error('❌ ERRORE ricerca:', e);
+    const statusEl = document.getElementById('ricerca-status');
+    statusEl.innerHTML = '❌ Errore: ' + e.message;
+  });
+}
+
+function selezionaImmagineRicerca(idx, urlOriginale, b64Preview, ridx) {
+  console.log('✅ Immagine selezionata:', ridx);
+  
+  // Aggiorna anteprima
+  const anteprimaDiv = document.getElementById('anteprima-immagine');
+  anteprimaDiv.innerHTML = '<div style="color:#93c5fd; text-align:center;">⏳ Salvataggio in corso...</div>';
+  
+  // Salva nel backend
+  fetch('/api/prodotti/' + encodeURIComponent(window._gridBrandStanza) + '/' + encodeURIComponent(window._gridProdottiStanza[idx].codice) + '/immagine', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      immagine_url: urlOriginale,
+      immagine_b64: b64Preview  // Per DB (completo viene già salvato dal backend)
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      // Aggiorna anteprima con l'immagine vera
+      anteprimaDiv.innerHTML = `<img src="${urlOriginale}" style="width:100%; height:100%; object-fit:cover;" />`;
+      
+      // Aggiorna prodotto in memoria
+      window._gridProdottiStanza[idx].immagine_url = urlOriginale;
+      
+      alert('✓ Immagine salvata con successo!');
+    } else {
+      anteprimaDiv.innerHTML = '<div style="color:#ef4444;">❌ Errore nel salvataggio</div>';
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  })
+  .catch(e => {
+    anteprimaDiv.innerHTML = '<div style="color:#ef4444;">❌ ' + e.message + '</div>';
+  });
+}
+
+function salvaURLImmagineManuale(idx) {
+  const urlInput = document.getElementById('url-immagine-input');
+  const urlImmagine = urlInput.value.trim();
+  
+  if (!urlImmagine) {
+    alert('❌ Inserisci un URL valido');
+    return;
+  }
+  
+  if (!window._gridProdottiStanza) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
+  
+  // Salva URL manuale
+  fetch('/api/prodotti/' + encodeURIComponent(window._gridBrandStanza) + '/' + encodeURIComponent(prodotto.codice) + '/immagine', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      immagine_url: urlImmagine
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      const anteprima = document.getElementById('anteprima-immagine');
+      anteprima.innerHTML = `<img src="${urlImmagine}" style="width:100%; height:100%; object-fit:cover;" />`;
+      window._gridProdottiStanza[idx].immagine_url = urlImmagine;
+      alert('✓ Immagine salvata con successo!');
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  })
+  .catch(e => {
+    alert('❌ Errore: ' + e.message);
+  });
+}
+
+function salvaURLImmagine(idx) {
+  salvaURLImmagineManuale(idx);  // Alias per compatibilità
+}
+
+function chiudiModaleImmagine() {
+  const modal = document.getElementById('modal-immagine');
+  if (modal) {
+    modal.remove();
+  }
+}
+
+// ============================================================================
+// MODALE ABBINAMENTI RICCO CON IMMAGINI
+// ============================================================================
+
+function apriModaleAbbinamenti(idx) {
+  if (!window._gridProdottiStanza) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
+  const brand = window._gridBrandStanza;
+  
+  // Salva state per il modale
+  window._prodottoSelezionatoPerAbbinamenti = prodotto;
+  window._abbinamenti_selezionati = [];
+  
+  // Carica abbinamenti da API
+  fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(prodotto.codice))
+    .then(r => r.json())
+    .then(d => {
+      const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
+      renderModaleAbbinamenti(prodotto, abbinamenti, brand);
+    })
+    .catch(e => {
+      renderModaleAbbinamenti(prodotto, [], brand);
+    });
+}
+
+function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
+  const modalHtml = `
+    <div id="modal-abbinamenti" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:7000; display:flex; flex-direction:column; padding:0; overflow:hidden;">
+      
+      <!-- HEADER -->
+      <div style="background:#0f172e; border-bottom:2px solid #3b82f6; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+        <div style="font-size:14px; font-weight:bold; color:#60a5fa;">🔗 Abbinamenti per: <strong>${prodotto.nome}</strong></div>
+        <button onclick="chiudiModaleAbbinamenti()" style="background:#ef4444; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">✕ Chiudi</button>
+      </div>
+      
+      <!-- CONTENUTO -->
+      <div style="display:flex; gap:20px; flex:1; overflow:hidden; padding:20px;">
+        
+        <!-- SINISTRA: PRODOTTO PRINCIPALE -->
+        <div style="flex:0 0 300px; display:flex; flex-direction:column; background:rgba(30,41,59,0.6); border:1px solid #334155; border-radius:8px; padding:16px; overflow-y:auto;">
+          <div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:12px;">Prodotto Principale</div>
+          
+          <!-- Immagine prodotto -->
+          <div style="width:100%; aspect-ratio:1; background:rgba(59,130,245,0.1); border-radius:6px; display:flex; align-items:center; justify-content:center; margin-bottom:12px; overflow:hidden;">
+            ${prodotto.immagine_url ? 
+              `<img src="${prodotto.immagine_url}" style="width:100%; height:100%; object-fit:cover;" />` 
+              : 
+              `<div style="color:#6b7280; font-size:60px;">📦</div>`
+            }
+          </div>
+          
+          <!-- Info prodotto -->
+          <div style="font-size:11px; color:#d1d5db; margin-bottom:4px;">
+            <div style="font-weight:bold; margin-bottom:4px;">Codice:</div>
+            <div style="color:#9ca3af; font-family:monospace;">${prodotto.codice}</div>
+          </div>
+          
+          <div style="font-size:11px; color:#d1d5db; margin-bottom:4px;">
+            <div style="font-weight:bold; margin-bottom:4px;">Nome:</div>
+            <div style="color:#9ca3af;">${prodotto.nome}</div>
+          </div>
+          
+          <div style="font-size:11px; color:#d1d5db; margin-bottom:4px;">
+            <div style="font-weight:bold; margin-bottom:4px;">Descrizione:</div>
+            <div style="color:#9ca3af; font-size:10px;">${prodotto.descrizione || '—'}</div>
+          </div>
+          
+          <div style="font-size:14px; color:#10b981; font-weight:bold; margin-top:12px; padding-top:12px; border-top:1px solid #334155;">
+            €${prodotto.prezzo ? parseFloat(prodotto.prezzo).toFixed(0) : '—'}
+          </div>
+          
+          <!-- ARRICCHIMENTO DESCRIZIONE -->
+          <div style="margin-top:16px; padding-top:16px; border-top:1px solid #334155;">
+            <div style="font-size:11px; font-weight:bold; color:#60a5fa; margin-bottom:8px;">🎨 Arricchisci Descrizione</div>
+            <textarea id="desc-arricchita" placeholder="Aggiungi note, colori, dettagli..." style="width:100%; height:80px; padding:8px; background:rgba(30,41,59,0.8); border:1px solid #334155; color:white; border-radius:4px; font-size:10px; resize:none; font-family:monospace;"></textarea>
+            <button onclick="generaDescrizioneIA()" style="width:100%; margin-top:8px; padding:8px; background:#8b5cf6; color:white; border:none; border-radius:4px; cursor:pointer; font-size:10px; font-weight:600;">✨ Genera con IA</button>
+          </div>
+        </div>
+        
+        <!-- DESTRA: ABBINAMENTI GRID -->
+        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+          <div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:12px;">Abbinamenti Disponibili (${abbinamenti.length})</div>
+          
+          <div id="abbinamenti-grid" style="flex:1; overflow-y:auto; display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:12px; padding-right:12px;">
+            ${abbinamenti.length === 0 ? 
+              `<div style="grid-column:1/-1; color:#6b7280; text-align:center; padding:40px;">Nessun abbinamento disponibile</div>` 
+              : 
+              abbinamenti.map((a, aidx) => `
+                <div id="abbinamento-${aidx}" style="background:#1e293b; border:2px solid #334155; border-radius:6px; padding:10px; cursor:pointer; transition:all 0.2s;" 
+                     onclick="toggleAbbinamento(${aidx})" 
+                     onmouseover="this.style.borderColor='#3b82f6'" 
+                     onmouseout="this.style.borderColor='#334155'">
+                  
+                  <!-- Immagine abbinamento -->
+                  <div style="width:100%; aspect-ratio:1; background:rgba(59,130,245,0.1); border-radius:4px; display:flex; align-items:center; justify-content:center; margin-bottom:8px; overflow:hidden;">
+                    ${a.immagine_url ? 
+                      `<img src="${a.immagine_url}" style="width:100%; height:100%; object-fit:cover;" />` 
+                      : 
+                      `<div style="color:#6b7280; font-size:30px;">📎</div>`
+                    }
+                  </div>
+                  
+                  <!-- Checkbox -->
+                  <div style="display:flex; align-items:center; margin-bottom:6px;">
+                    <input type="checkbox" id="check-${aidx}" style="width:16px; height:16px; cursor:pointer;" 
+                           onchange="toggleAbbinamento(${aidx})">
+                    <label for="check-${aidx}" style="flex:1; margin-left:6px; font-size:10px; font-weight:bold; color:#d1d5db; cursor:pointer;">Seleziona</label>
+                  </div>
+                  
+                  <!-- Info -->
+                  <div style="font-size:9px; color:#9ca3af; margin-bottom:2px;">${a.codice || '—'}</div>
+                  <div style="font-size:9px; color:#d1d5db; font-weight:bold; margin-bottom:4px; line-height:1.2;">${a.nome || '—'}</div>
+                  <div style="font-size:10px; color:#10b981; font-weight:bold;">€${a.prezzo ? parseFloat(a.prezzo).toFixed(0) : '—'}</div>
+                </div>
+              `).join('')
+            }
+          </div>
+        </div>
+      </div>
+      
+      <!-- FOOTER -->
+      <div style="background:#0f172e; border-top:2px solid #3b82f6; padding:16px 20px; display:flex; gap:12px; justify-content:flex-end; flex-shrink:0;">
+        <button onclick="chiudiModaleAbbinamenti()" style="padding:10px 20px; background:#6b7280; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✕ Annulla</button>
+        <button onclick="salvaConAbbinamenti()" style="padding:10px 20px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi alla Stanza</button>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function toggleAbbinamento(idx) {
+  const checkbox = document.getElementById('check-' + idx);
+  const card = document.getElementById('abbinamento-' + idx);
+  
+  if (checkbox.checked) {
+    window._abbinamenti_selezionati.push(idx);
+    card.style.borderColor = '#10b981';
+    card.style.background = 'rgba(16,185,129,0.1)';
+  } else {
+    window._abbinamenti_selezionati = window._abbinamenti_selezionati.filter(x => x !== idx);
+    card.style.borderColor = '#334155';
+    card.style.background = '#1e293b';
+  }
+}
+
+function generaDescrizioneIA() {
+  const prodotto = window._prodottoSelezionatoPerAbbinamenti;
+  if (!prodotto) return;
+  
+  const textarea = document.getElementById('desc-arricchita');
+  textarea.value = '⏳ Generazione in corso...';
+  textarea.disabled = true;
+  
+  // Chiama OpenAI API per arricchire descrizione
+  fetch('/api/arricchisci-descrizione', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: prodotto.codice,
+      nome: prodotto.nome,
+      descrizione_attuale: prodotto.descrizione || ''
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok && d.descrizione_arricchita) {
+      textarea.value = d.descrizione_arricchita;
+    } else {
+      textarea.value = prodotto.descrizione || '';
+    }
+    textarea.disabled = false;
+  })
+  .catch(e => {
+    textarea.value = prodotto.descrizione || '';
+    textarea.disabled = false;
+  });
+}
+
+function salvaConAbbinamenti() {
+  const prodotto = window._prodottoSelezionatoPerAbbinamenti;
+  const stanzaId = window._gridStanzaId;
+  const brand = window._gridBrandStanza;
+  
+  if (!prodotto || !stanzaId) return;
+  
+  const descArricchita = document.getElementById('desc-arricchita').value.trim() || 
+                         ((prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || ''));
+  
+  // Carica abbinamenti selezionati
+  const abbinamenti_list = [];
+  if (window._abbinamenti_selezionati && window._abbinamenti_selezionati.length > 0) {
+    // Se hai modo di ottenere i dati completi, usa quelli
+    // Per adesso, salva solo gli indici
+    abbinamenti_list = window._abbinamenti_selezionati;
+  }
+  
+  const prezzo = prodotto.prezzo || 0;
+  
+  // Salva nella stanza
+  fetch('/api/stanze/' + stanzaId + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: prodotto.codice || '',
+      brand: brand,
+      descrizione: descArricchita,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde',
+      immagine_url: prodotto.immagine_url || '',
+      abbinamenti_selezionati: abbinamenti_list
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      chiudiModaleAbbinamenti();
+      alert('✓ Aggiunto con abbinamenti: ' + (prodotto.nome || 'Prodotto'));
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+function chiudiModaleAbbinamenti() {
+  const modal = document.getElementById('modal-abbinamenti');
+  if (modal) {
+    modal.remove();
+  }
+  window._prodottoSelezionatoPerAbbinamenti = null;
+  window._abbinamenti_selezionati = [];
+}
+
+function aggiungiAlCarrello(idx) {
+  if (!window._gridProdottiStanza) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
+  const stanzaId = window._gridStanzaId;
+  const brand = window._gridBrandStanza;
+  
+  const descrizione = (prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || '');
+  const prezzo = prodotto.prezzo || 0;
+  
+  // POST al carrello (stesso endpoint stanze/voci per adesso)
+  fetch('/api/stanze/' + stanzaId + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: prodotto.codice || '',
+      brand: brand,
+      descrizione: descrizione,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde',
+      immagine_url: prodotto.immagine_url || '',
+      flag_carrello: true
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      alert('🛒 Aggiunto al carrello: ' + (prodotto.nome || 'Prodotto'));
     } else {
       alert('❌ ' + (d.error || 'Errore'));
     }
