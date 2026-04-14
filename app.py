@@ -1338,25 +1338,6 @@ def add_piano(cantiere_id):
         conn.close()
         return jsonify({"error": str(e)}), 400
 
-@app.route('/api/piani/<int:piano_id>/stanze', methods=['POST'])
-def add_stanza(piano_id):
-    """Aggiunge una stanza a un piano"""
-    data = request.get_json()
-    nome = data.get('nome', 'Stanza').strip()
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
-                  (piano_id, nome, 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        sid = c.lastrowid
-        conn.commit()
-        conn.close()
-        return jsonify({"ok": True, "id": sid})
-    except Exception as e:
-        conn.close()
-        return jsonify({"error": str(e)}), 400
-
 @app.route('/api/stanza_voci/<int:voce_id>', methods=['DELETE'])
 def delete_stanza_voce(voce_id):
     """Elimina una voce da una stanza"""
@@ -1430,55 +1411,6 @@ def add_stanza_voce(stanza_id):
         conn.commit()
         conn.close()
         return jsonify({"ok": True, "id": vid})
-    except Exception as e:
-        conn.close()
-        return jsonify({"error": str(e)}), 400
-
-@app.route('/api/analizza-planimetria', methods=['POST'])
-def analizza_planimetria():
-    """Analizza immagine planimetria e crea piani/stanze automaticamente (placeholder)"""
-    data = request.get_json()
-    cantiere_id = data.get('cantiere_id')
-    immagine_b64 = data.get('immagine_base64')
-    
-    if not cantiere_id or not immagine_b64:
-        return jsonify({"error": "Dati incompleti"}), 400
-    
-    # PLACEHOLDER: In futuro qui chiami OpenAI Vision per analizzare l'immagine
-    # Per ora crea 2 piani di default
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    try:
-        # Piano Terra
-        c.execute("INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                  (cantiere_id, 0, 'Piano Terra', 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        p1_id = c.lastrowid
-        
-        # Stanze Piano Terra
-        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
-                  (p1_id, 'Bagno', 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
-                  (p1_id, 'Cucina', 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
-                  (p1_id, 'Soggiorno', 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        # Piano Primo
-        c.execute("INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                  (cantiere_id, 1, 'Primo Piano', 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        p2_id = c.lastrowid
-        
-        # Stanze Piano Primo
-        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
-                  (p2_id, 'Camera 1', 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
-                  (p2_id, 'Camera 2', 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
-                  (p2_id, 'Bagno', 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        conn.commit()
-        conn.close()
-        return jsonify({"ok": True, "piani_creati": 2})
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)}), 400
