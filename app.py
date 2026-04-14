@@ -4729,8 +4729,27 @@ function apriListinoPerBrandStanza(brand) {
   if (modal) modal.remove();
   const liPanel = document.createElement('div');
   liPanel.id = 'listino-stanza-modal';
-  liPanel.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:600px;max-width:90vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.5);z-index:5000;';
-  liPanel.innerHTML = `<div style="padding:16px;border-bottom:1px solid rgba(59,130,245,0.3);display:flex;justify-content:space-between;align-items:center;"><div style="font-size:14px;font-weight:bold;color:#60a5fa;">📋 ${brand}</div><button onclick="document.getElementById('listino-stanza-modal').remove();aggiungiVoceStanza(${stanzaSelezionataPiani.id},'${stanzaSelezionataPiani.nome.replace(/'/g,"\\'")}')" style="background:#ef4444;color:white;border:none;width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:14px;padding:0;">✕</button></div><div style="padding:12px;border-bottom:1px solid rgba(59,130,245,0.2);"><input type="text" id="listino-stanza-search" placeholder="Cerca prodotto..." oninput="filtraListinoStanzaReale()" style="width:100%;padding:8px;background:rgba(30,41,59,0.8);border:1px solid rgba(59,130,245,0.3);color:white;border-radius:4px;font-size:11px;"></div><div id="listino-stanza-grid" style="flex:1;overflow-y:auto;padding:12px;"></div>`;
+  liPanel.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:5000;display:flex;align-items:center;justify-content:center;padding:10px;';
+  
+  liPanel.innerHTML = `<div style="background:#0f172e;border:2px solid #3b82f6;border-radius:12px;width:95vw;height:95vh;max-width:1200px;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.8);overflow:hidden;">
+    <!-- HEADER -->
+    <div style="padding:16px;border-bottom:1px solid rgba(59,130,245,0.3);display:flex;justify-content:space-between;align-items:center;background:rgba(59,130,245,0.1);">
+      <div>
+        <div style="font-size:16px;font-weight:bold;color:#60a5fa;">📋 Listino ${brand}</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Seleziona un prodotto per aggiungerlo</div>
+      </div>
+      <button onclick="document.getElementById('listino-stanza-modal').remove();aggiungiVoceStanza(${stanzaSelezionataPiani.id},'${stanzaSelezionataPiani.nome.replace(/'/g,"\\'")}')" style="background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:18px;padding:0;">✕</button>
+    </div>
+    
+    <!-- SEARCH BAR -->
+    <div style="padding:12px 16px;border-bottom:1px solid rgba(59,130,245,0.2);background:rgba(30,41,59,0.5);">
+      <input type="text" id="listino-stanza-search" placeholder="🔍 Cerca per codice, nome, colore..." oninput="filtraListinoStanzaReale()" style="width:100%;padding:10px;background:rgba(30,41,59,0.8);border:1px solid rgba(59,130,245,0.3);color:white;border-radius:6px;font-size:12px;font-family:inherit;">
+    </div>
+    
+    <!-- GRID PRODOTTI -->
+    <div id="listino-stanza-grid" style="flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;"></div>
+  </div>`;
+  
   document.body.appendChild(liPanel);
   fetch('/api/listino/' + encodeURIComponent(brand))
     .then(r => r.json())
@@ -4740,11 +4759,60 @@ function apriListinoPerBrandStanza(brand) {
 function filtraListinoStanzaReale() {
   const grid = document.getElementById('listino-stanza-grid');
   if (!grid || !window.listinoStanzaAttuale) return;
+  
   const sv = (document.getElementById('listino-stanza-search') ? document.getElementById('listino-stanza-search').value : '').toLowerCase();
   let filtered = window.listinoStanzaAttuale;
-  if (sv) filtered = filtered.filter(p => (p.nome||'').toLowerCase().includes(sv) || (p.codice||'').toLowerCase().includes(sv));
-  if (filtered.length === 0) { grid.innerHTML = '<div style="color:#6b7280;font-size:11px;padding:20px 0;text-align:center;">Nessun prodotto</div>'; return; }
-  grid.innerHTML = filtered.slice(0, 30).map(p => `<div style="background:rgba(30,41,59,0.9);border:1px solid rgba(59,130,245,0.2);border-radius:6px;padding:10px;margin-bottom:6px;cursor:pointer;" onclick="selezionaProdottoStanza(${JSON.stringify(p).replace(/'/g,"\\'")})"><div style="font-size:11px;font-weight:600;color:#e0e0e0;">${p.nome||'—'}</div><div style="font-size:10px;color:#9ca3af;">[${p.codice||'—'}]</div><div style="font-size:12px;color:#10b981;font-weight:bold;margin-top:4px;">€${parseFloat(p.prezzo||0).toFixed(2)}</div></div>`).join('');
+  
+  if (sv) {
+    filtered = filtered.filter(p => 
+      (p.nome||'').toLowerCase().includes(sv) || 
+      (p.codice||'').toLowerCase().includes(sv) ||
+      (p.descrizione||'').toLowerCase().includes(sv) ||
+      (p.colore||'').toLowerCase().includes(sv) ||
+      (p.categoria||'').toLowerCase().includes(sv)
+    );
+  }
+  
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div style="grid-column:1/-1;color:#6b7280;font-size:12px;padding:40px 0;text-align:center;">❌ Nessun prodotto trovato</div>';
+    return;
+  }
+  
+  grid.innerHTML = filtered.slice(0, 100).map(p => {
+    const immagine = p.immagine || p.image_url || '';
+    const prezzo = p.prezzo || 0;
+    const colore = p.colore || '';
+    const categoria = p.categoria || '';
+    const disponibile = p.disponibile !== false;
+    
+    return `<div style="background:rgba(30,41,59,0.8);border:2px solid rgba(59,130,245,0.2);border-radius:8px;overflow:hidden;cursor:pointer;transition:all 0.2s;display:flex;flex-direction:column;" onclick="selezionaProdottoStanza(${JSON.stringify(p).replace(/'/g,"\\'")})">
+      <!-- IMMAGINE -->
+      <div style="background:rgba(59,130,245,0.1);height:180px;overflow:hidden;position:relative;display:flex;align-items:center;justify-content:center;">
+        ${immagine ? '<img src="' + immagine + '" style="width:100%;height:100%;object-fit:cover;" onerror="this.src=\'\';">' : '<div style="color:#6b7280;font-size:12px;">📷 No image</div>'}
+        ${!disponibile ? '<div style="position:absolute;top:8px;right:8px;background:#ef4444;color:white;padding:4px 8px;border-radius:4px;font-size:10px;font-weight:bold;">NON DISP.</div>' : ''}
+      </div>
+      
+      <!-- CONTENUTO -->
+      <div style="padding:12px;flex:1;display:flex;flex-direction:column;justify-content:space-between;">
+        <!-- CODICE E CATEGORIA -->
+        <div>
+          <div style="font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;margin-bottom:4px;">${categoria ? categoria + ' • ' : ''}${p.codice||'—'}</div>
+          <div style="font-size:12px;font-weight:600;color:#e0e0e0;line-height:1.4;margin-bottom:6px;">${p.nome||'—'}</div>
+          ${p.descrizione ? '<div style="font-size:10px;color:#9ca3af;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">' + p.descrizione + '</div>' : ''}
+        </div>
+        
+        <!-- COLORI E VARIANTI -->
+        ${colore ? '<div style="font-size:9px;color:#a78bfa;margin-bottom:6px;">🎨 ' + colore + '</div>' : ''}
+        ${p.varianti && p.varianti.length > 0 ? '<div style="font-size:9px;color:#10b981;margin-bottom:6px;">⚙️ ' + p.varianti.join(', ') + '</div>' : ''}
+        
+        <!-- PREZZO -->
+        <div style="border-top:1px solid rgba(59,130,245,0.2);padding-top:8px;margin-top:8px;">
+          <div style="font-size:14px;font-weight:bold;color:#10b981;">€${parseFloat(prezzo).toFixed(2)}</div>
+          ${p.prezzo_promo ? '<div style="font-size:10px;color:#f59e0b;text-decoration:line-through;">€' + parseFloat(p.prezzo_promo).toFixed(2) + '</div>' : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function selezionaProdottoStanza(prodotto) {
