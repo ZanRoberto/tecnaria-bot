@@ -152,6 +152,7 @@ def init_db():
         colore TEXT DEFAULT 'verde',
         note TEXT,
         immagine_b64 TEXT,
+        abbinamenti TEXT,
         created_at TEXT,
         updated_at TEXT,
         FOREIGN KEY (stanza_id) REFERENCES stanze(id)
@@ -729,10 +730,11 @@ def add_voce(sid):
         c = conn.cursor()
         
         c.execute("""INSERT INTO stanza_voci 
-                    (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore, abbinamenti, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   (sid, data.get('codice', ''), data.get('brand', ''), data.get('descrizione', ''),
                    qty, prezzo, sconto, sub, data.get('colore', 'verde'),
+                   json.dumps(data.get('abbinamenti_selezionati', [])),
                    datetime.now().isoformat(), datetime.now().isoformat()))
         
         conn.commit()
@@ -5679,13 +5681,15 @@ function salvaConAbbinamenti() {
   const descArricchita = document.getElementById('desc-arricchita').value.trim() || 
                          ((prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || ''));
   
-  // Carica abbinamenti selezionati
+  // ✅ CATTURA I CHECKBOX EFFETTIVI
   const abbinamenti_list = [];
-  if (window._abbinamenti_selezionati && window._abbinamenti_selezionati.length > 0) {
-    // Se hai modo di ottenere i dati completi, usa quelli
-    // Per adesso, salva solo gli indici
-    abbinamenti_list = window._abbinamenti_selezionati;
-  }
+  document.querySelectorAll('.abbinamento-checkbox:checked').forEach(cb => {
+    abbinamenti_list.push({
+      codice: cb.dataset.codice,
+      nome: cb.dataset.nome,
+      prezzo: cb.dataset.prezzo
+    });
+  });
   
   const prezzo = prodotto.prezzo || 0;
   
@@ -5709,10 +5713,14 @@ function salvaConAbbinamenti() {
   .then(d => {
     if (d.ok) {
       chiudiModaleAbbinamenti();
-      alert('✓ Aggiunto con abbinamenti: ' + (prodotto.nome || 'Prodotto'));
+      loadInterfacciaPiani(window.cantiere_attivo_id);
+      alert('✓ Aggiunto con ' + abbinamenti_list.length + ' abbinamenti');
     } else {
       alert('❌ ' + (d.error || 'Errore'));
     }
+  })
+  .catch(e => {
+    alert('❌ Errore: ' + e.message);
   });
 }
 
