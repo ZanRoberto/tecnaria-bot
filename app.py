@@ -5041,7 +5041,7 @@ function filtraListino() {
       '<div class="prodotto-actions" style="margin-top:8px;">' +
       '<button onclick="event.stopPropagation();verificaAbbinamenti(' + idx + ',\'' + (p.codice||'').replace(/'/g,"\\'") + '\')" class="btn-sm" id="abbina-btn-' + idx + '" style="flex:1; background:rgba(107,114,128,0.3);color:#d1d5db;">📋 Abbina</button>' +
       '<button onclick="event.stopPropagation();chiediAIprodotto(' + idx + ',\'descrizione\')" class="btn-sm" style="background:rgba(139,92,246,0.2);color:#a78bfa;flex:1;">✍ Arricchisci</button>' +
-      '<button onclick="event.stopPropagation();aggiungiDaListino(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
+      '<button onclick="event.stopPropagation();aggiungiProdottoAStanzaDiretta(' + idx + ')" class="btn-sm btn-green" style="flex:1;" id="addbtn-' + idx + '">+ Carrello</button>' +
       '</div></div>';
   }).join('');
   
@@ -5095,6 +5095,52 @@ function aggiungiAccessorio(accId, accNome) {
       msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:6px;z-index:9999;font-size:12px;';
       document.body.appendChild(msg);
       setTimeout(() => msg.remove(), 2000);
+    }
+  });
+}
+
+function aggiungiProdottoAStanzaDiretta(idx) {
+  // Se stanza è aperta, aggiungi direttamente. Altrimenti usa il vecchio flusso
+  if (!stanzaSelezionataPiani || !stanzaSelezionataPiani.id) {
+    aggiungiDaListino(idx);
+    return;
+  }
+  
+  const p = listinoData[idx];
+  if (!p) return;
+  
+  const btn = document.getElementById('addbtn-' + idx);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  
+  // Aggiungi DIRETTAMENTE alla stanza aperta
+  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
+  const prezzo = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
+  const brand = listinoBrand || 'Gessi';
+  
+  fetch('/api/stanze/' + stanzaSelezionataPiani.id + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: p.codice || '',
+      brand: brand,
+      descrizione: descrizione,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde'
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      if (btn) { btn.textContent = '✓ Aggiunto'; btn.style.background = '#10b981'; }
+      const card = document.getElementById('pcard-' + idx);
+      if (card) card.style.opacity = '0.6';
+      // Ricarica la stanza per mostrare il nuovo prodotto
+      loadInterfacciaPiani(cantiereAttivo);
+    } else {
+      if (btn) { btn.textContent = '+ Carrello'; btn.disabled = false; }
+      alert('❌ ' + (d.error || 'Errore'));
     }
   });
 }
