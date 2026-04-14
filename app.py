@@ -4512,6 +4512,8 @@ let pianiBrowserData = {};
 let stanzaAttivaPerCarrello = null;
 
 function loadInterfacciaPiani(cantiere_id) {
+  window.modalitaPiani = true;  // ← ATTIVA MODALITÀ PIANI
+  stanzaSelezionataPiani = null;
   const pannello = document.getElementById('pannello-piani');
   if (!pannello) return;
 
@@ -5153,8 +5155,18 @@ function aggiungiDaListino(idx) {
     }
     return;
   }
+  
   const p = listinoData[idx];
   if (!p) return;
+  
+  // ===== LOGICA SMART =====
+  // 🔴 SE SONO IN PIANI E STANZA È APERTA → APRI FORM VOCE STANZA PRECOMPILATO
+  if (window.modalitaPiani === true && stanzaSelezionataPiani && stanzaSelezionataPiani.id) {
+    apriFormVoceStanzaConProdotto(p);  // ← ENTRA DIRETTAMENTE NELLA STANZA
+    return;
+  }
+  
+  // 🟢 ALTRIMENTI → AGGIUNGI AL CARRELLO GENERALE (MODALITÀ SEMPLICE)
   const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
   const importo = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
 
@@ -5184,7 +5196,6 @@ function aggiungiDaListino(idx) {
     verificaAbbinamenti(idx, p.codice);
   });
 }
-
 function verificaAbbinamenti(idx, codice) {
   if (!codice) return;
   
