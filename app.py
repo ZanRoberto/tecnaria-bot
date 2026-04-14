@@ -754,6 +754,43 @@ def delete_voce(vid):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/stanza_voci/<int:vid>/abbinamenti', methods=['POST'])
+def add_abbinamenti_voce(vid):
+    """POST aggiunge abbinamenti (accessori) a una voce stanza"""
+    try:
+        data = request.get_json()
+        abbinamenti = data.get('abbinamenti', [])  # Lista di dict: [{'codice': '...', 'brand': '...', 'prezzo': ...}, ...]
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Trova stanza dalla voce
+        c.execute("SELECT stanza_id FROM stanza_voci WHERE id = ?", (vid,))
+        sid = c.fetchone()[0]
+        
+        # Aggiungi ogni abbinamento come voce separate nella stanza
+        for abbinamento in abbinamenti:
+            qty = float(abbinamento.get('quantita', 1))
+            prezzo = float(abbinamento.get('prezzo', 0))
+            sconto = float(abbinamento.get('sconto', 0))
+            sub = calcola_subtotale(prezzo, qty, sconto)
+            
+            c.execute("""INSERT INTO stanza_voci 
+                        (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      (sid, abbinamento.get('codice', ''), abbinamento.get('brand', ''),
+                       abbinamento.get('descrizione', ''), qty, prezzo, sconto, sub, 
+                       abbinamento.get('colore', 'verde'), datetime.now().isoformat(), datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        
+        ricalcola_totali_stanza(sid)
+        return jsonify({'ok': True, 'count': len(abbinamenti)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # =============================================================================
 # API PLANIMETRIA - VISION + AUTO-CREAZIONE PIANI/STANZE
 # =============================================================================
@@ -2535,6 +2572,50 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 
   <!-- PANNELLO DX -->
   <div class="rightpanel" id="rightpanel">
+    
+    <!-- SELECTOR CLIENTE + CANTIERE (TOP) -->
+    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px;">
+      <div style="margin-bottom: 10px;">
+        <label style="display: block; font-size: 10px; color: #9ca3af; text-transform: uppercase; margin-bottom: 4px; font-weight: 600;">Cliente</label>
+        <select id="sel-cliente" style="width: 100%; padding: 6px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 11px;" onchange="loadCantieri()">
+          <option value="">-- Seleziona cliente --</option>
+        </select>
+      </div>
+      <div>
+        <label style="display: block; font-size: 10px; color: #9ca3af; text-transform: uppercase; margin-bottom: 4px; font-weight: 600;">Cantiere</label>
+        <select id="sel-cantiere" style="width: 100%; padding: 6px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 11px;" onchange="caricaStrutturaCantiereInline()">
+          <option value="">-- Seleziona cantiere --</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- CARICA PLANIMETRIA -->
+    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; background: rgba(139,92,246,0.15); border-left: 3px solid #8b5cf6;">
+      <div style="font-size: 10px; color: #8b5cf6; margin-bottom: 6px; text-transform: uppercase; font-weight: 700;">📸 Carica Planimetria</div>
+      <label style="display: block; width: 100%; background: #8b5cf6; color: white; padding: 6px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 10px; text-align: center; margin-bottom: 4px;">
+        Carica disegno
+        <input type="file" id="file-planimetria-inline" accept=".png,.jpg,.jpeg,.pdf" style="display: none;" onchange="caricaPlanimetriaInline(this)">
+      </label>
+      <div id="planimetria-status-inline" style="font-size: 9px; color: #9ca3af;"></div>
+    </div>
+
+    <!-- PIANI/STANZE INLINE -->
+    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; flex: 1; overflow-y: auto;">
+      <div style="font-size: 10px; color: #9ca3af; text-transform: uppercase; margin-bottom: 8px; font-weight: 600;">Struttura</div>
+      <div id="pannello-piani-inline" style="font-size: 11px; color: #6b7280;">Seleziona un cantiere</div>
+    </div>
+
+    <!-- BOTTONI AZIONI (Aggiungi Piano/Stanza) -->
+    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: flex; gap: 6px;">
+      <button onclick="aggiungiPianoUI()" class="btn-green btn-sm" style="flex: 1; margin-bottom: 0;">➕ Piano</button>
+      <button onclick="aggiungiStanzaUI(0)" class="btn-purple btn-sm" style="flex: 1; margin-bottom: 0;">➕ Stanza</button>
+    </div>
+
+    <!-- BOTTONE GENERA OFFERTA -->
+    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px;">
+      <button onclick="generaOffertaCantiere()" class="btn-green" style="width: 100%; font-size: 11px;">📄 Genera Offerta</button>
+    </div>
+
     <div style="font-size: 13px; font-weight: 700; color: #93c5fd; margin-bottom: 10px;">Moduli</div>
 
     <!-- SUPERADMIN PANEL -->
@@ -3138,6 +3219,171 @@ function loadCantieri() {
       '</div>'
     ).join('');
   });
+}
+
+// ===== NUOVE FUNZIONI INLINE (Rightpanel) =====
+
+function caricaClienteInline() {
+  // Carica lista clienti dal backend e popola selector cliente
+  fetch('/api/sa/clienti')
+    .then(r => r.json())
+    .then(d => {
+      const clienti = d.clienti || [];
+      const sel = document.getElementById('sel-cliente');
+      sel.innerHTML = '<option value="">-- Seleziona cliente --</option>' + 
+        clienti.map(c => '<option value="' + c.id + '">' + c.nome + '</option>').join('');
+    });
+}
+
+function loadCantieri_Inline() {
+  // Carica cantieri del cliente selezionato
+  const clienteId = document.getElementById('sel-cliente').value;
+  if (!clienteId) {
+    document.getElementById('sel-cantiere').innerHTML = '<option value="">-- Seleziona cantiere --</option>';
+    return;
+  }
+  
+  fetch('/api/cantieri')
+    .then(r => r.json())
+    .then(d => {
+      const cantieri = (d.cantieri || []).filter(c => c.cliente_id == clienteId);
+      const sel = document.getElementById('sel-cantiere');
+      sel.innerHTML = '<option value="">-- Seleziona cantiere --</option>' + 
+        cantieri.map(c => '<option value="' + c.id + '">' + c.nome + '</option>').join('');
+    });
+}
+
+function caricaStrutturaCantiereInline() {
+  // Carica piani/stanze del cantiere selezionato e mostra inline
+  const cantiereId = document.getElementById('sel-cantiere').value;
+  if (!cantiereId) {
+    document.getElementById('pannello-piani-inline').innerHTML = 'Seleziona un cantiere';
+    return;
+  }
+  
+  cantiereAttivo = parseInt(cantiereId);
+  
+  fetch('/api/cantieri/' + cantiereId + '/struttura')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) {
+        document.getElementById('pannello-piani-inline').innerHTML = '❌ Errore: ' + d.error;
+        return;
+      }
+      
+      pianiBrowserData = d.piani || [];
+      renderInterfacciaPianiInline();
+    });
+}
+
+function renderInterfacciaPianiInline() {
+  // Rendering piani/stanze nel pannello inline (rightpanel)
+  const pannello = document.getElementById('pannello-piani-inline');
+  if (!pannello || !pianiBrowserData) return;
+
+  if (pianiBrowserData.length === 0) {
+    pannello.innerHTML = '<div style="padding:12px; text-align:center; color:#9ca3af; font-size:11px;">📐 Nessun piano ancora</div>';
+    return;
+  }
+
+  let html = '<div style="display: flex; flex-direction: column; gap: 6px;">';
+
+  pianiBrowserData.forEach((piano, pIdx) => {
+    const isOpen = localStorage.getItem('piano_open_' + piano.id) === '1';
+    
+    html += '<div style="background: rgba(59,130,245,0.1); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; overflow: hidden;">' +
+      '<div onclick="togglePianoInline(' + piano.id + ')" style="padding: 8px; background: rgba(59,130,245,0.15); cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">' +
+      '<div style="display: flex; align-items: center; gap: 6px; flex: 1;"><span style="font-size: 10px; color: #60a5fa; font-weight: bold;">' + (isOpen ? '▼' : '▶') + ' ' + piano.nome + '</span></div>' +
+      '<div style="font-size: 10px; color: #10b981; font-weight: bold;">€' + (piano.totale_piano || 0).toFixed(2) + '</div>' +
+      '</div>' +
+      '<div id="piano-body-inline-' + piano.id + '" style="display: ' + (isOpen ? 'flex' : 'none') + '; flex-direction: column; gap: 4px; padding: 6px;">';
+
+    (piano.stanze || []).forEach((stanza, sIdx) => {
+      const stanzaOpen = localStorage.getItem('stanza_open_' + stanza.id) === '1';
+      const voci = stanza.voci || [];
+      
+      html += '<div style="background: rgba(139,92,246,0.1); border-left: 3px solid #8b5cf6; border-radius: 4px; overflow: hidden;">' +
+        '<div onclick="toggleStanzaInline(' + stanza.id + ')" style="padding: 6px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; background: rgba(139,92,246,0.1);">' +
+        '<div style="display: flex; align-items: center; gap: 4px; flex: 1;"><span style="font-size: 9px; color: #d1d5db; font-weight: bold;">' + (stanzaOpen ? '▼' : '▶') + ' ' + stanza.nome + '</span></div>' +
+        '<span style="font-size: 9px; color: #10b981; font-weight: bold;">€' + (stanza.totale_stanza || 0).toFixed(2) + '</span>' +
+        '</div>' +
+        '<div id="stanza-body-inline-' + stanza.id + '" style="display: ' + (stanzaOpen ? 'block' : 'none') + '; padding: 4px;">';
+
+      if (voci.length === 0) {
+        html += '<div style="padding: 4px; font-size: 8px; color: #6b7280; font-style: italic;">Nessuna voce</div>';
+      } else {
+        voci.forEach(voce => {
+          html += '<div style="padding: 3px 4px; margin: 2px 0; background: rgba(59,130,245,0.1); border-radius: 3px; font-size: 8px; color: #e0e0e0; display: flex; justify-content: space-between; align-items: center;">' +
+            '<div style="flex: 1; min-width: 0;"><div style="font-weight: 600; font-size: 8px;">[' + (voce.codice||'—') + '] ' + (voce.brand || '—') + '</div>' +
+            '<div style="font-size: 7px; color: #9ca3af;">' + (voce.descrizione || '') + '</div></div>' +
+            '<div style="display: flex; gap: 3px; flex-shrink: 0; margin-left: 4px;">' +
+            '<button onclick="openModalAbbinamenti(' + voce.id + ', \'' + (voce.brand || '').replace(/'/g, "\\'") + '\', \'' + (voce.codice || '').replace(/'/g, "\\'") + '\', \'' + (voce.descrizione || '').replace(/'/g, "\\'") + '\')" style="padding: 1px 3px; font-size: 7px; background: #3b82f6; color: white; border: none; border-radius: 2px; cursor: pointer; margin-bottom: 0;">✎</button>' +
+            '<button onclick="cancellaVoce(' + voce.id + ', ' + stanza.id + ')" style="padding: 1px 3px; font-size: 7px; background: #ef4444; color: white; border: none; border-radius: 2px; cursor: pointer; margin-bottom: 0;">✕</button>' +
+            '</div></div>';
+        });
+      }
+
+      html += '</div></div>';
+    });
+
+    html += '</div></div>';
+  });
+
+  html += '</div>';
+  pannello.innerHTML = html;
+}
+
+function togglePianoInline(pianoId) {
+  const body = document.getElementById('piano-body-inline-' + pianoId);
+  if (body) {
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : 'flex';
+    localStorage.setItem('piano_open_' + pianoId, isOpen ? '0' : '1');
+  }
+}
+
+function toggleStanzaInline(stanzaId) {
+  const body = document.getElementById('stanza-body-inline-' + stanzaId);
+  if (body) {
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : 'block';
+    localStorage.setItem('stanza_open_' + stanzaId, isOpen ? '0' : '1');
+  }
+}
+
+function caricaPlanimetriaInline(fileInput) {
+  // Carica planimetria (inline version)
+  const file = fileInput.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const b64 = e.target.result.split(',')[1];
+    const statusEl = document.getElementById('planimetria-status-inline');
+    statusEl.textContent = '⏳ Analizzando...';
+    
+    fetch('/api/analizza-planimetria', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        cantiere_id: cantiereAttivo,
+        immagine_base64: b64
+      })
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        statusEl.textContent = '✅ Planimetria caricata';
+        caricaStrutturaCantiereInline();
+      } else {
+        statusEl.textContent = '❌ ' + (d.error || 'Errore');
+      }
+    })
+    .catch(err => {
+      statusEl.textContent = '❌ Errore: ' + err.message;
+    });
+  };
+  reader.readAsDataURL(file);
 }
 
 function addCantiere() {
@@ -4574,7 +4820,10 @@ function renderInterfacciaPiani() {
             '<div style="flex:1;"><div style="font-weight:600;">[' + (voce.codice||'—') + '] ' + (voce.brand || '—') + '</div>' +
             '<div style="font-size:9px; color:#9ca3af;">' + voce.descrizione + '</div>' +
             '<div style="font-size:9px; color:#6b7280; margin-top:2px;">Qty: ' + voce.quantita + ' | €' + voce.prezzo_unitario + ' = €' + voce.subtotale.toFixed(2) + '</div></div>' +
+            '<div style="display:flex; gap:4px;">' +
+            '<button onclick="openModalAbbinamenti(' + voce.id + ', \'' + (voce.brand || '').replace(/'/g, "\\'") + '\', \'' + (voce.codice || '').replace(/'/g, "\\'") + '\', \'' + (voce.descrizione || '').replace(/'/g, "\\'") + '\')" class="btn-blue btn-sm" style="padding:2px 4px; font-size:8px; margin-bottom:0; white-space:nowrap;">✎</button>' +
             '<button onclick="cancellaVoce(' + voce.id + ', ' + stanza.id + ')" class="btn-red btn-sm" style="padding:2px 4px; font-size:8px; margin-bottom:0; white-space:nowrap;">✕</button>' +
+            '</div>' +
             '</div>';
         });
       }
@@ -4711,6 +4960,139 @@ function cancellaVoce(voceId, stanzaId) {
         alert('❌ ' + (d.error || 'Errore'));
       }
     });
+}
+
+function openModalAbbinamenti(voceId, brand, codice, descrizione) {
+  // Carica abbinamenti da /api/abbina/<codice>
+  fetch('/api/abbina/' + codice)
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        mostraModalAbbinamenti(voceId, brand, codice, descrizione, d.ufficiali || [], d.alternative || []);
+      } else {
+        alert('❌ Errore nel caricamento abbinamenti');
+      }
+    })
+    .catch(e => alert('❌ Errore: ' + e.message));
+}
+
+function mostraModalAbbinamenti(voceId, brand, codice, descrizione, ufficiali, alternative) {
+  let html = `
+    <div id="overlay-abbinamenti" style="position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:10000;">
+      <div style="background:#1e293b; border:1px solid #475569; border-radius:12px; padding:24px; max-width:700px; width:90%; max-height:80vh; overflow-y:auto; color:#e0e0e0;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; border-bottom:1px solid #475569; padding-bottom:12px;">
+          <div>
+            <h2 style="margin:0; font-size:18px; color:#60a5fa;">${descrizione || codice}</h2>
+            <p style="margin:4px 0 0 0; font-size:12px; color:#9ca3af;">${brand} • ${codice}</p>
+          </div>
+          <button onclick="chiudiModalAbbinamenti()" style="width:32px; height:32px; background:transparent; border:1px solid #475569; border-radius:6px; cursor:pointer; color:#9ca3af; font-size:18px;">✕</button>
+        </div>
+
+        <div id="abbinamenti-container" style="margin-bottom:20px;">
+          <!-- Ufficiali -->
+          ${ufficiali.length > 0 ? `
+            <div style="margin-bottom:20px;">
+              <h3 style="font-size:13px; color:#60a5fa; text-transform:uppercase; margin:0 0 12px 0;">Abbinamenti Ufficiali</h3>
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px;">
+                ${ufficiali.map((acc, idx) => `
+                  <div style="background:#0f172a; border:1px solid #334155; border-radius:8px; padding:12px; cursor:pointer; position:relative;">
+                    <input type="checkbox" id="abb-${idx}" class="abbinamento-checkbox" data-codice="${acc.codice || acc.id}" data-brand="${acc.brand || brand}" data-descrizione="${acc.nome || acc.descrizione || ''}" data-prezzo="${acc.prezzo_cliente || acc.prezzo || 0}" checked style="position:absolute; top:8px; right:8px; width:18px; height:18px;">
+                    <div style="font-weight:500; font-size:13px; color:#e0e0e0; margin-bottom:4px;">${acc.nome || acc.descrizione || '?'}</div>
+                    <div style="font-size:11px; color:#9ca3af; margin-bottom:6px;">${acc.brand || brand}</div>
+                    <div style="font-size:12px; color:#10b981; font-weight:500;">€${(acc.prezzo_cliente || acc.prezzo || 0).toFixed(2)}</div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- Alternative -->
+          ${alternative.length > 0 ? `
+            <div>
+              <h3 style="font-size:13px; color:#60a5fa; text-transform:uppercase; margin:0 0 12px 0;">Abbinamenti Alternativi</h3>
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px;">
+                ${alternative.map((acc, idx) => `
+                  <div style="background:#0f172a; border:1px solid #334155; border-radius:8px; padding:12px; cursor:pointer; position:relative; opacity:0.8;">
+                    <input type="checkbox" id="alt-${idx}" class="abbinamento-checkbox" data-codice="${acc.codice || acc.id}" data-brand="${acc.brand || brand}" data-descrizione="${acc.nome || acc.descrizione || ''}" data-prezzo="${acc.prezzo_cliente || acc.prezzo || 0}" style="position:absolute; top:8px; right:8px; width:18px; height:18px;">
+                    <div style="font-weight:500; font-size:13px; color:#e0e0e0; margin-bottom:4px;">${acc.nome || acc.descrizione || '?'}</div>
+                    <div style="font-size:11px; color:#9ca3af; margin-bottom:4px;">${acc.brand || brand}</div>
+                    <div style="font-size:10px; color:#f59e0b; font-style:italic; margin-bottom:6px;">Alternativa</div>
+                    <div style="font-size:12px; color:#10b981; font-weight:500;">€${(acc.prezzo_cliente || acc.prezzo || 0).toFixed(2)}</div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+        </div>
+
+        <div style="background:#0f172a; border-left:3px solid #3b82f6; border-radius:8px; padding:12px; margin-bottom:20px;">
+          <div style="font-size:12px; color:#9ca3af; margin-bottom:4px;">Abbinamenti selezionati</div>
+          <div style="font-size:14px; font-weight:500; color:#60a5fa;" id="abbinamenti-count">0 articoli</div>
+        </div>
+
+        <div style="display:flex; gap:12px; justify-content:flex-end;">
+          <button onclick="chiudiModalAbbinamenti()" style="padding:10px 20px; border:1px solid #475569; background:transparent; border-radius:6px; cursor:pointer; color:#e0e0e0; font-weight:500;">Annulla</button>
+          <button onclick="salvaAbbinamenti(${voceId})" style="padding:10px 20px; background:#10b981; border:1px solid #10b981; border-radius:6px; cursor:pointer; color:white; font-weight:500;">✓ Aggiungi</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend', html);
+  aggiornaConteggioAbbinamenti();
+  
+  // Listener per checkbox
+  document.querySelectorAll('.abbinamento-checkbox').forEach(cb => {
+    cb.addEventListener('change', aggiornaConteggioAbbinamenti);
+  });
+}
+
+function aggiornaConteggioAbbinamenti() {
+  const checked = document.querySelectorAll('.abbinamento-checkbox:checked');
+  const count = document.getElementById('abbinamenti-count');
+  if (count) {
+    count.textContent = checked.length + ' articoli';
+  }
+}
+
+function salvaAbbinamenti(voceId) {
+  const abbinamenti = [];
+  document.querySelectorAll('.abbinamento-checkbox:checked').forEach(cb => {
+    abbinamenti.push({
+      codice: cb.dataset.codice,
+      brand: cb.dataset.brand,
+      descrizione: cb.dataset.descrizione,
+      prezzo: parseFloat(cb.dataset.prezzo),
+      quantita: 1,
+      sconto: 0
+    });
+  });
+
+  if (abbinamenti.length === 0) {
+    alert('Seleziona almeno un abbinamento');
+    return;
+  }
+
+  fetch('/api/stanza_voci/' + voceId + '/abbinamenti', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ abbinamenti: abbinamenti })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      chiudiModalAbbinamenti();
+      loadInterfacciaPiani(cantiereAttivo);
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  })
+  .catch(e => alert('❌ Errore: ' + e.message));
+}
+
+function chiudiModalAbbinamenti() {
+  const overlay = document.getElementById('overlay-abbinamenti');
+  if (overlay) overlay.remove();
 }
 
 // =============================================================================
@@ -5604,6 +5986,16 @@ document.addEventListener('click', function(event) {
         chiudiModalAbbinamenti();
     }
 });
+
+// Inizializzazione rightpanel inline
+setTimeout(function() {
+  if (currentUser && currentUser.ruolo) {
+    const sel = document.getElementById('sel-cliente');
+    if (sel && currentUser.ruolo === 'superadmin') {
+      caricaClienteInline();
+    }
+  }
+}, 500);
 </script>
 
 </body>
