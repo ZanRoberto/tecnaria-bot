@@ -4872,7 +4872,8 @@ function renderGridStanza(prodotti) {
       ${prodotti.map((p, idx) => `
         <div style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden; cursor:pointer; transition:all 0.2s; display:flex; flex-direction:column;" 
              onmouseover="this.style.borderColor='#3b82f6'; this.style.boxShadow='0 0 15px rgba(59,130,245,0.3)'" 
-             onmouseout="this.style.borderColor='#334155'; this.style.boxShadow='none'">
+             onmouseout="this.style.borderColor='#334155'; this.style.boxShadow='none'"
+             data-product-idx="${idx}">
           
           <!-- IMMAGINE THUMBNAIL -->
           <div style="width:100%; height:160px; background:rgba(30,41,59,0.8); display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; border-bottom:1px solid #334155;">
@@ -4908,8 +4909,8 @@ function renderGridStanza(prodotti) {
             <!-- BOTTONI AZIONI -->
             <div style="display:flex; gap:6px; margin-top:auto; flex-direction:column;">
               <div style="display:flex; gap:6px;">
-                <button onclick="event.stopPropagation(); apriModaleAbbinamenti(${idx})" 
-                        style="flex:1; padding:6px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                <button id="btn-abbina-${idx}" onclick="event.stopPropagation(); apriModaleAbbinamenti(${idx})" 
+                        style="flex:1; padding:6px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s; display:none;" 
                         onmouseover="this.style.background='#dc2626'" 
                         onmouseout="this.style.background='#ef4444'">
                   🔗 Abbina
@@ -4941,6 +4942,34 @@ function renderGridStanza(prodotti) {
   `;
   
   document.getElementById('grid-container-stanza').innerHTML = html;
+  
+  // DOPO il render, carica gli abbinamenti e mostra/nascondi bottone
+  caricaAbbinationiPerCards(prodotti);
+}
+
+function caricaAbbinationiPerCards(prodotti) {
+  const brand = window._gridBrandStanza;
+  if (!brand) return;
+  
+  prodotti.forEach((p, idx) => {
+    fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(p.codice))
+      .then(r => r.json())
+      .then(d => {
+        const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
+        
+        // Se ci sono abbinamenti, mostra il bottone
+        if (abbinamenti && abbinamenti.length > 0) {
+          const btnAbbina = document.getElementById('btn-abbina-' + idx);
+          if (btnAbbina) {
+            btnAbbina.style.display = 'block';
+          }
+        }
+      })
+      .catch(e => {
+        // Silenzioso se fallisce
+        console.log('⚠️ Abbinamenti non trovati per:', p.codice);
+      });
+  });
 }
 
 function aggiungiProdottoStanza(idx) {
@@ -4986,6 +5015,7 @@ function apriModaleImmagine(idx) {
   if (!window._gridProdottiStanza) return;
   
   const prodotto = window._gridProdottiStanza[idx];
+  const brand = window._gridBrandStanza;
   
   const modalHtml = `
     <div id="modal-immagine" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:7500; display:flex; flex-direction:column; padding:0;">
@@ -5007,43 +5037,34 @@ function apriModaleImmagine(idx) {
             ${prodotto.immagine_url ? 
               `<img src="${prodotto.immagine_url}" style="width:100%; height:100%; object-fit:cover;" />` 
               : 
-              `<div style="color:#6b7280; text-align:center; font-size:40px;">📦<div style="font-size:11px; margin-top:8px; color:#9ca3af;">Nessuna immagine</div></div>`
+              `<div style="color:#6b7280; text-align:center; font-size:40px;">📦<div style="font-size:11px; margin-top:8px; color:#9ca3af;">Ricerca in corso...</div></div>`
             }
           </div>
           
           <div style="font-size:10px; color:#9ca3af; margin-top:auto;">
             <div style="font-weight:bold; margin-bottom:4px; color:#d1d5db;">Info Prodotto:</div>
             Codice: <strong>${prodotto.codice}</strong><br>
-            Brand: <strong>${window._gridBrandStanza}</strong><br>
+            Brand: <strong>${brand}</strong><br>
             Nome: <strong>${prodotto.nome}</strong>
           </div>
         </div>
         
-        <!-- DESTRA: INPUT URL -->
+        <!-- DESTRA: RISULTATI RICERCA -->
         <div style="flex:1; display:flex; flex-direction:column;">
-          <div style="font-size:12px; font-weight:bold; color:#c084fc; margin-bottom:12px;">🔗 URL Immagine</div>
+          <div style="font-size:12px; font-weight:bold; color:#c084fc; margin-bottom:12px;">🔍 Ricerca Automatica</div>
           
-          <div style="background:rgba(30,41,59,0.6); border:1px solid #334155; border-radius:8px; padding:16px; flex:1; display:flex; flex-direction:column;">
+          <div style="background:rgba(30,41,59,0.6); border:1px solid #334155; border-radius:8px; padding:16px; flex:1; display:flex; flex-direction:column; overflow:hidden;">
+            <div id="ricerca-status" style="font-size:10px; color:#93c5fd; margin-bottom:12px; text-align:center;">⏳ Ricerca immagini per: <strong>${prodotto.codice}</strong></div>
             
-            <!-- Metodo 1: Incolla URL -->
-            <div style="margin-bottom:16px;">
-              <div style="font-size:10px; font-weight:bold; color:#d1d5db; margin-bottom:6px;">Metodo 1: Incolla URL diretto</div>
-              <input type="text" id="url-immagine-input" placeholder="https://example.com/image.jpg" style="width:100%; padding:10px; background:rgba(30,41,59,0.8); border:1px solid #334155; color:white; border-radius:6px; font-size:11px; margin-bottom:8px;" value="${prodotto.immagine_url || ''}">
-              <button onclick="salvaURLImmagine('${idx}')" style="width:100%; padding:8px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px;">✓ Salva URL</button>
-            </div>
+            <div id="risultati-grid" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:12px; flex:1; overflow-y:auto; margin-bottom:12px;"></div>
             
-            <!-- Metodo 2: Ricerca Google -->
-            <div style="border-top:1px solid #334155; padding-top:16px;">
-              <div style="font-size:10px; font-weight:bold; color:#d1d5db; margin-bottom:6px;">Metodo 2: Ricerca Google Images</div>
-              <input type="text" id="ricerca-immagine-input" placeholder="Ricerca su Google Images..." style="width:100%; padding:10px; background:rgba(30,41,59,0.8); border:1px solid #334155; color:white; border-radius:6px; font-size:11px; margin-bottom:8px;" value="${prodotto.codice} ${prodotto.nome}">
-              <button onclick="cercaGoogleImages('${idx}')" style="width:100%; padding:8px; background:#3b82f6; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px;">🔍 Cerca su Google</button>
-              <div style="font-size:9px; color:#6b7280; margin-top:8px; font-style:italic;">Apre Google Images in nuova finestra. Copia URL immagine e incollala sopra.</div>
-            </div>
-            
-            <!-- Risultati ricerca -->
-            <div id="ricerca-risultati" style="margin-top:16px; border-top:1px solid #334155; padding-top:16px; display:none;">
-              <div style="font-size:10px; font-weight:bold; color:#d1d5db; margin-bottom:6px;">Risultati Ricerca</div>
-              <div id="risultati-grid" style="display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; max-height:300px; overflow-y:auto;"></div>
+            <!-- Metodo alternativo: Incolla URL manuale -->
+            <div style="border-top:1px solid #334155; padding-top:12px; margin-top:12px;">
+              <div style="font-size:9px; font-weight:bold; color:#d1d5db; margin-bottom:6px;">O Incolla URL manuale:</div>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="url-immagine-input" placeholder="https://example.com/image.jpg" style="flex:1; padding:8px; background:rgba(30,41,59,0.8); border:1px solid #334155; color:white; border-radius:4px; font-size:10px;" value="${prodotto.immagine_url || ''}">
+                <button onclick="salvaURLImmagineManuale('${idx}')" style="padding:8px 12px; background:#10b981; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:600; font-size:10px;">✓ Salva</button>
+              </div>
             </div>
           </div>
         </div>
@@ -5057,9 +5078,103 @@ function apriModaleImmagine(idx) {
   `;
   
   document.body.insertAdjacentHTML('beforeend', modalHtml);
+  
+  // RICERCA AUTOMATICA subito
+  cercaImmaginiAutomatica(idx, prodotto, brand);
 }
 
-function salvaURLImmagine(idx) {
+function cercaImmaginiAutomatica(idx, prodotto, brand) {
+  const codice = prodotto.codice;
+  const nome = prodotto.nome;
+  
+  console.log('🔍 Ricerca automatica per:', codice, nome);
+  
+  // Chiama backend per cercare immagini
+  fetch('/api/cerca-immagine-prodotto', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: codice,
+      nome: nome,
+      brand: brand
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    console.log('📦 Risultati ricerca:', d);
+    
+    const statusEl = document.getElementById('ricerca-status');
+    const gridEl = document.getElementById('risultati-grid');
+    
+    if (!d.ok || !d.risultati || d.risultati.length === 0) {
+      statusEl.innerHTML = '❌ Nessuna immagine trovata. Incolla URL manuale.';
+      return;
+    }
+    
+    statusEl.innerHTML = `✅ Trovate ${d.risultati.length} immagini`;
+    
+    // Renderizza risultati
+    const html = d.risultati.map((ris, ridx) => `
+      <div style="background:#1e293b; border:1px solid #334155; border-radius:6px; overflow:hidden; cursor:pointer; transition:all 0.2s;" 
+           onmouseover="this.style.borderColor='#3b82f6'; this.style.boxShadow='0 0 10px rgba(59,130,245,0.3)'" 
+           onmouseout="this.style.borderColor='#334155'; this.style.boxShadow='none'"
+           onclick="selezionaImmagineRicerca(${idx}, '${ris.url}', '${ris.b64.substring(0, 50)}...', ${ridx})">
+        <div style="width:100%; aspect-ratio:1; background:#0a0f23; overflow:hidden; display:flex; align-items:center; justify-content:center;">
+          <img src="data:image/jpeg;base64,${ris.b64}" style="width:100%; height:100%; object-fit:cover;" />
+        </div>
+        <div style="padding:8px; background:rgba(59,130,245,0.1); border-top:1px solid #334155;">
+          <div style="font-size:8px; color:#9ca3af; margin-bottom:2px;">${ris.fonte}</div>
+          <button style="width:100%; padding:4px; background:#10b981; color:white; border:none; border-radius:3px; font-size:9px; cursor:pointer; font-weight:600;">✓ Seleziona</button>
+        </div>
+      </div>
+    `).join('');
+    
+    gridEl.innerHTML = html;
+  })
+  .catch(e => {
+    console.error('❌ ERRORE ricerca:', e);
+    const statusEl = document.getElementById('ricerca-status');
+    statusEl.innerHTML = '❌ Errore: ' + e.message;
+  });
+}
+
+function selezionaImmagineRicerca(idx, urlOriginale, b64Preview, ridx) {
+  console.log('✅ Immagine selezionata:', ridx);
+  
+  // Aggiorna anteprima
+  const anteprimaDiv = document.getElementById('anteprima-immagine');
+  anteprimaDiv.innerHTML = '<div style="color:#93c5fd; text-align:center;">⏳ Salvataggio in corso...</div>';
+  
+  // Salva nel backend
+  fetch('/api/prodotti/' + encodeURIComponent(window._gridBrandStanza) + '/' + encodeURIComponent(window._gridProdottiStanza[idx].codice) + '/immagine', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      immagine_url: urlOriginale,
+      immagine_b64: b64Preview  // Per DB (completo viene già salvato dal backend)
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      // Aggiorna anteprima con l'immagine vera
+      anteprimaDiv.innerHTML = `<img src="${urlOriginale}" style="width:100%; height:100%; object-fit:cover;" />`;
+      
+      // Aggiorna prodotto in memoria
+      window._gridProdottiStanza[idx].immagine_url = urlOriginale;
+      
+      alert('✓ Immagine salvata con successo!');
+    } else {
+      anteprimaDiv.innerHTML = '<div style="color:#ef4444;">❌ Errore nel salvataggio</div>';
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  })
+  .catch(e => {
+    anteprimaDiv.innerHTML = '<div style="color:#ef4444;">❌ ' + e.message + '</div>';
+  });
+}
+
+function salvaURLImmagineManuale(idx) {
   const urlInput = document.getElementById('url-immagine-input');
   const urlImmagine = urlInput.value.trim();
   
@@ -5072,13 +5187,7 @@ function salvaURLImmagine(idx) {
   
   const prodotto = window._gridProdottiStanza[idx];
   
-  console.log('💾 Salvataggio immagine:', {
-    codice: prodotto.codice,
-    brand: window._gridBrandStanza,
-    url: urlImmagine
-  });
-  
-  // Salva immagine nel backend
+  // Salva URL manuale
   fetch('/api/prodotti/' + encodeURIComponent(window._gridBrandStanza) + '/' + encodeURIComponent(prodotto.codice) + '/immagine', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
@@ -5089,36 +5198,21 @@ function salvaURLImmagine(idx) {
   .then(r => r.json())
   .then(d => {
     if (d.ok) {
-      // Aggiorna l'anteprima
       const anteprima = document.getElementById('anteprima-immagine');
       anteprima.innerHTML = `<img src="${urlImmagine}" style="width:100%; height:100%; object-fit:cover;" />`;
-      
-      // Aggiorna il prodotto in memoria
       window._gridProdottiStanza[idx].immagine_url = urlImmagine;
-      
       alert('✓ Immagine salvata con successo!');
     } else {
-      alert('❌ ' + (d.error || 'Errore nel salvataggio'));
+      alert('❌ ' + (d.error || 'Errore'));
     }
   })
   .catch(e => {
-    console.error('❌ ERRORE:', e);
     alert('❌ Errore: ' + e.message);
   });
 }
 
-function cercaGoogleImages(idx) {
-  const ricercaInput = document.getElementById('ricerca-immagine-input');
-  const ricerca = ricercaInput.value.trim();
-  
-  if (!ricerca) {
-    alert('❌ Inserisci testo di ricerca');
-    return;
-  }
-  
-  // Apri Google Images in nuova finestra
-  const url = 'https://www.google.com/search?q=' + encodeURIComponent(ricerca) + '&tbm=isch';
-  window.open(url, 'google-images', 'width=1024,height=768');
+function salvaURLImmagine(idx) {
+  salvaURLImmagineManuale(idx);  // Alias per compatibilità
 }
 
 function chiudiModaleImmagine() {
