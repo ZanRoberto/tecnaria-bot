@@ -63,15 +63,8 @@ def init_db():
     # Tabelle nuove
     c.execute('''CREATE TABLE IF NOT EXISTS clienti (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nome TEXT NOT NULL,
-        cognome_azienda TEXT,
-        tipo TEXT NOT NULL DEFAULT 'finale',
-        email TEXT,
-        telefono TEXT,
-        indirizzo TEXT,
-        slug TEXT UNIQUE,
-        data_creazione TEXT,
-        data_aggiornamento TEXT
+        nome TEXT UNIQUE NOT NULL,
+        slug TEXT UNIQUE NOT NULL
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS utenti (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,22 +174,6 @@ def init_db():
         FOREIGN KEY (stanza_id) REFERENCES stanze(id)
     )''')
     
-    # CARRELLO GENERALE (per Acquirente Particolare e Rivenditore - NO Piani/Stanze)
-    c.execute('''CREATE TABLE IF NOT EXISTS carrello (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cliente_id INTEGER NOT NULL,
-        prodotto_codice TEXT,
-        brand TEXT,
-        descrizione TEXT,
-        quantita REAL DEFAULT 1,
-        prezzo_unitario REAL DEFAULT 0,
-        sconto_percentuale REAL DEFAULT 0,
-        subtotale REAL DEFAULT 0,
-        created_at TEXT,
-        updated_at TEXT,
-        FOREIGN KEY (cliente_id) REFERENCES clienti(id)
-    )''')
-    
     # CONFIGURAZIONE SISTEMA (sconto mode, etc)
     c.execute('''CREATE TABLE IF NOT EXISTS config_sistema (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,8 +249,67 @@ def init_db():
         FOREIGN KEY (categoria_accessorio) REFERENCES categories_accessori(categoria_id)
     )''')
     
-    # Cliente default Covolo
-    c.execute("INSERT OR IGNORE INTO clienti (nome, slug) VALUES ('Covolo SRL', 'covolo')")
+    # TABELLE PIANI/STANZE/VOCI (MODALITA PIANI)
+    c.execute('''CREATE TABLE IF NOT EXISTS piani (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cantiere_id INTEGER NOT NULL,
+        numero INTEGER,
+        nome TEXT,
+        totale_piano REAL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (cantiere_id) REFERENCES cantieri(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS stanze (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        piano_id INTEGER NOT NULL,
+        nome TEXT,
+        descrizione TEXT,
+        totale_stanza REAL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (piano_id) REFERENCES piani(id)
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS stanza_voci (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stanza_id INTEGER NOT NULL,
+        tipo TEXT,
+        codice TEXT,
+        brand TEXT,
+        descrizione TEXT,
+        quantita REAL DEFAULT 1,
+        udm TEXT,
+        prezzo_unitario REAL DEFAULT 0,
+        sconto_percentuale REAL DEFAULT 0,
+        sconto_fisso REAL DEFAULT 0,
+        subtotale REAL DEFAULT 0,
+        colore TEXT DEFAULT 'verde',
+        note TEXT,
+        immagine_b64 TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (stanza_id) REFERENCES stanze(id)
+    )''')
+    
+    # CARRELLO PER STANZE
+    c.execute('''CREATE TABLE IF NOT EXISTS carrello_stanze (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stanza_id INTEGER NOT NULL,
+        prodotto_codice TEXT,
+        prodotto_nome TEXT,
+        brand TEXT,
+        quantita REAL DEFAULT 1,
+        prezzo_unitario REAL DEFAULT 0,
+        sconto_percentuale REAL DEFAULT 0,
+        subtotale REAL DEFAULT 0,
+        colore TEXT DEFAULT 'verde',
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (stanza_id) REFERENCES stanze(id)
+    )''')
+    
     conn.commit()
     # Inizializza moduli per clienti esistenti
     c.execute("SELECT id FROM clienti")
@@ -378,6 +414,40 @@ def ricalcola_totali_stanza(stanza_id):
     conn.commit()
     conn.close()
 
+def ricalcola_totali_stanza(stanza_id):
+    """Ricalcola totale stanza da voci"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Somma subtotali voci
+    c.execute("SELECT COALESCE(SUM(subtotale), 0) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
+    total = c.fetchone()[0]
+    
+    # Aggiorna stanza
+    c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?", 
+              (total, datetime.now().isoformat(), stanza_id))
+    
+    # Trova piano e ricalcola anche lui
+    c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
+    piano_row = c.fetchone()
+    if piano_row:
+        piano_id = piano_row[0]
+        c.execute("SELECT COALESCE(SUM(totale_stanza), 0) FROM stanze WHERE piano_id = ?", (piano_id,))
+        piano_total = c.fetchone()[0]
+        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?", 
+                  (piano_total, datetime.now().isoformat(), piano_id))
+        
+        # Trova cantiere e ricalcola
+        c.execute("SELECT cantiere_id FROM piani WHERE id = ?", (piano_id,))
+        cant_row = c.fetchone()
+        if cant_row:
+            cantiere_id = cant_row[0]
+            c.execute("UPDATE cantieri SET data_aggiornamento = ? WHERE id = ?", 
+                      (datetime.now().isoformat(), cantiere_id))
+    
+    conn.commit()
+    conn.close()
+
 # ---------------------------------------------------------------------------
 # API AUTH
 # ---------------------------------------------------------------------------
@@ -411,83 +481,6 @@ def logout():
     session.clear()
     return jsonify({"ok": True})
 
-# ===== ENDPOINT CLIENTI PRIVATI (Finale | Acquirente | Rivenditore) =====
-
-@app.route('/api/clienti-privati', methods=['GET'])
-def get_clienti_privati():
-    """Legge lista clienti privati (non utenti di sistema)"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, nome, cognome_azienda, tipo, email FROM clienti ORDER BY data_creazione DESC")
-    clienti = [{"id": r[0], "nome": r[1], "cognome_azienda": r[2], "tipo": r[3], "email": r[4]} for r in c.fetchall()]
-    conn.close()
-    return jsonify({"clienti": clienti})
-
-@app.route('/api/clienti-privati', methods=['POST'])
-def create_cliente_privato():
-    """Crea nuovo cliente privato"""
-    data = request.get_json()
-    nome = data.get('nome', '').strip()
-    cognome_azienda = data.get('cognome_azienda', '').strip()
-    tipo = data.get('tipo', 'finale')  # finale | acquirente | rivenditore
-    email = data.get('email', '').strip()
-    telefono = data.get('telefono', '').strip()
-    indirizzo = data.get('indirizzo', '').strip()
-    
-    if not nome or tipo not in ['finale', 'acquirente', 'rivenditore']:
-        return jsonify({"error": "Dati incompleti"}), 400
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        now = datetime.now().isoformat()
-        c.execute("""INSERT INTO clienti (nome, cognome_azienda, tipo, email, telefono, indirizzo, data_creazione, data_aggiornamento)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (nome, cognome_azienda, tipo, email, telefono, indirizzo, now, now))
-        cid = c.lastrowid
-        conn.commit()
-        conn.close()
-        return jsonify({"ok": True, "id": cid, "tipo": tipo})
-    except Exception as e:
-        conn.close()
-        return jsonify({"error": str(e)}), 400
-
-@app.route('/api/clienti-privati/<int:cid>', methods=['GET'])
-def get_cliente_privato(cid):
-    """Legge dettagli cliente privato + cantieri/carrello a seconda del tipo"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    c.execute("SELECT id, nome, cognome_azienda, tipo, email, telefono, indirizzo FROM clienti WHERE id = ?", (cid,))
-    row = c.fetchone()
-    
-    if not row:
-        conn.close()
-        return jsonify({"error": "Cliente non trovato"}), 404
-    
-    cliente = {
-        "id": row[0],
-        "nome": row[1],
-        "cognome_azienda": row[2],
-        "tipo": row[3],
-        "email": row[4],
-        "telefono": row[5],
-        "indirizzo": row[6]
-    }
-    
-    # Se Cliente Finale: carica cantieri
-    if cliente["tipo"] == "finale":
-        c.execute("SELECT id, nome FROM cantieri WHERE cliente_id = ?", (cid,))
-        cliente["cantieri"] = [{"id": r[0], "nome": r[1]} for r in c.fetchall()]
-    
-    # Se Acquirente/Rivenditore: carica carrello
-    else:
-        c.execute("SELECT id, brand, descrizione, quantita, prezzo_unitario, subtotale FROM carrello WHERE cliente_id = ?", (cid,))
-        cliente["carrello"] = [{"id": r[0], "brand": r[1], "descrizione": r[2], "quantita": r[3], "prezzo": r[4], "subtotale": r[5]} for r in c.fetchall()]
-    
-    conn.close()
-    return jsonify({"cliente": cliente})
-
 @app.route('/api/me', methods=['GET'])
 def me():
     u = get_session_user()
@@ -505,179 +498,6 @@ def me():
     elif u['ruolo'] == 'superadmin':
         moduli = MODULI_DISPONIBILI
     return jsonify({"logged": True, "user": u, "moduli": moduli})
-
-# ===== ENDPOINT CARRELLO (Acquirente + Rivenditore) =====
-
-@app.route('/api/carrello/<int:cliente_id>', methods=['GET'])
-def get_carrello(cliente_id):
-    """Legge carrello per cliente (Acquirente/Rivenditore)"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, prodotto_codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale FROM carrello WHERE cliente_id = ? ORDER BY updated_at DESC", (cliente_id,))
-    voci = [{"id": r[0], "codice": r[1], "brand": r[2], "descrizione": r[3], "quantita": r[4], "prezzo": r[5], "sconto": r[6], "subtotale": r[7]} for r in c.fetchall()]
-    
-    totale = sum(v["subtotale"] for v in voci)
-    conn.close()
-    return jsonify({"carrello": voci, "totale": totale})
-
-@app.route('/api/carrello/<int:cliente_id>', methods=['POST'])
-def add_carrello(cliente_id):
-    """Aggiunge prodotto al carrello"""
-    data = request.get_json()
-    codice = data.get('codice', '').strip()
-    brand = data.get('brand', '').strip()
-    descrizione = data.get('descrizione', '').strip()
-    quantita = float(data.get('quantita', 1))
-    prezzo = float(data.get('prezzo', 0))
-    
-    if not codice or quantita <= 0 or prezzo < 0:
-        return jsonify({"error": "Dati invalidi"}), 400
-    
-    subtotale = quantita * prezzo
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        now = datetime.now().isoformat()
-        c.execute("""INSERT INTO carrello (cliente_id, prodotto_codice, brand, descrizione, quantita, prezzo_unitario, subtotale, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (cliente_id, codice, brand, descrizione, quantita, prezzo, subtotale, now, now))
-        vid = c.lastrowid
-        conn.commit()
-        conn.close()
-        return jsonify({"ok": True, "id": vid})
-    except Exception as e:
-        conn.close()
-        return jsonify({"error": str(e)}), 400
-
-@app.route('/api/carrello-voce/<int:voce_id>', methods=['DELETE'])
-def delete_carrello_voce(voce_id):
-    """Elimina voce dal carrello"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM carrello WHERE id = ?", (voce_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-@app.route('/api/carrello-voce/<int:voce_id>', methods=['PUT'])
-def update_carrello_voce(voce_id):
-    """Aggiorna quantità/prezzo di una voce nel carrello"""
-    data = request.get_json()
-    quantita = data.get('quantita', 1)
-    prezzo = data.get('prezzo', 0)
-    
-    subtotale = float(quantita) * float(prezzo)
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    now = datetime.now().isoformat()
-    c.execute("UPDATE carrello SET quantita = ?, prezzo_unitario = ?, subtotale = ?, updated_at = ? WHERE id = ?",
-              (quantita, prezzo, subtotale, now, voce_id))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-# ===== ENDPOINT GENERA OFFERTA =====
-
-@app.route('/api/offerta/cliente-finale/<int:cantiere_id>', methods=['GET'])
-def genera_offerta_cliente_finale(cantiere_id):
-    """Genera offerta per Cliente Finale (con Piani/Stanze)"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Leggi cantiere
-    c.execute("SELECT id, nome, cliente_id FROM cantieri WHERE id = ?", (cantiere_id,))
-    cant_row = c.fetchone()
-    if not cant_row:
-        conn.close()
-        return jsonify({"error": "Cantiere non trovato"}), 404
-    
-    cantiere_id, cantiere_nome, cliente_id = cant_row
-    
-    # Leggi cliente
-    c.execute("SELECT nome, cognome_azienda, email, telefono, indirizzo FROM clienti WHERE id = ?", (cliente_id,))
-    cli_row = c.fetchone()
-    cliente_nome, cliente_azienda, cliente_email, cliente_tel, cliente_ind = cli_row or ('', '', '', '', '')
-    
-    # Leggi piani/stanze/voci
-    c.execute("SELECT id, nome, numero FROM piani WHERE cantiere_id = ? ORDER BY numero", (cantiere_id,))
-    piani = []
-    for pid, pnome, pnum in c.fetchall():
-        c.execute("SELECT id, nome FROM stanze WHERE piano_id = ? ORDER BY nome", (pid,))
-        stanze = []
-        totale_piano = 0
-        for sid, snome in c.fetchall():
-            c.execute("SELECT id, codice, brand, descrizione, quantita, prezzo_unitario, subtotale FROM stanza_voci WHERE stanza_id = ? ORDER BY brand", (sid,))
-            voci = []
-            totale_stanza = 0
-            for vid, codice, brand, desc, qty, prezzo, subtotale in c.fetchall():
-                voci.append({"id": vid, "codice": codice, "brand": brand, "descrizione": desc, "quantita": qty, "prezzo": prezzo, "subtotale": subtotale})
-                totale_stanza += subtotale or 0
-            stanze.append({"id": sid, "nome": snome, "voci": voci, "totale": totale_stanza})
-            totale_piano += totale_stanza
-        piani.append({"id": pid, "nome": pnome, "numero": pnum, "stanze": stanze, "totale": totale_piano})
-    
-    totale_generale = sum(p["totale"] for p in piani)
-    
-    conn.close()
-    
-    return jsonify({
-        "ok": True,
-        "tipo": "cliente_finale",
-        "cliente": {
-            "nome": cliente_nome,
-            "cognome_azienda": cliente_azienda,
-            "email": cliente_email,
-            "telefono": cliente_tel,
-            "indirizzo": cliente_ind
-        },
-        "cantiere": {
-            "id": cantiere_id,
-            "nome": cantiere_nome
-        },
-        "piani": piani,
-        "totale_generale": totale_generale
-    })
-
-@app.route('/api/offerta/acquirente-rivenditore/<int:cliente_id>', methods=['GET'])
-def genera_offerta_acquirente_rivenditore(cliente_id):
-    """Genera offerta per Acquirente Particolare / Rivenditore (carrello semplice)"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Leggi cliente
-    c.execute("SELECT nome, cognome_azienda, tipo, email, telefono, indirizzo FROM clienti WHERE id = ?", (cliente_id,))
-    cli_row = c.fetchone()
-    if not cli_row:
-        conn.close()
-        return jsonify({"error": "Cliente non trovato"}), 404
-    
-    cliente_nome, cliente_azienda, cliente_tipo, cliente_email, cliente_tel, cliente_ind = cli_row
-    
-    # Leggi carrello
-    c.execute("SELECT id, prodotto_codice, brand, descrizione, quantita, prezzo_unitario, subtotale FROM carrello WHERE cliente_id = ? ORDER BY updated_at DESC", (cliente_id,))
-    voci = []
-    totale = 0
-    for vid, codice, brand, desc, qty, prezzo, subtotale in c.fetchall():
-        voci.append({"id": vid, "codice": codice, "brand": brand, "descrizione": desc, "quantita": qty, "prezzo": prezzo, "subtotale": subtotale})
-        totale += subtotale or 0
-    
-    conn.close()
-    
-    return jsonify({
-        "ok": True,
-        "tipo": cliente_tipo,
-        "cliente": {
-            "nome": cliente_nome,
-            "cognome_azienda": cliente_azienda,
-            "email": cliente_email,
-            "telefono": cliente_tel,
-            "indirizzo": cliente_ind
-        },
-        "voci": voci,
-        "totale": totale
-    })
 
 # ---------------------------------------------------------------------------
 # API SUPERADMIN — gestione clienti e moduli
@@ -1286,134 +1106,6 @@ def update_cantiere(cid):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
-
-# ===== ENDPOINT PIANI / STANZE / STRUTTURA =====
-
-@app.route('/api/cantieri/<int:cantiere_id>/struttura', methods=['GET'])
-def get_struttura_cantiere(cantiere_id):
-    """Legge struttura piani/stanze/voci di un cantiere"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    c.execute("SELECT id FROM cantieri WHERE id = ?", (cantiere_id,))
-    if not c.fetchone():
-        conn.close()
-        return jsonify({"error": "Cantiere non trovato"}), 404
-    
-    # Leggi piani
-    c.execute("SELECT id, numero, nome, totale_piano FROM piani WHERE cantiere_id = ? ORDER BY numero", (cantiere_id,))
-    piani = []
-    for pid, pnum, pnome, ptot in c.fetchall():
-        # Leggi stanze di questo piano
-        c.execute("SELECT id, nome, totale_stanza FROM stanze WHERE piano_id = ? ORDER BY nome", (pid,))
-        stanze = []
-        for sid, snome, stot in c.fetchall():
-            # Leggi voci di questa stanza
-            c.execute("SELECT id, codice, brand, descrizione, quantita, prezzo_unitario, subtotale FROM stanza_voci WHERE stanza_id = ? ORDER BY brand", (sid,))
-            voci = [{"id": v[0], "codice": v[1], "brand": v[2], "descrizione": v[3], "quantita": v[4], "prezzo": v[5], "subtotale": v[6]} for v in c.fetchall()]
-            stanze.append({"id": sid, "nome": snome, "totale_stanza": stot or 0, "voci": voci})
-        
-        piani.append({"id": pid, "numero": pnum, "nome": pnome, "totale_piano": ptot or 0, "stanze": stanze})
-    
-    conn.close()
-    return jsonify({"ok": True, "piani": piani})
-
-@app.route('/api/cantieri/<int:cantiere_id>/piani', methods=['POST'])
-def add_piano(cantiere_id):
-    """Aggiunge un piano a un cantiere"""
-    data = request.get_json()
-    numero = data.get('numero', 1)
-    nome = data.get('nome', f'Piano {numero}').strip()
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        c.execute("INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                  (cantiere_id, numero, nome, 0, datetime.now().isoformat(), datetime.now().isoformat()))
-        pid = c.lastrowid
-        conn.commit()
-        conn.close()
-        return jsonify({"ok": True, "id": pid})
-    except Exception as e:
-        conn.close()
-        return jsonify({"error": str(e)}), 400
-
-@app.route('/api/stanza_voci/<int:voce_id>', methods=['DELETE'])
-def delete_stanza_voce(voce_id):
-    """Elimina una voce da una stanza"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Leggi stanza_id per ricalcolare totale
-    c.execute("SELECT stanza_id, subtotale FROM stanza_voci WHERE id = ?", (voce_id,))
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "Voce non trovata"}), 404
-    
-    stanza_id, subtotale = row
-    
-    # Elimina voce
-    c.execute("DELETE FROM stanza_voci WHERE id = ?", (voce_id,))
-    
-    # Ricalcola totale stanza
-    c.execute("SELECT COALESCE(SUM(subtotale), 0) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
-    nuovo_totale = c.fetchone()[0]
-    c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?", (nuovo_totale, datetime.now().isoformat(), stanza_id))
-    
-    # Ricalcola totale piano
-    c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
-    piano_id = c.fetchone()[0]
-    c.execute("SELECT COALESCE(SUM(totale_stanza), 0) FROM stanze WHERE piano_id = ?", (piano_id,))
-    nuovo_totale_piano = c.fetchone()[0]
-    c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?", (nuovo_totale_piano, datetime.now().isoformat(), piano_id))
-    
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-@app.route('/api/stanza/<int:stanza_id>/voci', methods=['POST'])
-def add_stanza_voce(stanza_id):
-    """Aggiunge una voce a una stanza"""
-    data = request.get_json()
-    codice = data.get('codice', '').strip()
-    brand = data.get('brand', '').strip()
-    descrizione = data.get('descrizione', '').strip()
-    quantita = float(data.get('quantita', 1))
-    prezzo = float(data.get('prezzo', 0))
-    
-    if not codice or quantita <= 0:
-        return jsonify({"error": "Dati invalidi"}), 400
-    
-    subtotale = quantita * prezzo
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        c.execute("""INSERT INTO stanza_voci 
-                     (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, subtotale, created_at, updated_at)
-                     VALUES (?,?,?,?,?,?,?,?,?)""",
-                  (stanza_id, codice, brand, descrizione, quantita, prezzo, subtotale, datetime.now().isoformat(), datetime.now().isoformat()))
-        vid = c.lastrowid
-        
-        # Ricalcola totale stanza
-        c.execute("SELECT COALESCE(SUM(subtotale), 0) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
-        nuovo_totale = c.fetchone()[0]
-        c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?", (nuovo_totale, datetime.now().isoformat(), stanza_id))
-        
-        # Ricalcola totale piano
-        c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
-        piano_id = c.fetchone()[0]
-        c.execute("SELECT COALESCE(SUM(totale_stanza), 0) FROM stanze WHERE piano_id = ?", (piano_id,))
-        nuovo_totale_piano = c.fetchone()[0]
-        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?", (nuovo_totale_piano, datetime.now().isoformat(), piano_id))
-        
-        conn.commit()
-        conn.close()
-        return jsonify({"ok": True, "id": vid})
-    except Exception as e:
-        conn.close()
-        return jsonify({"error": str(e)}), 400
 
 @app.route('/api/cantieri/<int:cid>/righe', methods=['GET'])
 def get_righe(cid):
@@ -2304,6 +1996,155 @@ def add_riga_da_ai(cid):
     return jsonify({"ok": True, "id": rid})
 
 # ============================================================================
+# PIANI / STANZE / VOCI (MODALITA PIANI)
+# ============================================================================
+
+@app.route('/api/cantieri/<int:cid>/piani', methods=['POST'])
+def create_piano(cid):
+    """Crea un nuovo piano nel cantiere"""
+    data = request.get_json()
+    nome = data.get('nome', 'Piano 1')
+    numero = data.get('numero', 1)
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    c.execute("INSERT INTO piani (cantiere_id, numero, nome, created_at, updated_at) VALUES (?,?,?,?,?)",
+              (cid, numero, nome, now, now))
+    pid = c.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"ok": True, "piano_id": pid})
+
+@app.route('/api/piani/<int:pid>/stanze', methods=['POST'])
+def add_stanza(pid):
+    """Aggiunge una stanza a un piano"""
+    data = request.get_json()
+    nome = data.get('nome', 'Stanza')
+    descrizione = data.get('descrizione', '')
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    c.execute("INSERT INTO stanze (piano_id, nome, descrizione, created_at, updated_at) VALUES (?,?,?,?,?)",
+              (pid, nome, descrizione, now, now))
+    sid = c.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"ok": True, "stanza_id": sid})
+
+@app.route('/api/stanze/<int:sid>/voci', methods=['POST'])
+def add_stanza_voce(sid):
+    """Aggiunge una voce a una stanza"""
+    data = request.get_json()
+    
+    qty = float(data.get('quantita', 1))
+    prezzo = float(data.get('prezzo_unitario', 0))
+    sconto_pct = float(data.get('sconto_percentuale', 0))
+    
+    subtotale = (prezzo * qty) * (1 - sconto_pct/100)
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    c.execute("""INSERT INTO stanza_voci 
+                (stanza_id, tipo, codice, brand, descrizione, quantita, udm, 
+                 prezzo_unitario, sconto_percentuale, subtotale, colore, note, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (sid, data.get('tipo', ''), data.get('codice', ''), data.get('brand', ''),
+               data.get('descrizione', ''), qty, data.get('udm', ''),
+               prezzo, sconto_pct, subtotale, data.get('colore', 'verde'),
+               data.get('note', ''), now, now))
+    vid = c.lastrowid
+    conn.commit()
+    conn.close()
+    
+    # Ricalcola totali
+    ricalcola_totali_stanza(sid)
+    
+    return jsonify({"ok": True, "voce_id": vid})
+
+@app.route('/api/stanza_voci/<int:vid>', methods=['DELETE'])
+def delete_stanza_voce(vid):
+    """Elimina una voce da una stanza"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Trova stanza_id prima di eliminare
+    c.execute("SELECT stanza_id FROM stanza_voci WHERE id = ?", (vid,))
+    row = c.fetchone()
+    stanza_id = row[0] if row else None
+    
+    c.execute("DELETE FROM stanza_voci WHERE id = ?", (vid,))
+    conn.commit()
+    conn.close()
+    
+    # Ricalcola totali
+    if stanza_id:
+        ricalcola_totali_stanza(stanza_id)
+    
+    return jsonify({"ok": True})
+
+@app.route('/api/cantieri/<int:cid>/struttura', methods=['GET'])
+def get_struttura(cid):
+    """Legge PIANI > STANZE > VOCI per un cantiere"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute("SELECT id, numero, nome, totale_piano FROM piani WHERE cantiere_id = ? ORDER BY numero", (cid,))
+    piani_rows = c.fetchall()
+    
+    piani = []
+    for pid, num, nome, tot_piano in piani_rows:
+        c.execute("SELECT id, nome, descrizione, totale_stanza FROM stanze WHERE piano_id = ? ORDER BY nome", (pid,))
+        stanze_rows = c.fetchall()
+        
+        stanze = []
+        for sid, snome, sdesc, tot_stanza in stanze_rows:
+            c.execute("""SELECT id, tipo, codice, brand, descrizione, quantita, udm, 
+                         prezzo_unitario, sconto_percentuale, subtotale, colore
+                         FROM stanza_voci WHERE stanza_id = ? ORDER BY created_at""", (sid,))
+            voci_rows = c.fetchall()
+            
+            voci = [
+                {
+                    'id': v[0],
+                    'tipo': v[1],
+                    'codice': v[2],
+                    'brand': v[3],
+                    'descrizione': v[4],
+                    'quantita': v[5],
+                    'udm': v[6],
+                    'prezzo_unitario': v[7] or 0,
+                    'sconto_percentuale': v[8] or 0,
+                    'subtotale': v[9] or 0,
+                    'colore': v[10] or 'verde'
+                }
+                for v in voci_rows
+            ]
+            
+            stanze.append({
+                'id': sid,
+                'nome': snome,
+                'descrizione': sdesc,
+                'totale_stanza': tot_stanza or 0,
+                'voci': voci
+            })
+        
+        piani.append({
+            'id': pid,
+            'numero': num,
+            'nome': nome,
+            'totale_piano': tot_piano or 0,
+            'stanze': stanze
+        })
+    
+    conn.close()
+    return jsonify({"ok": True, "piani": piani})
+
+# ============================================================================
 # LAZY LOADING ABBINAMENTI PER BRAND
 # ============================================================================
 
@@ -2936,42 +2777,6 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 
   <!-- PANNELLO DX -->
   <div class="rightpanel" id="rightpanel">
-    
-    <!-- CLIENTI PRIVATI (Finale | Acquirente | Rivenditore) -->
-    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px;">
-      <div style="font-size: 11px; font-weight: 700; color: #93c5fd; text-transform: uppercase; margin-bottom: 8px;">👤 Clienti</div>
-      
-      <div style="margin-bottom: 8px;">
-        <button onclick="caricaClientiPrivati()" class="btn-green" style="width: 100%; font-size: 10px; margin-bottom: 6px;">🔄 Ricarica Clienti</button>
-        <button onclick="mostraFormNuovoCliente()" class="btn-purple btn-sm" style="width: 100%; margin-bottom: 0;">➕ Nuovo Cliente</button>
-      </div>
-      
-      <div id="form-nuovo-cliente" style="display: none; background: rgba(139,92,246,0.1); padding: 8px; border-radius: 6px; margin-bottom: 8px;">
-        <input type="text" id="new-cli-nome" placeholder="Nome / Ragione Sociale" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <input type="text" id="new-cli-cognome" placeholder="Cognome / Azienda" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <select id="new-cli-tipo" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-          <option value="finale">Cliente Finale</option>
-          <option value="acquirente">Acquirente Particolare</option>
-          <option value="rivenditore">Rivenditore</option>
-        </select>
-        <input type="email" id="new-cli-email" placeholder="Email" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <input type="tel" id="new-cli-tel" placeholder="Telefono" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <input type="text" id="new-cli-ind" placeholder="Indirizzo" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
-        <button onclick="creaNewCliente()" class="btn-green" style="width: 100%; font-size: 10px; margin-bottom: 4px;">Crea Cliente</button>
-        <button onclick="toggleFormNuovoCliente()" class="btn-gray" style="width: 100%; font-size: 10px; margin-bottom: 0;">Annulla</button>
-      </div>
-      
-      <div id="clienti-privati-lista" style="max-height: 400px; overflow-y: auto; border: 1px solid rgba(59,130,245,0.2); border-radius: 4px; padding: 6px;">
-        <div style="text-align: center; color: #9ca3af; font-size: 11px; padding: 12px;">Caricamento...</div>
-      </div>
-    </div>
-    
-    <!-- INTERFACCIA CLIENTE ATTIVO -->
-    <div id="interfaccia-cliente" style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: none;"></div>
-    
-    <!-- PIANI INLINE (solo per Cliente Finale) -->
-    <div id="piani-inline-container" style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: none;"></div>
-
     <div style="font-size: 13px; font-weight: 700; color: #93c5fd; margin-bottom: 10px;">Moduli</div>
 
     <!-- SUPERADMIN PANEL -->
@@ -3392,300 +3197,8 @@ function initApp() {
     document.getElementById('user-label').textContent = currentUser.nome + ' (' + currentUser.ruolo + ')';
     setupRightPanel();
     loadBrands();
-    
-    // Carica clienti privati
-    setTimeout(() => caricaClientiPrivati(), 500);
   });
 }
-
-// ===== GESTIONE CLIENTI PRIVATI =====
-
-let clienteAttivoPrivato = null;
-
-function mostraFormNuovoCliente() {
-  document.getElementById('form-nuovo-cliente').style.display = 'block';
-}
-
-function toggleFormNuovoCliente() {
-  const form = document.getElementById('form-nuovo-cliente');
-  form.style.display = form.style.display === 'none' ? 'block' : 'none';
-}
-
-function creaNewCliente() {
-  const nome = document.getElementById('new-cli-nome').value.trim();
-  const cognome = document.getElementById('new-cli-cognome').value.trim();
-  const tipo = document.getElementById('new-cli-tipo').value;
-  const email = document.getElementById('new-cli-email').value.trim();
-  const tel = document.getElementById('new-cli-tel').value.trim();
-  const ind = document.getElementById('new-cli-ind').value.trim();
-  
-  if (!nome) { alert('Nome richiesto'); return; }
-  
-  fetch('/api/clienti-privati', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      nome, cognome_azienda: cognome, tipo, email, telefono: tel, indirizzo: ind
-    })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      document.getElementById('form-nuovo-cliente').style.display = 'none';
-      document.getElementById('new-cli-nome').value = '';
-      document.getElementById('new-cli-cognome').value = '';
-      document.getElementById('new-cli-email').value = '';
-      document.getElementById('new-cli-tel').value = '';
-      document.getElementById('new-cli-ind').value = '';
-      caricaClientiPrivati();
-    } else {
-      alert('❌ ' + d.error);
-    }
-  });
-}
-
-function caricaClientiPrivati() {
-  fetch('/api/clienti-privati')
-    .then(r => r.json())
-    .then(d => {
-      const clienti = d.clienti || [];
-      const lista = document.getElementById('clienti-privati-lista');
-      if (!lista) return;
-      
-      if (clienti.length === 0) {
-        lista.innerHTML = '<div style="padding: 8px; text-align: center; color: #9ca3af; font-size: 11px;">Nessun cliente</div>';
-        return;
-      }
-      
-      lista.innerHTML = clienti.map(cli => 
-        '<div style="padding: 8px; background: rgba(59,130,245,0.1); border-radius: 4px; margin-bottom: 4px; cursor: pointer;" onclick="selezionaClientePrivato(' + cli.id + ')">' +
-        '<div style="font-weight: 600; font-size: 11px; color: #e0e0e0;">' + cli.nome + (cli.cognome_azienda ? ' - ' + cli.cognome_azienda : '') + '</div>' +
-        '<div style="font-size: 9px; color: #9ca3af;">Tipo: ' + cli.tipo + '</div>' +
-        '</div>'
-      ).join('');
-    });
-}
-
-function selezionaClientePrivato(clienteId) {
-  fetch('/api/clienti-privati/' + clienteId)
-    .then(r => r.json())
-    .then(d => {
-      const cliente = d.cliente;
-      clienteAttivoPrivato = cliente;
-      
-      // Branching logica in base al tipo
-      if (cliente.tipo === 'finale') {
-        mostraInterfacciaClienteFinale(cliente);
-      } else {
-        mostraInterfacciaCarrello(cliente);
-      }
-    });
-}
-
-function mostraInterfacciaClienteFinale(cliente) {
-  // Mostra anagrafica cliente + cantieri + piani/stanze inline
-  let html = '<div style="padding: 12px; border: 1px solid rgba(59,130,245,0.3); border-radius: 6px; margin-bottom: 12px;">' +
-    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 8px;">Cliente Finale - ' + cliente.nome + '</div>' +
-    '<div style="font-size: 10px; color: #9ca3af; line-height: 1.6;">' +
-    '<div><strong>Anagrafica:</strong> ' + cliente.cognome_azienda + '</div>' +
-    '<div><strong>Email:</strong> ' + cliente.email + '</div>' +
-    '<div><strong>Telefono:</strong> ' + cliente.telefono + '</div>' +
-    '<div><strong>Indirizzo:</strong> ' + cliente.indirizzo + '</div>' +
-    '</div></div>';
-  
-  // Aggiungi lista cantieri
-  html += '<div style="margin-bottom: 12px;">' +
-    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 6px;">Cantieri</div>';
-  
-  if (cliente.cantieri && cliente.cantieri.length > 0) {
-    html += '<div style="display: flex; flex-direction: column; gap: 4px;">' +
-      cliente.cantieri.map(c => 
-        '<div onclick="caricaStrutturaCantiereInline(' + c.id + ')" style="padding: 8px; background: rgba(139,92,246,0.1); border-left: 3px solid #8b5cf6; border-radius: 4px; cursor: pointer; font-size: 11px;">' +
-        c.nome + '</div>'
-      ).join('') +
-      '</div>';
-  } else {
-    html += '<div style="font-size: 11px; color: #9ca3af;">Nessun cantiere</div>';
-  }
-  
-  html += '</div>';
-  html += '<button onclick="nuovoCantiereFinale(' + cliente.id + ')" class="btn-green" style="width: 100%; margin-bottom: 12px;">➕ Nuovo Cantiere</button>';
-  
-  document.getElementById('interfaccia-cliente').innerHTML = html;
-}
-
-function mostraInterfacciaCarrello(cliente) {
-  // Mostra anagrafica cliente + carrello prodotti
-  let html = '<div style="padding: 12px; border: 1px solid rgba(59,130,245,0.3); border-radius: 6px; margin-bottom: 12px;">' +
-    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 8px;">' + 
-    (cliente.tipo === 'acquirente' ? 'Acquirente Particolare' : 'Rivenditore') + ' - ' + cliente.nome + '</div>' +
-    '<div style="font-size: 10px; color: #9ca3af; line-height: 1.6;">' +
-    '<div><strong>Anagrafica:</strong> ' + cliente.cognome_azienda + '</div>' +
-    '<div><strong>Email:</strong> ' + cliente.email + '</div>' +
-    '<div><strong>Telefono:</strong> ' + cliente.telefono + '</div>' +
-    '<div><strong>Indirizzo:</strong> ' + cliente.indirizzo + '</div>' +
-    '</div></div>';
-  
-  // Aggiungi carrello
-  html += '<div id="carrello-container" style="margin-bottom: 12px;">' +
-    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 6px;">Carrello</div>' +
-    '<div id="carrello-voci" style="display: flex; flex-direction: column; gap: 4px;"></div>' +
-    '<div id="carrello-totale" style="padding: 8px; background: rgba(16,185,129,0.1); border-radius: 4px; font-weight: 700; color: #10b981; margin-top: 8px;"></div>' +
-    '</div>';
-  
-  html += '<button onclick="aggiungiProdottoCarrello(' + cliente.id + ')" class="btn-green" style="width: 100%; margin-bottom: 12px;">➕ Aggiungi Prodotto</button>';
-  html += '<button onclick="generaOffertaAcquirente(' + cliente.id + ')" class="btn-green" style="width: 100%;">📄 Genera Offerta</button>';
-  
-  document.getElementById('interfaccia-cliente').innerHTML = html;
-  
-  // Carica carrello
-  caricaCarrelloVoci(cliente.id);
-}
-
-function caricaCarrelloVoci(clienteId) {
-  fetch('/api/carrello/' + clienteId)
-    .then(r => r.json())
-    .then(d => {
-      const voci = d.carrello || [];
-      const container = document.getElementById('carrello-voci');
-      
-      if (voci.length === 0) {
-        container.innerHTML = '<div style="font-size: 11px; color: #9ca3af;">Carrello vuoto</div>';
-        document.getElementById('carrello-totale').innerHTML = 'Totale: €0.00';
-        return;
-      }
-      
-      container.innerHTML = voci.map(v =>
-        '<div style="padding: 6px; background: rgba(59,130,245,0.1); border-radius: 4px; font-size: 10px;">' +
-        '<div style="font-weight: 600;">[' + v.codice + '] ' + v.brand + '</div>' +
-        '<div style="color: #9ca3af; font-size: 9px;">' + v.descrizione + '</div>' +
-        '<div style="display: flex; justify-content: space-between; margin-top: 3px;">' +
-        '<div>' + v.quantita + 'x €' + v.prezzo.toFixed(2) + '</div>' +
-        '<button onclick="cancellaVoceCarrello(' + v.id + ', ' + clienteId + ')" style="padding: 1px 4px; font-size: 8px; background: #ef4444; color: white; border: none; border-radius: 2px; cursor: pointer; margin-bottom: 0;">✕</button>' +
-        '</div></div>'
-      ).join('');
-      
-      const totale = d.totale || 0;
-      document.getElementById('carrello-totale').innerHTML = 'Totale: €' + totale.toFixed(2);
-    });
-}
-
-function cancellaVoceCarrello(voceId, clienteId) {
-  fetch('/api/carrello-voce/' + voceId, { method: 'DELETE' })
-    .then(r => r.json())
-    .then(d => {
-      if (d.ok) caricaCarrelloVoci(clienteId);
-    });
-}
-
-function generaOffertaAcquirente(clienteId) {
-  fetch('/api/offerta/acquirente-rivenditore/' + clienteId)
-    .then(r => r.json())
-    .then(d => {
-      console.log('Offerta:', d);
-      alert('📄 Offerta generata per ' + clienteAttivoPrivato.nome + '\n\nTotale: €' + d.totale.toFixed(2));
-      // TODO: Visualizza offerta in modal/PDF
-    });
-}
-
-function aggiungiProdottoCarrello(clienteId) {
-  alert('🔍 Ricerca prodotto — in sviluppo');
-  // TODO: Modal per selezionare prodotto dal listino e aggiungerlo
-}
-
-function nuovoCantiereFinale(clienteId) {
-  const nome = prompt('Nome cantiere:');
-  if (!nome) return;
-  
-  fetch('/api/cantieri', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ cliente_id: clienteId, nome: nome.trim(), stato: 'bozza' })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      selezionaClientePrivato(clienteId);
-    } else {
-      alert('❌ ' + d.error);
-    }
-  });
-}
-
-function caricaStrutturaCantiereInline(cantiereId) {
-  fetch('/api/cantieri/' + cantiereId + '/struttura')
-    .then(r => r.json())
-    .then(d => {
-      if (!d.ok) {
-        alert('❌ ' + d.error);
-        return;
-      }
-      
-      pianiBrowserData = d.piani || [];
-      cantiereAttivoInline = cantiereId;
-      renderInterfacciaPianiInline();
-    });
-}
-
-function renderInterfacciaPianiInline() {
-  if (!pianiBrowserData) return;
-  
-  let html = '<div style="margin-bottom: 12px;">' +
-    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 6px;">Piani / Stanze</div>';
-  
-  if (pianiBrowserData.length === 0) {
-    html += '<div style="font-size: 11px; color: #9ca3af;">Nessun piano</div>';
-  } else {
-    html += '<div style="display: flex; flex-direction: column; gap: 4px;">';
-    pianiBrowserData.forEach(piano => {
-      html += '<div style="background: rgba(59,130,245,0.1); border-radius: 4px; padding: 6px;">' +
-        '<div style="font-weight: 600; color: #60a5fa; margin-bottom: 4px; font-size: 10px;">🏢 ' + piano.nome + '</div>';
-      
-      (piano.stanze || []).forEach(stanza => {
-        html += '<div style="margin-left: 8px; padding: 4px; background: rgba(139,92,246,0.1); border-left: 2px solid #8b5cf6; border-radius: 3px; font-size: 9px; margin-bottom: 2px;">' +
-          '<div style="color: #d1d5db; font-weight: 600;">📐 ' + stanza.nome + '</div>' +
-          '<div style="color: #9ca3af; font-size: 8px; margin-top: 2px;">€' + (stanza.totale_stanza || 0).toFixed(2) + '</div>' +
-          '<button onclick="apriListinoPerStanza(' + stanza.id + ', ' + cantiereAttivoInline + ')" style="padding: 2px 6px; font-size: 8px; background: #3b82f6; color: white; border: none; border-radius: 2px; cursor: pointer; margin-bottom: 0; margin-top: 3px;">+ Voce</button>' +
-          '</div>';
-      });
-      
-      html += '</div>';
-    });
-    html += '</div>';
-  }
-  
-  html += '<button onclick="aggiungiPianoInline(' + cantiereAttivoInline + ')" class="btn-green btn-sm" style="width: 100%; margin-top: 8px; margin-bottom: 0;">➕ Piano</button>';
-  html += '</div>';
-  
-  document.getElementById('piani-inline-container').innerHTML = html;
-}
-
-function apriListinoPerStanza(stanzaId, cantiereId) {
-  alert('📋 Listino per stanza — in sviluppo');
-  // TODO: Modal listino per aggiungere voci
-}
-
-function aggiungiPianoInline(cantiereId) {
-  const nome = prompt('Nome piano:');
-  if (!nome) return;
-  
-  fetch('/api/cantieri/' + cantiereId + '/piani', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ numero: 1, nome: nome.trim() })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      caricaStrutturaCantiereInline(cantiereId);
-    } else {
-      alert('❌ ' + d.error);
-    }
-  });
-}
-
-let cantiereAttivoInline = null;
-let pianiBrowserData = [];
 
 // ---------------------------------------------------------------------------
 // SETUP PANNELLO DX
