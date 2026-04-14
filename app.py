@@ -4752,18 +4752,64 @@ function renderGridStanza(prodotti) {
   }
   
   const html = `
-    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:16px;">
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:16px;">
       ${prodotti.map((p, idx) => `
-        <div style="background:#1e293b; border:1px solid #334155; border-radius:8px; padding:12px; cursor:pointer; transition:all 0.2s;" 
+        <div style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden; cursor:pointer; transition:all 0.2s; display:flex; flex-direction:column;" 
              onmouseover="this.style.borderColor='#3b82f6'; this.style.boxShadow='0 0 15px rgba(59,130,245,0.3)'" 
-             onmouseout="this.style.borderColor='#334155'; this.style.boxShadow='none'"
-             onclick="aggiungiProdottoStanza(${idx})">
-          <div style="font-size:10px; color:#9ca3af; margin-bottom:4px; font-family:monospace;">${p.codice || '—'}</div>
-          <div style="font-size:12px; font-weight:600; color:#e0e0e0; margin-bottom:6px; line-height:1.3;">${p.nome || '—'}</div>
-          <div style="font-size:10px; color:#6b7280; margin-bottom:8px;">${p.categoria || ''}</div>
-          <div style="font-size:13px; color:#10b981; font-weight:bold;">€${p.prezzo ? parseFloat(p.prezzo).toFixed(0) : '—'}</div>
-          <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(59,130,245,0.2);">
-            <button style="width:100%; padding:6px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:11px; cursor:pointer; font-weight:600;">✓ Aggiungi</button>
+             onmouseout="this.style.borderColor='#334155'; this.style.boxShadow='none'">
+          
+          <!-- IMMAGINE THUMBNAIL -->
+          <div style="width:100%; height:160px; background:rgba(30,41,59,0.8); display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; border-bottom:1px solid #334155;">
+            ${p.immagine_url ? 
+              `<img src="${p.immagine_url}" style="width:100%; height:100%; object-fit:cover; transition:transform 0.3s;" 
+                    onmouseover="this.style.transform='scale(1.05)'" 
+                    onmouseout="this.style.transform='scale(1)'" />` 
+              : 
+              `<div style="color:#6b7280; font-size:40px;">📦</div>`
+            }
+            <div style="position:absolute; top:8px; right:8px; background:#10b981; color:white; padding:4px 8px; border-radius:4px; font-size:9px; font-weight:bold;">✓ DISPONIBILE</div>
+          </div>
+          
+          <!-- CONTENUTO CARD -->
+          <div style="padding:12px; flex:1; display:flex; flex-direction:column;">
+            <div style="font-size:10px; color:#9ca3af; margin-bottom:4px; font-family:monospace; font-weight:bold;">${p.codice || '—'}</div>
+            <div style="font-size:11px; font-weight:600; color:#e0e0e0; margin-bottom:6px; line-height:1.3; min-height:32px;">${p.nome || '—'}</div>
+            
+            <!-- DESCRIZIONE BREVE -->
+            <div style="font-size:9px; color:#9ca3af; margin-bottom:8px; line-height:1.3; max-height:40px; overflow:hidden;">
+              ${p.descrizione ? p.descrizione.substring(0, 60) + (p.descrizione.length > 60 ? '...' : '') : ''}
+            </div>
+            
+            <!-- BADGE COLORE/TIPO -->
+            <div style="font-size:8px; color:#6b7280; margin-bottom:8px; display:flex; gap:4px; flex-wrap:wrap;">
+              ${p.categoria ? `<span style="background:rgba(59,130,245,0.2); padding:2px 6px; border-radius:3px;">${p.categoria}</span>` : ''}
+              ${p.tipo ? `<span style="background:rgba(168,85,247,0.2); padding:2px 6px; border-radius:3px;">${p.tipo}</span>` : ''}
+            </div>
+            
+            <!-- PREZZO -->
+            <div style="font-size:14px; color:#10b981; font-weight:bold; margin-bottom:12px;">€${p.prezzo ? parseFloat(p.prezzo).toFixed(0) : '—'}</div>
+            
+            <!-- BOTTONI AZIONI -->
+            <div style="display:flex; gap:6px; margin-top:auto;">
+              <button onclick="event.stopPropagation(); apriModaleAbbinamenti(${idx})" 
+                      style="flex:1; padding:6px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                      onmouseover="this.style.background='#dc2626'" 
+                      onmouseout="this.style.background='#ef4444'">
+                🔗 Abbina
+              </button>
+              <button onclick="event.stopPropagation(); aggiungiProdottoStanza(${idx})" 
+                      style="flex:1; padding:6px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                      onmouseover="this.style.background='#2563eb'" 
+                      onmouseout="this.style.background='#3b82f6'">
+                ✓ Aggiungi
+              </button>
+              <button onclick="event.stopPropagation(); aggiungiAlCarrello(${idx})" 
+                      style="flex:1; padding:6px; background:#10b981; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                      onmouseover="this.style.background='#059669'" 
+                      onmouseout="this.style.background='#10b981'">
+                🛒 Carrello
+              </button>
+            </div>
           </div>
         </div>
       `).join('')}
@@ -4794,15 +4840,286 @@ function aggiungiProdottoStanza(idx) {
       quantita: 1,
       prezzo_unitario: prezzo,
       sconto_percentuale: 0,
-      colore: 'verde'
+      colore: 'verde',
+      immagine_url: prodotto.immagine_url || ''
     })
   })
   .then(r => r.json())
   .then(d => {
     if (d.ok) {
-      // FEEDBACK: prodotto aggiunto, modale rimane aperta per aggiungerne altri
       alert('✓ Aggiunto: ' + (prodotto.nome || 'Prodotto'));
-      // Opzionale: ricarica grid
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+// ============================================================================
+// MODALE ABBINAMENTI RICCO CON IMMAGINI
+// ============================================================================
+
+function apriModaleAbbinamenti(idx) {
+  if (!window._gridProdottiStanza) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
+  const brand = window._gridBrandStanza;
+  
+  // Salva state per il modale
+  window._prodottoSelezionatoPerAbbinamenti = prodotto;
+  window._abbinamenti_selezionati = [];
+  
+  // Carica abbinamenti da API
+  fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(prodotto.codice))
+    .then(r => r.json())
+    .then(d => {
+      const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
+      renderModaleAbbinamenti(prodotto, abbinamenti, brand);
+    })
+    .catch(e => {
+      renderModaleAbbinamenti(prodotto, [], brand);
+    });
+}
+
+function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
+  const modalHtml = `
+    <div id="modal-abbinamenti" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:7000; display:flex; flex-direction:column; padding:0; overflow:hidden;">
+      
+      <!-- HEADER -->
+      <div style="background:#0f172e; border-bottom:2px solid #3b82f6; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+        <div style="font-size:14px; font-weight:bold; color:#60a5fa;">🔗 Abbinamenti per: <strong>${prodotto.nome}</strong></div>
+        <button onclick="chiudiModaleAbbinamenti()" style="background:#ef4444; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">✕ Chiudi</button>
+      </div>
+      
+      <!-- CONTENUTO -->
+      <div style="display:flex; gap:20px; flex:1; overflow:hidden; padding:20px;">
+        
+        <!-- SINISTRA: PRODOTTO PRINCIPALE -->
+        <div style="flex:0 0 300px; display:flex; flex-direction:column; background:rgba(30,41,59,0.6); border:1px solid #334155; border-radius:8px; padding:16px; overflow-y:auto;">
+          <div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:12px;">Prodotto Principale</div>
+          
+          <!-- Immagine prodotto -->
+          <div style="width:100%; aspect-ratio:1; background:rgba(59,130,245,0.1); border-radius:6px; display:flex; align-items:center; justify-content:center; margin-bottom:12px; overflow:hidden;">
+            ${prodotto.immagine_url ? 
+              `<img src="${prodotto.immagine_url}" style="width:100%; height:100%; object-fit:cover;" />` 
+              : 
+              `<div style="color:#6b7280; font-size:60px;">📦</div>`
+            }
+          </div>
+          
+          <!-- Info prodotto -->
+          <div style="font-size:11px; color:#d1d5db; margin-bottom:4px;">
+            <div style="font-weight:bold; margin-bottom:4px;">Codice:</div>
+            <div style="color:#9ca3af; font-family:monospace;">${prodotto.codice}</div>
+          </div>
+          
+          <div style="font-size:11px; color:#d1d5db; margin-bottom:4px;">
+            <div style="font-weight:bold; margin-bottom:4px;">Nome:</div>
+            <div style="color:#9ca3af;">${prodotto.nome}</div>
+          </div>
+          
+          <div style="font-size:11px; color:#d1d5db; margin-bottom:4px;">
+            <div style="font-weight:bold; margin-bottom:4px;">Descrizione:</div>
+            <div style="color:#9ca3af; font-size:10px;">${prodotto.descrizione || '—'}</div>
+          </div>
+          
+          <div style="font-size:14px; color:#10b981; font-weight:bold; margin-top:12px; padding-top:12px; border-top:1px solid #334155;">
+            €${prodotto.prezzo ? parseFloat(prodotto.prezzo).toFixed(0) : '—'}
+          </div>
+          
+          <!-- ARRICCHIMENTO DESCRIZIONE -->
+          <div style="margin-top:16px; padding-top:16px; border-top:1px solid #334155;">
+            <div style="font-size:11px; font-weight:bold; color:#60a5fa; margin-bottom:8px;">🎨 Arricchisci Descrizione</div>
+            <textarea id="desc-arricchita" placeholder="Aggiungi note, colori, dettagli..." style="width:100%; height:80px; padding:8px; background:rgba(30,41,59,0.8); border:1px solid #334155; color:white; border-radius:4px; font-size:10px; resize:none; font-family:monospace;"></textarea>
+            <button onclick="generaDescrizioneIA()" style="width:100%; margin-top:8px; padding:8px; background:#8b5cf6; color:white; border:none; border-radius:4px; cursor:pointer; font-size:10px; font-weight:600;">✨ Genera con IA</button>
+          </div>
+        </div>
+        
+        <!-- DESTRA: ABBINAMENTI GRID -->
+        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+          <div style="font-size:12px; font-weight:bold; color:#60a5fa; margin-bottom:12px;">Abbinamenti Disponibili (${abbinamenti.length})</div>
+          
+          <div id="abbinamenti-grid" style="flex:1; overflow-y:auto; display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:12px; padding-right:12px;">
+            ${abbinamenti.length === 0 ? 
+              `<div style="grid-column:1/-1; color:#6b7280; text-align:center; padding:40px;">Nessun abbinamento disponibile</div>` 
+              : 
+              abbinamenti.map((a, aidx) => `
+                <div id="abbinamento-${aidx}" style="background:#1e293b; border:2px solid #334155; border-radius:6px; padding:10px; cursor:pointer; transition:all 0.2s;" 
+                     onclick="toggleAbbinamento(${aidx})" 
+                     onmouseover="this.style.borderColor='#3b82f6'" 
+                     onmouseout="this.style.borderColor='#334155'">
+                  
+                  <!-- Immagine abbinamento -->
+                  <div style="width:100%; aspect-ratio:1; background:rgba(59,130,245,0.1); border-radius:4px; display:flex; align-items:center; justify-content:center; margin-bottom:8px; overflow:hidden;">
+                    ${a.immagine_url ? 
+                      `<img src="${a.immagine_url}" style="width:100%; height:100%; object-fit:cover;" />` 
+                      : 
+                      `<div style="color:#6b7280; font-size:30px;">📎</div>`
+                    }
+                  </div>
+                  
+                  <!-- Checkbox -->
+                  <div style="display:flex; align-items:center; margin-bottom:6px;">
+                    <input type="checkbox" id="check-${aidx}" style="width:16px; height:16px; cursor:pointer;" 
+                           onchange="toggleAbbinamento(${aidx})">
+                    <label for="check-${aidx}" style="flex:1; margin-left:6px; font-size:10px; font-weight:bold; color:#d1d5db; cursor:pointer;">Seleziona</label>
+                  </div>
+                  
+                  <!-- Info -->
+                  <div style="font-size:9px; color:#9ca3af; margin-bottom:2px;">${a.codice || '—'}</div>
+                  <div style="font-size:9px; color:#d1d5db; font-weight:bold; margin-bottom:4px; line-height:1.2;">${a.nome || '—'}</div>
+                  <div style="font-size:10px; color:#10b981; font-weight:bold;">€${a.prezzo ? parseFloat(a.prezzo).toFixed(0) : '—'}</div>
+                </div>
+              `).join('')
+            }
+          </div>
+        </div>
+      </div>
+      
+      <!-- FOOTER -->
+      <div style="background:#0f172e; border-top:2px solid #3b82f6; padding:16px 20px; display:flex; gap:12px; justify-content:flex-end; flex-shrink:0;">
+        <button onclick="chiudiModaleAbbinamenti()" style="padding:10px 20px; background:#6b7280; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✕ Annulla</button>
+        <button onclick="salvaConAbbinamenti()" style="padding:10px 20px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi alla Stanza</button>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function toggleAbbinamento(idx) {
+  const checkbox = document.getElementById('check-' + idx);
+  const card = document.getElementById('abbinamento-' + idx);
+  
+  if (checkbox.checked) {
+    window._abbinamenti_selezionati.push(idx);
+    card.style.borderColor = '#10b981';
+    card.style.background = 'rgba(16,185,129,0.1)';
+  } else {
+    window._abbinamenti_selezionati = window._abbinamenti_selezionati.filter(x => x !== idx);
+    card.style.borderColor = '#334155';
+    card.style.background = '#1e293b';
+  }
+}
+
+function generaDescrizioneIA() {
+  const prodotto = window._prodottoSelezionatoPerAbbinamenti;
+  if (!prodotto) return;
+  
+  const textarea = document.getElementById('desc-arricchita');
+  textarea.value = '⏳ Generazione in corso...';
+  textarea.disabled = true;
+  
+  // Chiama OpenAI API per arricchire descrizione
+  fetch('/api/arricchisci-descrizione', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: prodotto.codice,
+      nome: prodotto.nome,
+      descrizione_attuale: prodotto.descrizione || ''
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok && d.descrizione_arricchita) {
+      textarea.value = d.descrizione_arricchita;
+    } else {
+      textarea.value = prodotto.descrizione || '';
+    }
+    textarea.disabled = false;
+  })
+  .catch(e => {
+    textarea.value = prodotto.descrizione || '';
+    textarea.disabled = false;
+  });
+}
+
+function salvaConAbbinamenti() {
+  const prodotto = window._prodottoSelezionatoPerAbbinamenti;
+  const stanzaId = window._gridStanzaId;
+  const brand = window._gridBrandStanza;
+  
+  if (!prodotto || !stanzaId) return;
+  
+  const descArricchita = document.getElementById('desc-arricchita').value.trim() || 
+                         ((prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || ''));
+  
+  // Carica abbinamenti selezionati
+  const abbinamenti_list = [];
+  if (window._abbinamenti_selezionati && window._abbinamenti_selezionati.length > 0) {
+    // Se hai modo di ottenere i dati completi, usa quelli
+    // Per adesso, salva solo gli indici
+    abbinamenti_list = window._abbinamenti_selezionati;
+  }
+  
+  const prezzo = prodotto.prezzo || 0;
+  
+  // Salva nella stanza
+  fetch('/api/stanze/' + stanzaId + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: prodotto.codice || '',
+      brand: brand,
+      descrizione: descArricchita,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde',
+      immagine_url: prodotto.immagine_url || '',
+      abbinamenti_selezionati: abbinamenti_list
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      chiudiModaleAbbinamenti();
+      alert('✓ Aggiunto con abbinamenti: ' + (prodotto.nome || 'Prodotto'));
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  });
+}
+
+function chiudiModaleAbbinamenti() {
+  const modal = document.getElementById('modal-abbinamenti');
+  if (modal) {
+    modal.remove();
+  }
+  window._prodottoSelezionatoPerAbbinamenti = null;
+  window._abbinamenti_selezionati = [];
+}
+
+function aggiungiAlCarrello(idx) {
+  if (!window._gridProdottiStanza) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
+  const stanzaId = window._gridStanzaId;
+  const brand = window._gridBrandStanza;
+  
+  const descrizione = (prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || '');
+  const prezzo = prodotto.prezzo || 0;
+  
+  // POST al carrello (stesso endpoint stanze/voci per adesso)
+  fetch('/api/stanze/' + stanzaId + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: prodotto.codice || '',
+      brand: brand,
+      descrizione: descrizione,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde',
+      immagine_url: prodotto.immagine_url || '',
+      flag_carrello: true
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      alert('🛒 Aggiunto al carrello: ' + (prodotto.nome || 'Prodotto'));
     } else {
       alert('❌ ' + (d.error || 'Errore'));
     }
