@@ -4660,6 +4660,25 @@ function aggiungiVoceStanza(stanzaId, stanzaNome) {
   document.body.insertAdjacentHTML('beforeend', formHtml);
 }
 
+function apriFormVoceStanzaConProdotto(prodotto) {
+  if (!stanzaSelezionataPiani) {
+    alert('Seleziona prima una stanza');
+    return;
+  }
+  const stanzaNome = stanzaSelezionataPiani.nome || 'Stanza';
+  const stanzaId = stanzaSelezionataPiani.id;
+  
+  // Popola il modal con i dati del prodotto
+  const codiceVal = prodotto.codice || '';
+  const descVal = (prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || '');
+  const prezzoVal = prodotto.prezzo || 0;
+  const brandVal = prodotto.brand || '';
+  
+  const formHtml = '<div id="form-voce-stanza" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#0f172e; border:2px solid #3b82f6; border-radius:12px; padding:20px; width:400px; max-width:90vw; z-index:5000; box-shadow: 0 10px 40px rgba(0,0,0,0.5);"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;"><div style="font-size:14px; font-weight:bold; color:#60a5fa;">➕ Aggiungi voce a ' + stanzaNome + '</div><button onclick="document.getElementById(\'form-voce-stanza\').remove()" style="background:#ef4444; color:white; border:none; width:24px; height:24px; border-radius:50%; cursor:pointer; font-size:14px; padding:0;">✕</button></div><div style="background:rgba(59,130,245,0.1); padding:8px; border-radius:4px; margin-bottom:10px; font-size:10px; color:#60a5fa;"><strong>' + descVal + '</strong><br>€' + prezzoVal + '</div><input type="text" id="voce-codice" placeholder="Codice prodotto" value="' + codiceVal + '" style="width:100%; margin-bottom:8px; font-size:11px;"><textarea id="voce-desc" placeholder="Descrizione..." rows="2" style="width:100%; margin-bottom:8px; font-size:11px;">' + descVal + '</textarea><div style="display:flex; gap:8px; margin-bottom:8px;"><input type="number" id="voce-qty" placeholder="Quantita" value="1" style="flex:1; font-size:11px;"><input type="number" id="voce-prezzo" placeholder="Prezzo €" value="' + prezzoVal + '" style="flex:1; font-size:11px;"></div><button onclick="salvaVoceStanza()" class="btn-green" style="width:100%; padding:10px; font-weight:bold;">✓ Aggiungi voce</button></div>';
+  document.body.insertAdjacentHTML('beforeend', formHtml);
+  document.getElementById('form-voce-stanza').onclick = (e) => e.stopPropagation();
+}
+
 function salvaVoceStanza() {
   if (!stanzaAttivaPerCarrello) return;
 
@@ -4797,7 +4816,7 @@ function filtraListinoPiani() {
   grid.innerHTML = filtered.slice(0, 20).map(p => {
     const prezzo = p.prezzo || 0;
     const colore = prezzo > 500 ? '#10b981' : '#3b82f6';
-    return '<div style="background:rgba(30,41,59,0.9); border:1px solid rgba(59,130,245,0.2); border-radius:4px; padding:6px; cursor:pointer;" onclick="aggiungiVoceStanzaFromListino(this.parentElement.dataset.prod)" data-prod=\'' + JSON.stringify(p).replace(/'/g, "\\'") + '\'>' +
+    return '<div style="background:rgba(30,41,59,0.9); border:1px solid rgba(59,130,245,0.2); border-radius:4px; padding:6px; cursor:pointer;" onclick="apriFormVoceStanzaConProdotto(JSON.parse(this.parentElement.dataset.prod))" data-prod=\'' + JSON.stringify(p).replace(/'/g, "\\'") + '\'>' +
       '<div style="font-size:10px; font-weight:600; color:#e0e0e0;">' + (p.nome || p.codice) + '</div>' +
       '<div style="font-size:9px; color:#9ca3af;">[' + (p.codice || '—') + ']</div>' +
       '<div style="font-size:11px; color:' + colore + '; font-weight:bold; margin-top:3px;">€' + parseFloat(prezzo).toFixed(0) + '</div>' +
