@@ -2849,7 +2849,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 
   <div class="drawer-footer">
     <button onclick="aggiungiPianoModal()" class="btn-green" style="flex:1; font-size:11px; margin-bottom:0;">➕ Piano</button>
-    <button onclick="generaOffertaCantiere()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta</button>
+    <button onclick="generaOffertaPiani()" class="btn-green" style="flex:2; font-size:12px; margin-bottom:0; padding:10px;">Genera Offerta AI</button>
     <button onclick="deleteCantiere()" class="btn-red" style="flex:1; font-size:11px; margin-bottom:0;">✕ Elimina</button>
   </div>
 </div>
@@ -3508,6 +3508,122 @@ function generaOffertaCantiere() {
     closeCantiere();
     askDirect(domanda, brands);
   });
+}
+
+// ============================================================================
+// GENERA OFFERTA AI — MODALITA PIANI
+// ============================================================================
+
+function generaOffertaPiani() {
+  if (!cantiereAttivo) {
+    alert('❌ Nessun cantiere selezionato');
+    return;
+  }
+  
+  console.log('🚀 generaOffertaPiani avviata per cantiere:', cantiereAttivo);
+  
+  // Carica la struttura completa PIANI > STANZE > VOCI
+  fetch('/api/cantieri/' + cantiereAttivo + '/struttura')
+    .then(r => {
+      console.log('📡 Response status:', r.status);
+      return r.json();
+    })
+    .then(d => {
+      console.log('📦 Dati ricevuti:', d);
+      
+      if (!d.ok) {
+        alert('❌ Errore API: ' + (d.error || 'Sconosciuto'));
+        return;
+      }
+      
+      if (!d.piani || d.piani.length === 0) {
+        alert('❌ Nessun piano trovato nel cantiere');
+        return;
+      }
+      
+      const cantiereNome = document.getElementById('drawer-piani-nome') 
+        ? document.getElementById('drawer-piani-nome').textContent 
+        : 'Cantiere ' + cantiereAttivo;
+      const piani = d.piani || [];
+      
+      console.log('🎯 Cantiere:', cantiereNome);
+      console.log('📐 Piani trovati:', piani.length);
+      
+      // Costruisci il riepilogo strutturato
+      let riepilogo = '';
+      let totaleGlobale = 0;
+      const brands = new Set();
+      
+      piani.forEach(piano => {
+        riepilogo += `\n📐 PIANO: ${piano.nome} (${piano.stanze.length} stanze)\n`;
+        riepilogo += `${'─'.repeat(60)}\n`;
+        
+        const stanze = piano.stanze || [];
+        let totalePiano = 0;
+        
+        stanze.forEach(stanza => {
+          riepilogo += `  🏠 ${stanza.nome}\n`;
+          const voci = stanza.voci || [];
+          
+          let totaleStanza = 0;
+          voci.forEach(voce => {
+            const subtotale = (voce.quantita || 1) * (voce.prezzo_unitario || 0);
+            totaleStanza += subtotale;
+            totalePiano += subtotale;
+            totaleGlobale += subtotale;
+            
+            if (voce.brand) brands.add(voce.brand);
+            
+            riepilogo += `     [${voce.codice || '—'}] ${voce.brand || '—'} — ${voce.descrizione || '—'}\n`;
+            riepilogo += `     Qty: ${voce.quantita} × €${(voce.prezzo_unitario || 0).toFixed(2)} = €${subtotale.toFixed(2)}\n`;
+          });
+          
+          riepilogo += `  💰 SUBTOTALE ${stanza.nome}: €${totaleStanza.toFixed(2)}\n\n`;
+        });
+        
+        riepilogo += `📊 TOTALE ${piano.nome}: €${totalePiano.toFixed(2)}\n`;
+        riepilogo += `${'═'.repeat(60)}\n`;
+      });
+      
+      riepilogo += `\n🎯 TOTALE CANTIERE: €${totaleGlobale.toFixed(2)}\n`;
+      
+      const brandsArray = Array.from(brands);
+      
+      console.log('✅ Riepilogo costruito, lunghezza:', riepilogo.length);
+      console.log('🏷️ Brands:', brandsArray);
+      
+      // Costruisci il prompt per l'IA
+      const domanda = `Genera una proposta commerciale professionale e convincente da presentare al cliente per il cantiere "${cantiereNome}".
+
+STRUTTURA DEL PROGETTO:
+${riepilogo}
+
+ISTRUZIONI:
+1. Crea un'introduzione elegante e professionale che evidenzi il valore della soluzione proposta
+2. Organizza il contenuto per PIANO e STANZA in modo visibile e facile da seguire
+3. Per ogni voce includi: codice prodotto, brand, descrizione accurata e prezzo
+4. Aggiungi note su qualità, caratteristiche tecniche e vantaggi
+5. Evidenzia i subtotali per ogni stanza e il totale finale
+6. Chiudi con una call to action professionale per convertire il cliente
+7. Tono: elegante, orientato al valore, ricco di dettagli ma leggibile
+
+BRANDS PROPOSTI: ${brandsArray.join(', ') || 'Vari'}
+
+Genera il testo da presentare direttamente al cliente.`;
+      
+      console.log('💬 Prompt creato, lunghezza:', domanda.length);
+      
+      // Chiudi il drawer e invia all'IA
+      document.getElementById('cantiere-drawer-piani').classList.remove('open');
+      setTimeout(() => {
+        console.log('📤 Invio a askDirect...');
+        askDirect(domanda, brandsArray);
+      }, 300);
+    })
+    .catch(e => {
+      console.error('❌ ERRORE FETCH:', e);
+      alert('❌ Errore: ' + e.message);
+    });
 }
 
 function askDirect(domanda, brands) {
@@ -4790,24 +4906,32 @@ function renderGridStanza(prodotti) {
             <div style="font-size:14px; color:#10b981; font-weight:bold; margin-bottom:12px;">€${p.prezzo ? parseFloat(p.prezzo).toFixed(0) : '—'}</div>
             
             <!-- BOTTONI AZIONI -->
-            <div style="display:flex; gap:6px; margin-top:auto;">
-              <button onclick="event.stopPropagation(); apriModaleAbbinamenti(${idx})" 
-                      style="flex:1; padding:6px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
-                      onmouseover="this.style.background='#dc2626'" 
-                      onmouseout="this.style.background='#ef4444'">
-                🔗 Abbina
-              </button>
-              <button onclick="event.stopPropagation(); aggiungiProdottoStanza(${idx})" 
-                      style="flex:1; padding:6px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
-                      onmouseover="this.style.background='#2563eb'" 
-                      onmouseout="this.style.background='#3b82f6'">
-                ✓ Aggiungi
-              </button>
-              <button onclick="event.stopPropagation(); aggiungiAlCarrello(${idx})" 
-                      style="flex:1; padding:6px; background:#10b981; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
-                      onmouseover="this.style.background='#059669'" 
-                      onmouseout="this.style.background='#10b981'">
-                🛒 Carrello
+            <div style="display:flex; gap:6px; margin-top:auto; flex-direction:column;">
+              <div style="display:flex; gap:6px;">
+                <button onclick="event.stopPropagation(); apriModaleAbbinamenti(${idx})" 
+                        style="flex:1; padding:6px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                        onmouseover="this.style.background='#dc2626'" 
+                        onmouseout="this.style.background='#ef4444'">
+                  🔗 Abbina
+                </button>
+                <button onclick="event.stopPropagation(); aggiungiProdottoStanza(${idx})" 
+                        style="flex:1; padding:6px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                        onmouseover="this.style.background='#2563eb'" 
+                        onmouseout="this.style.background='#3b82f6'">
+                  ✓ Aggiungi
+                </button>
+                <button onclick="event.stopPropagation(); aggiungiAlCarrello(${idx})" 
+                        style="flex:1; padding:6px; background:#10b981; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                        onmouseover="this.style.background='#059669'" 
+                        onmouseout="this.style.background='#10b981'">
+                  🛒 Carrello
+                </button>
+              </div>
+              <button onclick="event.stopPropagation(); apriModaleImmagine(${idx})" 
+                      style="width:100%; padding:6px; background:#8b5cf6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                      onmouseover="this.style.background='#7c3aed'" 
+                      onmouseout="this.style.background='#8b5cf6'">
+                🖼️ Cerca Immagine
               </button>
             </div>
           </div>
@@ -4852,6 +4976,156 @@ function aggiungiProdottoStanza(idx) {
       alert('❌ ' + (d.error || 'Errore'));
     }
   });
+}
+
+// ============================================================================
+// MODALE RICERCA IMMAGINE
+// ============================================================================
+
+function apriModaleImmagine(idx) {
+  if (!window._gridProdottiStanza) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
+  
+  const modalHtml = `
+    <div id="modal-immagine" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:7500; display:flex; flex-direction:column; padding:0;">
+      
+      <!-- HEADER -->
+      <div style="background:#0f172e; border-bottom:2px solid #8b5cf6; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+        <div style="font-size:14px; font-weight:bold; color:#c084fc;">🖼️ Gestisci Immagine: <strong>${prodotto.nome}</strong></div>
+        <button onclick="chiudiModaleImmagine()" style="background:#ef4444; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">✕ Chiudi</button>
+      </div>
+      
+      <!-- CONTENUTO -->
+      <div style="display:flex; gap:20px; flex:1; overflow:hidden; padding:20px;">
+        
+        <!-- SINISTRA: ANTEPRIMA IMMAGINE -->
+        <div style="flex:0 0 300px; display:flex; flex-direction:column; background:rgba(30,41,59,0.6); border:1px solid #334155; border-radius:8px; padding:16px; overflow-y:auto;">
+          <div style="font-size:12px; font-weight:bold; color:#c084fc; margin-bottom:12px;">📸 Anteprima</div>
+          
+          <div id="anteprima-immagine" style="width:100%; aspect-ratio:1; background:rgba(59,130,245,0.1); border-radius:6px; display:flex; align-items:center; justify-content:center; margin-bottom:12px; overflow:hidden; border:2px dashed #334155;">
+            ${prodotto.immagine_url ? 
+              `<img src="${prodotto.immagine_url}" style="width:100%; height:100%; object-fit:cover;" />` 
+              : 
+              `<div style="color:#6b7280; text-align:center; font-size:40px;">📦<div style="font-size:11px; margin-top:8px; color:#9ca3af;">Nessuna immagine</div></div>`
+            }
+          </div>
+          
+          <div style="font-size:10px; color:#9ca3af; margin-top:auto;">
+            <div style="font-weight:bold; margin-bottom:4px; color:#d1d5db;">Info Prodotto:</div>
+            Codice: <strong>${prodotto.codice}</strong><br>
+            Brand: <strong>${window._gridBrandStanza}</strong><br>
+            Nome: <strong>${prodotto.nome}</strong>
+          </div>
+        </div>
+        
+        <!-- DESTRA: INPUT URL -->
+        <div style="flex:1; display:flex; flex-direction:column;">
+          <div style="font-size:12px; font-weight:bold; color:#c084fc; margin-bottom:12px;">🔗 URL Immagine</div>
+          
+          <div style="background:rgba(30,41,59,0.6); border:1px solid #334155; border-radius:8px; padding:16px; flex:1; display:flex; flex-direction:column;">
+            
+            <!-- Metodo 1: Incolla URL -->
+            <div style="margin-bottom:16px;">
+              <div style="font-size:10px; font-weight:bold; color:#d1d5db; margin-bottom:6px;">Metodo 1: Incolla URL diretto</div>
+              <input type="text" id="url-immagine-input" placeholder="https://example.com/image.jpg" style="width:100%; padding:10px; background:rgba(30,41,59,0.8); border:1px solid #334155; color:white; border-radius:6px; font-size:11px; margin-bottom:8px;" value="${prodotto.immagine_url || ''}">
+              <button onclick="salvaURLImmagine('${idx}')" style="width:100%; padding:8px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px;">✓ Salva URL</button>
+            </div>
+            
+            <!-- Metodo 2: Ricerca Google -->
+            <div style="border-top:1px solid #334155; padding-top:16px;">
+              <div style="font-size:10px; font-weight:bold; color:#d1d5db; margin-bottom:6px;">Metodo 2: Ricerca Google Images</div>
+              <input type="text" id="ricerca-immagine-input" placeholder="Ricerca su Google Images..." style="width:100%; padding:10px; background:rgba(30,41,59,0.8); border:1px solid #334155; color:white; border-radius:6px; font-size:11px; margin-bottom:8px;" value="${prodotto.codice} ${prodotto.nome}">
+              <button onclick="cercaGoogleImages('${idx}')" style="width:100%; padding:8px; background:#3b82f6; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:11px;">🔍 Cerca su Google</button>
+              <div style="font-size:9px; color:#6b7280; margin-top:8px; font-style:italic;">Apre Google Images in nuova finestra. Copia URL immagine e incollala sopra.</div>
+            </div>
+            
+            <!-- Risultati ricerca -->
+            <div id="ricerca-risultati" style="margin-top:16px; border-top:1px solid #334155; padding-top:16px; display:none;">
+              <div style="font-size:10px; font-weight:bold; color:#d1d5db; margin-bottom:6px;">Risultati Ricerca</div>
+              <div id="risultati-grid" style="display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; max-height:300px; overflow-y:auto;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- FOOTER -->
+      <div style="background:#0f172e; border-top:2px solid #8b5cf6; padding:16px 20px; display:flex; gap:12px; justify-content:flex-end; flex-shrink:0;">
+        <button onclick="chiudiModaleImmagine()" style="padding:10px 20px; background:#6b7280; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✕ Chiudi</button>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function salvaURLImmagine(idx) {
+  const urlInput = document.getElementById('url-immagine-input');
+  const urlImmagine = urlInput.value.trim();
+  
+  if (!urlImmagine) {
+    alert('❌ Inserisci un URL valido');
+    return;
+  }
+  
+  if (!window._gridProdottiStanza) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
+  
+  console.log('💾 Salvataggio immagine:', {
+    codice: prodotto.codice,
+    brand: window._gridBrandStanza,
+    url: urlImmagine
+  });
+  
+  // Salva immagine nel backend
+  fetch('/api/prodotti/' + encodeURIComponent(window._gridBrandStanza) + '/' + encodeURIComponent(prodotto.codice) + '/immagine', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      immagine_url: urlImmagine
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      // Aggiorna l'anteprima
+      const anteprima = document.getElementById('anteprima-immagine');
+      anteprima.innerHTML = `<img src="${urlImmagine}" style="width:100%; height:100%; object-fit:cover;" />`;
+      
+      // Aggiorna il prodotto in memoria
+      window._gridProdottiStanza[idx].immagine_url = urlImmagine;
+      
+      alert('✓ Immagine salvata con successo!');
+    } else {
+      alert('❌ ' + (d.error || 'Errore nel salvataggio'));
+    }
+  })
+  .catch(e => {
+    console.error('❌ ERRORE:', e);
+    alert('❌ Errore: ' + e.message);
+  });
+}
+
+function cercaGoogleImages(idx) {
+  const ricercaInput = document.getElementById('ricerca-immagine-input');
+  const ricerca = ricercaInput.value.trim();
+  
+  if (!ricerca) {
+    alert('❌ Inserisci testo di ricerca');
+    return;
+  }
+  
+  // Apri Google Images in nuova finestra
+  const url = 'https://www.google.com/search?q=' + encodeURIComponent(ricerca) + '&tbm=isch';
+  window.open(url, 'google-images', 'width=1024,height=768');
+}
+
+function chiudiModaleImmagine() {
+  const modal = document.getElementById('modal-immagine');
+  if (modal) {
+    modal.remove();
+  }
 }
 
 // ============================================================================
