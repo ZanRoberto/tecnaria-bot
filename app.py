@@ -63,8 +63,15 @@ def init_db():
     # Tabelle nuove
     c.execute('''CREATE TABLE IF NOT EXISTS clienti (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nome TEXT UNIQUE NOT NULL,
-        slug TEXT UNIQUE NOT NULL
+        nome TEXT NOT NULL,
+        cognome_azienda TEXT,
+        tipo TEXT NOT NULL DEFAULT 'finale',
+        email TEXT,
+        telefono TEXT,
+        indirizzo TEXT,
+        slug TEXT UNIQUE,
+        data_creazione TEXT,
+        data_aggiornamento TEXT
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS utenti (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,6 +179,22 @@ def init_db():
         created_at TEXT,
         updated_at TEXT,
         FOREIGN KEY (stanza_id) REFERENCES stanze(id)
+    )''')
+    
+    # CARRELLO GENERALE (per Acquirente Particolare e Rivenditore - NO Piani/Stanze)
+    c.execute('''CREATE TABLE IF NOT EXISTS carrello (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cliente_id INTEGER NOT NULL,
+        prodotto_codice TEXT,
+        brand TEXT,
+        descrizione TEXT,
+        quantita REAL DEFAULT 1,
+        prezzo_unitario REAL DEFAULT 0,
+        sconto_percentuale REAL DEFAULT 0,
+        subtotale REAL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY (cliente_id) REFERENCES clienti(id)
     )''')
     
     # CONFIGURAZIONE SISTEMA (sconto mode, etc)
@@ -388,6 +411,83 @@ def logout():
     session.clear()
     return jsonify({"ok": True})
 
+# ===== ENDPOINT CLIENTI PRIVATI (Finale | Acquirente | Rivenditore) =====
+
+@app.route('/api/clienti-privati', methods=['GET'])
+def get_clienti_privati():
+    """Legge lista clienti privati (non utenti di sistema)"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, nome, cognome_azienda, tipo, email FROM clienti ORDER BY data_creazione DESC")
+    clienti = [{"id": r[0], "nome": r[1], "cognome_azienda": r[2], "tipo": r[3], "email": r[4]} for r in c.fetchall()]
+    conn.close()
+    return jsonify({"clienti": clienti})
+
+@app.route('/api/clienti-privati', methods=['POST'])
+def create_cliente_privato():
+    """Crea nuovo cliente privato"""
+    data = request.get_json()
+    nome = data.get('nome', '').strip()
+    cognome_azienda = data.get('cognome_azienda', '').strip()
+    tipo = data.get('tipo', 'finale')  # finale | acquirente | rivenditore
+    email = data.get('email', '').strip()
+    telefono = data.get('telefono', '').strip()
+    indirizzo = data.get('indirizzo', '').strip()
+    
+    if not nome or tipo not in ['finale', 'acquirente', 'rivenditore']:
+        return jsonify({"error": "Dati incompleti"}), 400
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        now = datetime.now().isoformat()
+        c.execute("""INSERT INTO clienti (nome, cognome_azienda, tipo, email, telefono, indirizzo, data_creazione, data_aggiornamento)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (nome, cognome_azienda, tipo, email, telefono, indirizzo, now, now))
+        cid = c.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "id": cid, "tipo": tipo})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/clienti-privati/<int:cid>', methods=['GET'])
+def get_cliente_privato(cid):
+    """Legge dettagli cliente privato + cantieri/carrello a seconda del tipo"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute("SELECT id, nome, cognome_azienda, tipo, email, telefono, indirizzo FROM clienti WHERE id = ?", (cid,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        return jsonify({"error": "Cliente non trovato"}), 404
+    
+    cliente = {
+        "id": row[0],
+        "nome": row[1],
+        "cognome_azienda": row[2],
+        "tipo": row[3],
+        "email": row[4],
+        "telefono": row[5],
+        "indirizzo": row[6]
+    }
+    
+    # Se Cliente Finale: carica cantieri
+    if cliente["tipo"] == "finale":
+        c.execute("SELECT id, nome FROM cantieri WHERE cliente_id = ?", (cid,))
+        cliente["cantieri"] = [{"id": r[0], "nome": r[1]} for r in c.fetchall()]
+    
+    # Se Acquirente/Rivenditore: carica carrello
+    else:
+        c.execute("SELECT id, brand, descrizione, quantita, prezzo_unitario, subtotale FROM carrello WHERE cliente_id = ?", (cid,))
+        cliente["carrello"] = [{"id": r[0], "brand": r[1], "descrizione": r[2], "quantita": r[3], "prezzo": r[4], "subtotale": r[5]} for r in c.fetchall()]
+    
+    conn.close()
+    return jsonify({"cliente": cliente})
+
 @app.route('/api/me', methods=['GET'])
 def me():
     u = get_session_user()
@@ -405,6 +505,179 @@ def me():
     elif u['ruolo'] == 'superadmin':
         moduli = MODULI_DISPONIBILI
     return jsonify({"logged": True, "user": u, "moduli": moduli})
+
+# ===== ENDPOINT CARRELLO (Acquirente + Rivenditore) =====
+
+@app.route('/api/carrello/<int:cliente_id>', methods=['GET'])
+def get_carrello(cliente_id):
+    """Legge carrello per cliente (Acquirente/Rivenditore)"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, prodotto_codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale FROM carrello WHERE cliente_id = ? ORDER BY updated_at DESC", (cliente_id,))
+    voci = [{"id": r[0], "codice": r[1], "brand": r[2], "descrizione": r[3], "quantita": r[4], "prezzo": r[5], "sconto": r[6], "subtotale": r[7]} for r in c.fetchall()]
+    
+    totale = sum(v["subtotale"] for v in voci)
+    conn.close()
+    return jsonify({"carrello": voci, "totale": totale})
+
+@app.route('/api/carrello/<int:cliente_id>', methods=['POST'])
+def add_carrello(cliente_id):
+    """Aggiunge prodotto al carrello"""
+    data = request.get_json()
+    codice = data.get('codice', '').strip()
+    brand = data.get('brand', '').strip()
+    descrizione = data.get('descrizione', '').strip()
+    quantita = float(data.get('quantita', 1))
+    prezzo = float(data.get('prezzo', 0))
+    
+    if not codice or quantita <= 0 or prezzo < 0:
+        return jsonify({"error": "Dati invalidi"}), 400
+    
+    subtotale = quantita * prezzo
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        now = datetime.now().isoformat()
+        c.execute("""INSERT INTO carrello (cliente_id, prodotto_codice, brand, descrizione, quantita, prezzo_unitario, subtotale, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (cliente_id, codice, brand, descrizione, quantita, prezzo, subtotale, now, now))
+        vid = c.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "id": vid})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/carrello-voce/<int:voce_id>', methods=['DELETE'])
+def delete_carrello_voce(voce_id):
+    """Elimina voce dal carrello"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM carrello WHERE id = ?", (voce_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.route('/api/carrello-voce/<int:voce_id>', methods=['PUT'])
+def update_carrello_voce(voce_id):
+    """Aggiorna quantità/prezzo di una voce nel carrello"""
+    data = request.get_json()
+    quantita = data.get('quantita', 1)
+    prezzo = data.get('prezzo', 0)
+    
+    subtotale = float(quantita) * float(prezzo)
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    c.execute("UPDATE carrello SET quantita = ?, prezzo_unitario = ?, subtotale = ?, updated_at = ? WHERE id = ?",
+              (quantita, prezzo, subtotale, now, voce_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+# ===== ENDPOINT GENERA OFFERTA =====
+
+@app.route('/api/offerta/cliente-finale/<int:cantiere_id>', methods=['GET'])
+def genera_offerta_cliente_finale(cantiere_id):
+    """Genera offerta per Cliente Finale (con Piani/Stanze)"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Leggi cantiere
+    c.execute("SELECT id, nome, cliente_id FROM cantieri WHERE id = ?", (cantiere_id,))
+    cant_row = c.fetchone()
+    if not cant_row:
+        conn.close()
+        return jsonify({"error": "Cantiere non trovato"}), 404
+    
+    cantiere_id, cantiere_nome, cliente_id = cant_row
+    
+    # Leggi cliente
+    c.execute("SELECT nome, cognome_azienda, email, telefono, indirizzo FROM clienti WHERE id = ?", (cliente_id,))
+    cli_row = c.fetchone()
+    cliente_nome, cliente_azienda, cliente_email, cliente_tel, cliente_ind = cli_row or ('', '', '', '', '')
+    
+    # Leggi piani/stanze/voci
+    c.execute("SELECT id, nome, numero FROM piani WHERE cantiere_id = ? ORDER BY numero", (cantiere_id,))
+    piani = []
+    for pid, pnome, pnum in c.fetchall():
+        c.execute("SELECT id, nome FROM stanze WHERE piano_id = ? ORDER BY nome", (pid,))
+        stanze = []
+        totale_piano = 0
+        for sid, snome in c.fetchall():
+            c.execute("SELECT id, codice, brand, descrizione, quantita, prezzo_unitario, subtotale FROM stanza_voci WHERE stanza_id = ? ORDER BY brand", (sid,))
+            voci = []
+            totale_stanza = 0
+            for vid, codice, brand, desc, qty, prezzo, subtotale in c.fetchall():
+                voci.append({"id": vid, "codice": codice, "brand": brand, "descrizione": desc, "quantita": qty, "prezzo": prezzo, "subtotale": subtotale})
+                totale_stanza += subtotale or 0
+            stanze.append({"id": sid, "nome": snome, "voci": voci, "totale": totale_stanza})
+            totale_piano += totale_stanza
+        piani.append({"id": pid, "nome": pnome, "numero": pnum, "stanze": stanze, "totale": totale_piano})
+    
+    totale_generale = sum(p["totale"] for p in piani)
+    
+    conn.close()
+    
+    return jsonify({
+        "ok": True,
+        "tipo": "cliente_finale",
+        "cliente": {
+            "nome": cliente_nome,
+            "cognome_azienda": cliente_azienda,
+            "email": cliente_email,
+            "telefono": cliente_tel,
+            "indirizzo": cliente_ind
+        },
+        "cantiere": {
+            "id": cantiere_id,
+            "nome": cantiere_nome
+        },
+        "piani": piani,
+        "totale_generale": totale_generale
+    })
+
+@app.route('/api/offerta/acquirente-rivenditore/<int:cliente_id>', methods=['GET'])
+def genera_offerta_acquirente_rivenditore(cliente_id):
+    """Genera offerta per Acquirente Particolare / Rivenditore (carrello semplice)"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Leggi cliente
+    c.execute("SELECT nome, cognome_azienda, tipo, email, telefono, indirizzo FROM clienti WHERE id = ?", (cliente_id,))
+    cli_row = c.fetchone()
+    if not cli_row:
+        conn.close()
+        return jsonify({"error": "Cliente non trovato"}), 404
+    
+    cliente_nome, cliente_azienda, cliente_tipo, cliente_email, cliente_tel, cliente_ind = cli_row
+    
+    # Leggi carrello
+    c.execute("SELECT id, prodotto_codice, brand, descrizione, quantita, prezzo_unitario, subtotale FROM carrello WHERE cliente_id = ? ORDER BY updated_at DESC", (cliente_id,))
+    voci = []
+    totale = 0
+    for vid, codice, brand, desc, qty, prezzo, subtotale in c.fetchall():
+        voci.append({"id": vid, "codice": codice, "brand": brand, "descrizione": desc, "quantita": qty, "prezzo": prezzo, "subtotale": subtotale})
+        totale += subtotale or 0
+    
+    conn.close()
+    
+    return jsonify({
+        "ok": True,
+        "tipo": cliente_tipo,
+        "cliente": {
+            "nome": cliente_nome,
+            "cognome_azienda": cliente_azienda,
+            "email": cliente_email,
+            "telefono": cliente_tel,
+            "indirizzo": cliente_ind
+        },
+        "voci": voci,
+        "totale": totale
+    })
 
 # ---------------------------------------------------------------------------
 # API SUPERADMIN — gestione clienti e moduli
@@ -754,43 +1027,6 @@ def delete_voce(vid):
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/stanza_voci/<int:vid>/abbinamenti', methods=['POST'])
-def add_abbinamenti_voce(vid):
-    """POST aggiunge abbinamenti (accessori) a una voce stanza"""
-    try:
-        data = request.get_json()
-        abbinamenti = data.get('abbinamenti', [])  # Lista di dict: [{'codice': '...', 'brand': '...', 'prezzo': ...}, ...]
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Trova stanza dalla voce
-        c.execute("SELECT stanza_id FROM stanza_voci WHERE id = ?", (vid,))
-        sid = c.fetchone()[0]
-        
-        # Aggiungi ogni abbinamento come voce separate nella stanza
-        for abbinamento in abbinamenti:
-            qty = float(abbinamento.get('quantita', 1))
-            prezzo = float(abbinamento.get('prezzo', 0))
-            sconto = float(abbinamento.get('sconto', 0))
-            sub = calcola_subtotale(prezzo, qty, sconto)
-            
-            c.execute("""INSERT INTO stanza_voci 
-                        (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                      (sid, abbinamento.get('codice', ''), abbinamento.get('brand', ''),
-                       abbinamento.get('descrizione', ''), qty, prezzo, sconto, sub, 
-                       abbinamento.get('colore', 'verde'), datetime.now().isoformat(), datetime.now().isoformat()))
-        
-        conn.commit()
-        conn.close()
-        
-        ricalcola_totali_stanza(sid)
-        return jsonify({'ok': True, 'count': len(abbinamenti)})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
 # =============================================================================
 # API PLANIMETRIA - VISION + AUTO-CREAZIONE PIANI/STANZE
 # =============================================================================
@@ -1050,6 +1286,202 @@ def update_cantiere(cid):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+# ===== ENDPOINT PIANI / STANZE / STRUTTURA =====
+
+@app.route('/api/cantieri/<int:cantiere_id>/struttura', methods=['GET'])
+def get_struttura_cantiere(cantiere_id):
+    """Legge struttura piani/stanze/voci di un cantiere"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute("SELECT id FROM cantieri WHERE id = ?", (cantiere_id,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({"error": "Cantiere non trovato"}), 404
+    
+    # Leggi piani
+    c.execute("SELECT id, numero, nome, totale_piano FROM piani WHERE cantiere_id = ? ORDER BY numero", (cantiere_id,))
+    piani = []
+    for pid, pnum, pnome, ptot in c.fetchall():
+        # Leggi stanze di questo piano
+        c.execute("SELECT id, nome, totale_stanza FROM stanze WHERE piano_id = ? ORDER BY nome", (pid,))
+        stanze = []
+        for sid, snome, stot in c.fetchall():
+            # Leggi voci di questa stanza
+            c.execute("SELECT id, codice, brand, descrizione, quantita, prezzo_unitario, subtotale FROM stanza_voci WHERE stanza_id = ? ORDER BY brand", (sid,))
+            voci = [{"id": v[0], "codice": v[1], "brand": v[2], "descrizione": v[3], "quantita": v[4], "prezzo": v[5], "subtotale": v[6]} for v in c.fetchall()]
+            stanze.append({"id": sid, "nome": snome, "totale_stanza": stot or 0, "voci": voci})
+        
+        piani.append({"id": pid, "numero": pnum, "nome": pnome, "totale_piano": ptot or 0, "stanze": stanze})
+    
+    conn.close()
+    return jsonify({"ok": True, "piani": piani})
+
+@app.route('/api/cantieri/<int:cantiere_id>/piani', methods=['POST'])
+def add_piano(cantiere_id):
+    """Aggiunge un piano a un cantiere"""
+    data = request.get_json()
+    numero = data.get('numero', 1)
+    nome = data.get('nome', f'Piano {numero}').strip()
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                  (cantiere_id, numero, nome, 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        pid = c.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "id": pid})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/piani/<int:piano_id>/stanze', methods=['POST'])
+def add_stanza(piano_id):
+    """Aggiunge una stanza a un piano"""
+    data = request.get_json()
+    nome = data.get('nome', 'Stanza').strip()
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
+                  (piano_id, nome, 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        sid = c.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "id": sid})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/stanza_voci/<int:voce_id>', methods=['DELETE'])
+def delete_stanza_voce(voce_id):
+    """Elimina una voce da una stanza"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Leggi stanza_id per ricalcolare totale
+    c.execute("SELECT stanza_id, subtotale FROM stanza_voci WHERE id = ?", (voce_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Voce non trovata"}), 404
+    
+    stanza_id, subtotale = row
+    
+    # Elimina voce
+    c.execute("DELETE FROM stanza_voci WHERE id = ?", (voce_id,))
+    
+    # Ricalcola totale stanza
+    c.execute("SELECT COALESCE(SUM(subtotale), 0) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
+    nuovo_totale = c.fetchone()[0]
+    c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?", (nuovo_totale, datetime.now().isoformat(), stanza_id))
+    
+    # Ricalcola totale piano
+    c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
+    piano_id = c.fetchone()[0]
+    c.execute("SELECT COALESCE(SUM(totale_stanza), 0) FROM stanze WHERE piano_id = ?", (piano_id,))
+    nuovo_totale_piano = c.fetchone()[0]
+    c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?", (nuovo_totale_piano, datetime.now().isoformat(), piano_id))
+    
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.route('/api/stanza/<int:stanza_id>/voci', methods=['POST'])
+def add_stanza_voce(stanza_id):
+    """Aggiunge una voce a una stanza"""
+    data = request.get_json()
+    codice = data.get('codice', '').strip()
+    brand = data.get('brand', '').strip()
+    descrizione = data.get('descrizione', '').strip()
+    quantita = float(data.get('quantita', 1))
+    prezzo = float(data.get('prezzo', 0))
+    
+    if not codice or quantita <= 0:
+        return jsonify({"error": "Dati invalidi"}), 400
+    
+    subtotale = quantita * prezzo
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""INSERT INTO stanza_voci 
+                     (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, subtotale, created_at, updated_at)
+                     VALUES (?,?,?,?,?,?,?,?,?)""",
+                  (stanza_id, codice, brand, descrizione, quantita, prezzo, subtotale, datetime.now().isoformat(), datetime.now().isoformat()))
+        vid = c.lastrowid
+        
+        # Ricalcola totale stanza
+        c.execute("SELECT COALESCE(SUM(subtotale), 0) FROM stanza_voci WHERE stanza_id = ?", (stanza_id,))
+        nuovo_totale = c.fetchone()[0]
+        c.execute("UPDATE stanze SET totale_stanza = ?, updated_at = ? WHERE id = ?", (nuovo_totale, datetime.now().isoformat(), stanza_id))
+        
+        # Ricalcola totale piano
+        c.execute("SELECT piano_id FROM stanze WHERE id = ?", (stanza_id,))
+        piano_id = c.fetchone()[0]
+        c.execute("SELECT COALESCE(SUM(totale_stanza), 0) FROM stanze WHERE piano_id = ?", (piano_id,))
+        nuovo_totale_piano = c.fetchone()[0]
+        c.execute("UPDATE piani SET totale_piano = ?, updated_at = ? WHERE id = ?", (nuovo_totale_piano, datetime.now().isoformat(), piano_id))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "id": vid})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/api/analizza-planimetria', methods=['POST'])
+def analizza_planimetria():
+    """Analizza immagine planimetria e crea piani/stanze automaticamente (placeholder)"""
+    data = request.get_json()
+    cantiere_id = data.get('cantiere_id')
+    immagine_b64 = data.get('immagine_base64')
+    
+    if not cantiere_id or not immagine_b64:
+        return jsonify({"error": "Dati incompleti"}), 400
+    
+    # PLACEHOLDER: In futuro qui chiami OpenAI Vision per analizzare l'immagine
+    # Per ora crea 2 piani di default
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Piano Terra
+        c.execute("INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                  (cantiere_id, 0, 'Piano Terra', 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        p1_id = c.lastrowid
+        
+        # Stanze Piano Terra
+        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
+                  (p1_id, 'Bagno', 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
+                  (p1_id, 'Cucina', 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
+                  (p1_id, 'Soggiorno', 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        
+        # Piano Primo
+        c.execute("INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                  (cantiere_id, 1, 'Primo Piano', 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        p2_id = c.lastrowid
+        
+        # Stanze Piano Primo
+        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
+                  (p2_id, 'Camera 1', 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
+                  (p2_id, 'Camera 2', 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        c.execute("INSERT INTO stanze (piano_id, nome, totale_stanza, created_at, updated_at) VALUES (?,?,?,?,?)",
+                  (p2_id, 'Bagno', 0, datetime.now().isoformat(), datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "piani_creati": 2})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 400
 
 @app.route('/api/cantieri/<int:cid>/righe', methods=['GET'])
 def get_righe(cid):
@@ -2573,48 +3005,40 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
   <!-- PANNELLO DX -->
   <div class="rightpanel" id="rightpanel">
     
-    <!-- SELECTOR CLIENTE + CANTIERE (TOP) -->
+    <!-- CLIENTI PRIVATI (Finale | Acquirente | Rivenditore) -->
     <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px;">
-      <div style="margin-bottom: 10px;">
-        <label style="display: block; font-size: 10px; color: #9ca3af; text-transform: uppercase; margin-bottom: 4px; font-weight: 600;">Cliente</label>
-        <select id="sel-cliente" style="width: 100%; padding: 6px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 11px;" onchange="loadCantieri()">
-          <option value="">-- Seleziona cliente --</option>
-        </select>
+      <div style="font-size: 11px; font-weight: 700; color: #93c5fd; text-transform: uppercase; margin-bottom: 8px;">👤 Clienti</div>
+      
+      <div style="margin-bottom: 8px;">
+        <button onclick="caricaClientiPrivati()" class="btn-green" style="width: 100%; font-size: 10px; margin-bottom: 6px;">🔄 Ricarica Clienti</button>
+        <button onclick="mostraFormNuovoCliente()" class="btn-purple btn-sm" style="width: 100%; margin-bottom: 0;">➕ Nuovo Cliente</button>
       </div>
-      <div>
-        <label style="display: block; font-size: 10px; color: #9ca3af; text-transform: uppercase; margin-bottom: 4px; font-weight: 600;">Cantiere</label>
-        <select id="sel-cantiere" style="width: 100%; padding: 6px; background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,245,0.3); color: white; border-radius: 6px; font-size: 11px;" onchange="caricaStrutturaCantiereInline()">
-          <option value="">-- Seleziona cantiere --</option>
+      
+      <div id="form-nuovo-cliente" style="display: none; background: rgba(139,92,246,0.1); padding: 8px; border-radius: 6px; margin-bottom: 8px;">
+        <input type="text" id="new-cli-nome" placeholder="Nome / Ragione Sociale" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <input type="text" id="new-cli-cognome" placeholder="Cognome / Azienda" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <select id="new-cli-tipo" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+          <option value="finale">Cliente Finale</option>
+          <option value="acquirente">Acquirente Particolare</option>
+          <option value="rivenditore">Rivenditore</option>
         </select>
+        <input type="email" id="new-cli-email" placeholder="Email" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <input type="tel" id="new-cli-tel" placeholder="Telefono" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <input type="text" id="new-cli-ind" placeholder="Indirizzo" style="width: 100%; margin-bottom: 4px; font-size: 10px;">
+        <button onclick="creaNewCliente()" class="btn-green" style="width: 100%; font-size: 10px; margin-bottom: 4px;">Crea Cliente</button>
+        <button onclick="toggleFormNuovoCliente()" class="btn-gray" style="width: 100%; font-size: 10px; margin-bottom: 0;">Annulla</button>
+      </div>
+      
+      <div id="clienti-privati-lista" style="max-height: 400px; overflow-y: auto; border: 1px solid rgba(59,130,245,0.2); border-radius: 4px; padding: 6px;">
+        <div style="text-align: center; color: #9ca3af; font-size: 11px; padding: 12px;">Caricamento...</div>
       </div>
     </div>
-
-    <!-- CARICA PLANIMETRIA -->
-    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; background: rgba(139,92,246,0.15); border-left: 3px solid #8b5cf6;">
-      <div style="font-size: 10px; color: #8b5cf6; margin-bottom: 6px; text-transform: uppercase; font-weight: 700;">📸 Carica Planimetria</div>
-      <label style="display: block; width: 100%; background: #8b5cf6; color: white; padding: 6px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 10px; text-align: center; margin-bottom: 4px;">
-        Carica disegno
-        <input type="file" id="file-planimetria-inline" accept=".png,.jpg,.jpeg,.pdf" style="display: none;" onchange="caricaPlanimetriaInline(this)">
-      </label>
-      <div id="planimetria-status-inline" style="font-size: 9px; color: #9ca3af;"></div>
-    </div>
-
-    <!-- PIANI/STANZE INLINE -->
-    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; flex: 1; overflow-y: auto;">
-      <div style="font-size: 10px; color: #9ca3af; text-transform: uppercase; margin-bottom: 8px; font-weight: 600;">Struttura</div>
-      <div id="pannello-piani-inline" style="font-size: 11px; color: #6b7280;">Seleziona un cantiere</div>
-    </div>
-
-    <!-- BOTTONI AZIONI (Aggiungi Piano/Stanza) -->
-    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: flex; gap: 6px;">
-      <button onclick="aggiungiPianoUI()" class="btn-green btn-sm" style="flex: 1; margin-bottom: 0;">➕ Piano</button>
-      <button onclick="aggiungiStanzaUI(0)" class="btn-purple btn-sm" style="flex: 1; margin-bottom: 0;">➕ Stanza</button>
-    </div>
-
-    <!-- BOTTONE GENERA OFFERTA -->
-    <div style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px;">
-      <button onclick="generaOffertaCantiere()" class="btn-green" style="width: 100%; font-size: 11px;">📄 Genera Offerta</button>
-    </div>
+    
+    <!-- INTERFACCIA CLIENTE ATTIVO -->
+    <div id="interfaccia-cliente" style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: none;"></div>
+    
+    <!-- PIANI INLINE (solo per Cliente Finale) -->
+    <div id="piani-inline-container" style="padding: 12px; border-bottom: 1px solid rgba(59,130,245,0.2); margin-bottom: 12px; display: none;"></div>
 
     <div style="font-size: 13px; font-weight: 700; color: #93c5fd; margin-bottom: 10px;">Moduli</div>
 
@@ -3036,8 +3460,300 @@ function initApp() {
     document.getElementById('user-label').textContent = currentUser.nome + ' (' + currentUser.ruolo + ')';
     setupRightPanel();
     loadBrands();
+    
+    // Carica clienti privati
+    setTimeout(() => caricaClientiPrivati(), 500);
   });
 }
+
+// ===== GESTIONE CLIENTI PRIVATI =====
+
+let clienteAttivoPrivato = null;
+
+function mostraFormNuovoCliente() {
+  document.getElementById('form-nuovo-cliente').style.display = 'block';
+}
+
+function toggleFormNuovoCliente() {
+  const form = document.getElementById('form-nuovo-cliente');
+  form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+function creaNewCliente() {
+  const nome = document.getElementById('new-cli-nome').value.trim();
+  const cognome = document.getElementById('new-cli-cognome').value.trim();
+  const tipo = document.getElementById('new-cli-tipo').value;
+  const email = document.getElementById('new-cli-email').value.trim();
+  const tel = document.getElementById('new-cli-tel').value.trim();
+  const ind = document.getElementById('new-cli-ind').value.trim();
+  
+  if (!nome) { alert('Nome richiesto'); return; }
+  
+  fetch('/api/clienti-privati', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      nome, cognome_azienda: cognome, tipo, email, telefono: tel, indirizzo: ind
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      document.getElementById('form-nuovo-cliente').style.display = 'none';
+      document.getElementById('new-cli-nome').value = '';
+      document.getElementById('new-cli-cognome').value = '';
+      document.getElementById('new-cli-email').value = '';
+      document.getElementById('new-cli-tel').value = '';
+      document.getElementById('new-cli-ind').value = '';
+      caricaClientiPrivati();
+    } else {
+      alert('❌ ' + d.error);
+    }
+  });
+}
+
+function caricaClientiPrivati() {
+  fetch('/api/clienti-privati')
+    .then(r => r.json())
+    .then(d => {
+      const clienti = d.clienti || [];
+      const lista = document.getElementById('clienti-privati-lista');
+      if (!lista) return;
+      
+      if (clienti.length === 0) {
+        lista.innerHTML = '<div style="padding: 8px; text-align: center; color: #9ca3af; font-size: 11px;">Nessun cliente</div>';
+        return;
+      }
+      
+      lista.innerHTML = clienti.map(cli => 
+        '<div style="padding: 8px; background: rgba(59,130,245,0.1); border-radius: 4px; margin-bottom: 4px; cursor: pointer;" onclick="selezionaClientePrivato(' + cli.id + ')">' +
+        '<div style="font-weight: 600; font-size: 11px; color: #e0e0e0;">' + cli.nome + (cli.cognome_azienda ? ' - ' + cli.cognome_azienda : '') + '</div>' +
+        '<div style="font-size: 9px; color: #9ca3af;">Tipo: ' + cli.tipo + '</div>' +
+        '</div>'
+      ).join('');
+    });
+}
+
+function selezionaClientePrivato(clienteId) {
+  fetch('/api/clienti-privati/' + clienteId)
+    .then(r => r.json())
+    .then(d => {
+      const cliente = d.cliente;
+      clienteAttivoPrivato = cliente;
+      
+      // Branching logica in base al tipo
+      if (cliente.tipo === 'finale') {
+        mostraInterfacciaClienteFinale(cliente);
+      } else {
+        mostraInterfacciaCarrello(cliente);
+      }
+    });
+}
+
+function mostraInterfacciaClienteFinale(cliente) {
+  // Mostra anagrafica cliente + cantieri + piani/stanze inline
+  let html = '<div style="padding: 12px; border: 1px solid rgba(59,130,245,0.3); border-radius: 6px; margin-bottom: 12px;">' +
+    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 8px;">Cliente Finale - ' + cliente.nome + '</div>' +
+    '<div style="font-size: 10px; color: #9ca3af; line-height: 1.6;">' +
+    '<div><strong>Anagrafica:</strong> ' + cliente.cognome_azienda + '</div>' +
+    '<div><strong>Email:</strong> ' + cliente.email + '</div>' +
+    '<div><strong>Telefono:</strong> ' + cliente.telefono + '</div>' +
+    '<div><strong>Indirizzo:</strong> ' + cliente.indirizzo + '</div>' +
+    '</div></div>';
+  
+  // Aggiungi lista cantieri
+  html += '<div style="margin-bottom: 12px;">' +
+    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 6px;">Cantieri</div>';
+  
+  if (cliente.cantieri && cliente.cantieri.length > 0) {
+    html += '<div style="display: flex; flex-direction: column; gap: 4px;">' +
+      cliente.cantieri.map(c => 
+        '<div onclick="caricaStrutturaCantiereInline(' + c.id + ')" style="padding: 8px; background: rgba(139,92,246,0.1); border-left: 3px solid #8b5cf6; border-radius: 4px; cursor: pointer; font-size: 11px;">' +
+        c.nome + '</div>'
+      ).join('') +
+      '</div>';
+  } else {
+    html += '<div style="font-size: 11px; color: #9ca3af;">Nessun cantiere</div>';
+  }
+  
+  html += '</div>';
+  html += '<button onclick="nuovoCantiereFinale(' + cliente.id + ')" class="btn-green" style="width: 100%; margin-bottom: 12px;">➕ Nuovo Cantiere</button>';
+  
+  document.getElementById('interfaccia-cliente').innerHTML = html;
+}
+
+function mostraInterfacciaCarrello(cliente) {
+  // Mostra anagrafica cliente + carrello prodotti
+  let html = '<div style="padding: 12px; border: 1px solid rgba(59,130,245,0.3); border-radius: 6px; margin-bottom: 12px;">' +
+    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 8px;">' + 
+    (cliente.tipo === 'acquirente' ? 'Acquirente Particolare' : 'Rivenditore') + ' - ' + cliente.nome + '</div>' +
+    '<div style="font-size: 10px; color: #9ca3af; line-height: 1.6;">' +
+    '<div><strong>Anagrafica:</strong> ' + cliente.cognome_azienda + '</div>' +
+    '<div><strong>Email:</strong> ' + cliente.email + '</div>' +
+    '<div><strong>Telefono:</strong> ' + cliente.telefono + '</div>' +
+    '<div><strong>Indirizzo:</strong> ' + cliente.indirizzo + '</div>' +
+    '</div></div>';
+  
+  // Aggiungi carrello
+  html += '<div id="carrello-container" style="margin-bottom: 12px;">' +
+    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 6px;">Carrello</div>' +
+    '<div id="carrello-voci" style="display: flex; flex-direction: column; gap: 4px;"></div>' +
+    '<div id="carrello-totale" style="padding: 8px; background: rgba(16,185,129,0.1); border-radius: 4px; font-weight: 700; color: #10b981; margin-top: 8px;"></div>' +
+    '</div>';
+  
+  html += '<button onclick="aggiungiProdottoCarrello(' + cliente.id + ')" class="btn-green" style="width: 100%; margin-bottom: 12px;">➕ Aggiungi Prodotto</button>';
+  html += '<button onclick="generaOffertaAcquirente(' + cliente.id + ')" class="btn-green" style="width: 100%;">📄 Genera Offerta</button>';
+  
+  document.getElementById('interfaccia-cliente').innerHTML = html;
+  
+  // Carica carrello
+  caricaCarrelloVoci(cliente.id);
+}
+
+function caricaCarrelloVoci(clienteId) {
+  fetch('/api/carrello/' + clienteId)
+    .then(r => r.json())
+    .then(d => {
+      const voci = d.carrello || [];
+      const container = document.getElementById('carrello-voci');
+      
+      if (voci.length === 0) {
+        container.innerHTML = '<div style="font-size: 11px; color: #9ca3af;">Carrello vuoto</div>';
+        document.getElementById('carrello-totale').innerHTML = 'Totale: €0.00';
+        return;
+      }
+      
+      container.innerHTML = voci.map(v =>
+        '<div style="padding: 6px; background: rgba(59,130,245,0.1); border-radius: 4px; font-size: 10px;">' +
+        '<div style="font-weight: 600;">[' + v.codice + '] ' + v.brand + '</div>' +
+        '<div style="color: #9ca3af; font-size: 9px;">' + v.descrizione + '</div>' +
+        '<div style="display: flex; justify-content: space-between; margin-top: 3px;">' +
+        '<div>' + v.quantita + 'x €' + v.prezzo.toFixed(2) + '</div>' +
+        '<button onclick="cancellaVoceCarrello(' + v.id + ', ' + clienteId + ')" style="padding: 1px 4px; font-size: 8px; background: #ef4444; color: white; border: none; border-radius: 2px; cursor: pointer; margin-bottom: 0;">✕</button>' +
+        '</div></div>'
+      ).join('');
+      
+      const totale = d.totale || 0;
+      document.getElementById('carrello-totale').innerHTML = 'Totale: €' + totale.toFixed(2);
+    });
+}
+
+function cancellaVoceCarrello(voceId, clienteId) {
+  fetch('/api/carrello-voce/' + voceId, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) caricaCarrelloVoci(clienteId);
+    });
+}
+
+function generaOffertaAcquirente(clienteId) {
+  fetch('/api/offerta/acquirente-rivenditore/' + clienteId)
+    .then(r => r.json())
+    .then(d => {
+      console.log('Offerta:', d);
+      alert('📄 Offerta generata per ' + clienteAttivoPrivato.nome + '\n\nTotale: €' + d.totale.toFixed(2));
+      // TODO: Visualizza offerta in modal/PDF
+    });
+}
+
+function aggiungiProdottoCarrello(clienteId) {
+  alert('🔍 Ricerca prodotto — in sviluppo');
+  // TODO: Modal per selezionare prodotto dal listino e aggiungerlo
+}
+
+function nuovoCantiereFinale(clienteId) {
+  const nome = prompt('Nome cantiere:');
+  if (!nome) return;
+  
+  fetch('/api/cantieri', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ cliente_id: clienteId, nome: nome.trim(), stato: 'bozza' })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      selezionaClientePrivato(clienteId);
+    } else {
+      alert('❌ ' + d.error);
+    }
+  });
+}
+
+function caricaStrutturaCantiereInline(cantiereId) {
+  fetch('/api/cantieri/' + cantiereId + '/struttura')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) {
+        alert('❌ ' + d.error);
+        return;
+      }
+      
+      pianiBrowserData = d.piani || [];
+      cantiereAttivoInline = cantiereId;
+      renderInterfacciaPianiInline();
+    });
+}
+
+function renderInterfacciaPianiInline() {
+  if (!pianiBrowserData) return;
+  
+  let html = '<div style="margin-bottom: 12px;">' +
+    '<div style="font-weight: 700; color: #93c5fd; margin-bottom: 6px;">Piani / Stanze</div>';
+  
+  if (pianiBrowserData.length === 0) {
+    html += '<div style="font-size: 11px; color: #9ca3af;">Nessun piano</div>';
+  } else {
+    html += '<div style="display: flex; flex-direction: column; gap: 4px;">';
+    pianiBrowserData.forEach(piano => {
+      html += '<div style="background: rgba(59,130,245,0.1); border-radius: 4px; padding: 6px;">' +
+        '<div style="font-weight: 600; color: #60a5fa; margin-bottom: 4px; font-size: 10px;">🏢 ' + piano.nome + '</div>';
+      
+      (piano.stanze || []).forEach(stanza => {
+        html += '<div style="margin-left: 8px; padding: 4px; background: rgba(139,92,246,0.1); border-left: 2px solid #8b5cf6; border-radius: 3px; font-size: 9px; margin-bottom: 2px;">' +
+          '<div style="color: #d1d5db; font-weight: 600;">📐 ' + stanza.nome + '</div>' +
+          '<div style="color: #9ca3af; font-size: 8px; margin-top: 2px;">€' + (stanza.totale_stanza || 0).toFixed(2) + '</div>' +
+          '<button onclick="apriListinoPerStanza(' + stanza.id + ', ' + cantiereAttivoInline + ')" style="padding: 2px 6px; font-size: 8px; background: #3b82f6; color: white; border: none; border-radius: 2px; cursor: pointer; margin-bottom: 0; margin-top: 3px;">+ Voce</button>' +
+          '</div>';
+      });
+      
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+  
+  html += '<button onclick="aggiungiPianoInline(' + cantiereAttivoInline + ')" class="btn-green btn-sm" style="width: 100%; margin-top: 8px; margin-bottom: 0;">➕ Piano</button>';
+  html += '</div>';
+  
+  document.getElementById('piani-inline-container').innerHTML = html;
+}
+
+function apriListinoPerStanza(stanzaId, cantiereId) {
+  alert('📋 Listino per stanza — in sviluppo');
+  // TODO: Modal listino per aggiungere voci
+}
+
+function aggiungiPianoInline(cantiereId) {
+  const nome = prompt('Nome piano:');
+  if (!nome) return;
+  
+  fetch('/api/cantieri/' + cantiereId + '/piani', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ numero: 1, nome: nome.trim() })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      caricaStrutturaCantiereInline(cantiereId);
+    } else {
+      alert('❌ ' + d.error);
+    }
+  });
+}
+
+let cantiereAttivoInline = null;
+let pianiBrowserData = [];
 
 // ---------------------------------------------------------------------------
 // SETUP PANNELLO DX
@@ -3219,171 +3935,6 @@ function loadCantieri() {
       '</div>'
     ).join('');
   });
-}
-
-// ===== NUOVE FUNZIONI INLINE (Rightpanel) =====
-
-function caricaClienteInline() {
-  // Carica lista clienti dal backend e popola selector cliente
-  fetch('/api/sa/clienti')
-    .then(r => r.json())
-    .then(d => {
-      const clienti = d.clienti || [];
-      const sel = document.getElementById('sel-cliente');
-      sel.innerHTML = '<option value="">-- Seleziona cliente --</option>' + 
-        clienti.map(c => '<option value="' + c.id + '">' + c.nome + '</option>').join('');
-    });
-}
-
-function loadCantieri_Inline() {
-  // Carica cantieri del cliente selezionato
-  const clienteId = document.getElementById('sel-cliente').value;
-  if (!clienteId) {
-    document.getElementById('sel-cantiere').innerHTML = '<option value="">-- Seleziona cantiere --</option>';
-    return;
-  }
-  
-  fetch('/api/cantieri')
-    .then(r => r.json())
-    .then(d => {
-      const cantieri = (d.cantieri || []).filter(c => c.cliente_id == clienteId);
-      const sel = document.getElementById('sel-cantiere');
-      sel.innerHTML = '<option value="">-- Seleziona cantiere --</option>' + 
-        cantieri.map(c => '<option value="' + c.id + '">' + c.nome + '</option>').join('');
-    });
-}
-
-function caricaStrutturaCantiereInline() {
-  // Carica piani/stanze del cantiere selezionato e mostra inline
-  const cantiereId = document.getElementById('sel-cantiere').value;
-  if (!cantiereId) {
-    document.getElementById('pannello-piani-inline').innerHTML = 'Seleziona un cantiere';
-    return;
-  }
-  
-  cantiereAttivo = parseInt(cantiereId);
-  
-  fetch('/api/cantieri/' + cantiereId + '/struttura')
-    .then(r => r.json())
-    .then(d => {
-      if (!d.ok) {
-        document.getElementById('pannello-piani-inline').innerHTML = '❌ Errore: ' + d.error;
-        return;
-      }
-      
-      pianiBrowserData = d.piani || [];
-      renderInterfacciaPianiInline();
-    });
-}
-
-function renderInterfacciaPianiInline() {
-  // Rendering piani/stanze nel pannello inline (rightpanel)
-  const pannello = document.getElementById('pannello-piani-inline');
-  if (!pannello || !pianiBrowserData) return;
-
-  if (pianiBrowserData.length === 0) {
-    pannello.innerHTML = '<div style="padding:12px; text-align:center; color:#9ca3af; font-size:11px;">📐 Nessun piano ancora</div>';
-    return;
-  }
-
-  let html = '<div style="display: flex; flex-direction: column; gap: 6px;">';
-
-  pianiBrowserData.forEach((piano, pIdx) => {
-    const isOpen = localStorage.getItem('piano_open_' + piano.id) === '1';
-    
-    html += '<div style="background: rgba(59,130,245,0.1); border: 1px solid rgba(59,130,245,0.2); border-radius: 6px; overflow: hidden;">' +
-      '<div onclick="togglePianoInline(' + piano.id + ')" style="padding: 8px; background: rgba(59,130,245,0.15); cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">' +
-      '<div style="display: flex; align-items: center; gap: 6px; flex: 1;"><span style="font-size: 10px; color: #60a5fa; font-weight: bold;">' + (isOpen ? '▼' : '▶') + ' ' + piano.nome + '</span></div>' +
-      '<div style="font-size: 10px; color: #10b981; font-weight: bold;">€' + (piano.totale_piano || 0).toFixed(2) + '</div>' +
-      '</div>' +
-      '<div id="piano-body-inline-' + piano.id + '" style="display: ' + (isOpen ? 'flex' : 'none') + '; flex-direction: column; gap: 4px; padding: 6px;">';
-
-    (piano.stanze || []).forEach((stanza, sIdx) => {
-      const stanzaOpen = localStorage.getItem('stanza_open_' + stanza.id) === '1';
-      const voci = stanza.voci || [];
-      
-      html += '<div style="background: rgba(139,92,246,0.1); border-left: 3px solid #8b5cf6; border-radius: 4px; overflow: hidden;">' +
-        '<div onclick="toggleStanzaInline(' + stanza.id + ')" style="padding: 6px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; background: rgba(139,92,246,0.1);">' +
-        '<div style="display: flex; align-items: center; gap: 4px; flex: 1;"><span style="font-size: 9px; color: #d1d5db; font-weight: bold;">' + (stanzaOpen ? '▼' : '▶') + ' ' + stanza.nome + '</span></div>' +
-        '<span style="font-size: 9px; color: #10b981; font-weight: bold;">€' + (stanza.totale_stanza || 0).toFixed(2) + '</span>' +
-        '</div>' +
-        '<div id="stanza-body-inline-' + stanza.id + '" style="display: ' + (stanzaOpen ? 'block' : 'none') + '; padding: 4px;">';
-
-      if (voci.length === 0) {
-        html += '<div style="padding: 4px; font-size: 8px; color: #6b7280; font-style: italic;">Nessuna voce</div>';
-      } else {
-        voci.forEach(voce => {
-          html += '<div style="padding: 3px 4px; margin: 2px 0; background: rgba(59,130,245,0.1); border-radius: 3px; font-size: 8px; color: #e0e0e0; display: flex; justify-content: space-between; align-items: center;">' +
-            '<div style="flex: 1; min-width: 0;"><div style="font-weight: 600; font-size: 8px;">[' + (voce.codice||'—') + '] ' + (voce.brand || '—') + '</div>' +
-            '<div style="font-size: 7px; color: #9ca3af;">' + (voce.descrizione || '') + '</div></div>' +
-            '<div style="display: flex; gap: 3px; flex-shrink: 0; margin-left: 4px;">' +
-            '<button onclick="openModalAbbinamenti(' + voce.id + ', \'' + (voce.brand || '').replace(/'/g, "\\'") + '\', \'' + (voce.codice || '').replace(/'/g, "\\'") + '\', \'' + (voce.descrizione || '').replace(/'/g, "\\'") + '\')" style="padding: 1px 3px; font-size: 7px; background: #3b82f6; color: white; border: none; border-radius: 2px; cursor: pointer; margin-bottom: 0;">✎</button>' +
-            '<button onclick="cancellaVoce(' + voce.id + ', ' + stanza.id + ')" style="padding: 1px 3px; font-size: 7px; background: #ef4444; color: white; border: none; border-radius: 2px; cursor: pointer; margin-bottom: 0;">✕</button>' +
-            '</div></div>';
-        });
-      }
-
-      html += '</div></div>';
-    });
-
-    html += '</div></div>';
-  });
-
-  html += '</div>';
-  pannello.innerHTML = html;
-}
-
-function togglePianoInline(pianoId) {
-  const body = document.getElementById('piano-body-inline-' + pianoId);
-  if (body) {
-    const isOpen = body.style.display !== 'none';
-    body.style.display = isOpen ? 'none' : 'flex';
-    localStorage.setItem('piano_open_' + pianoId, isOpen ? '0' : '1');
-  }
-}
-
-function toggleStanzaInline(stanzaId) {
-  const body = document.getElementById('stanza-body-inline-' + stanzaId);
-  if (body) {
-    const isOpen = body.style.display !== 'none';
-    body.style.display = isOpen ? 'none' : 'block';
-    localStorage.setItem('stanza_open_' + stanzaId, isOpen ? '0' : '1');
-  }
-}
-
-function caricaPlanimetriaInline(fileInput) {
-  // Carica planimetria (inline version)
-  const file = fileInput.files[0];
-  if (!file) return;
-  
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    const b64 = e.target.result.split(',')[1];
-    const statusEl = document.getElementById('planimetria-status-inline');
-    statusEl.textContent = '⏳ Analizzando...';
-    
-    fetch('/api/analizza-planimetria', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        cantiere_id: cantiereAttivo,
-        immagine_base64: b64
-      })
-    })
-    .then(r => r.json())
-    .then(d => {
-      if (d.ok) {
-        statusEl.textContent = '✅ Planimetria caricata';
-        caricaStrutturaCantiereInline();
-      } else {
-        statusEl.textContent = '❌ ' + (d.error || 'Errore');
-      }
-    })
-    .catch(err => {
-      statusEl.textContent = '❌ Errore: ' + err.message;
-    });
-  };
-  reader.readAsDataURL(file);
 }
 
 function addCantiere() {
@@ -4820,10 +5371,7 @@ function renderInterfacciaPiani() {
             '<div style="flex:1;"><div style="font-weight:600;">[' + (voce.codice||'—') + '] ' + (voce.brand || '—') + '</div>' +
             '<div style="font-size:9px; color:#9ca3af;">' + voce.descrizione + '</div>' +
             '<div style="font-size:9px; color:#6b7280; margin-top:2px;">Qty: ' + voce.quantita + ' | €' + voce.prezzo_unitario + ' = €' + voce.subtotale.toFixed(2) + '</div></div>' +
-            '<div style="display:flex; gap:4px;">' +
-            '<button onclick="openModalAbbinamenti(' + voce.id + ', \'' + (voce.brand || '').replace(/'/g, "\\'") + '\', \'' + (voce.codice || '').replace(/'/g, "\\'") + '\', \'' + (voce.descrizione || '').replace(/'/g, "\\'") + '\')" class="btn-blue btn-sm" style="padding:2px 4px; font-size:8px; margin-bottom:0; white-space:nowrap;">✎</button>' +
             '<button onclick="cancellaVoce(' + voce.id + ', ' + stanza.id + ')" class="btn-red btn-sm" style="padding:2px 4px; font-size:8px; margin-bottom:0; white-space:nowrap;">✕</button>' +
-            '</div>' +
             '</div>';
         });
       }
@@ -4960,139 +5508,6 @@ function cancellaVoce(voceId, stanzaId) {
         alert('❌ ' + (d.error || 'Errore'));
       }
     });
-}
-
-function openModalAbbinamenti(voceId, brand, codice, descrizione) {
-  // Carica abbinamenti da /api/abbina/<codice>
-  fetch('/api/abbina/' + codice)
-    .then(r => r.json())
-    .then(d => {
-      if (d.ok) {
-        mostraModalAbbinamenti(voceId, brand, codice, descrizione, d.ufficiali || [], d.alternative || []);
-      } else {
-        alert('❌ Errore nel caricamento abbinamenti');
-      }
-    })
-    .catch(e => alert('❌ Errore: ' + e.message));
-}
-
-function mostraModalAbbinamenti(voceId, brand, codice, descrizione, ufficiali, alternative) {
-  let html = `
-    <div id="overlay-abbinamenti" style="position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:10000;">
-      <div style="background:#1e293b; border:1px solid #475569; border-radius:12px; padding:24px; max-width:700px; width:90%; max-height:80vh; overflow-y:auto; color:#e0e0e0;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; border-bottom:1px solid #475569; padding-bottom:12px;">
-          <div>
-            <h2 style="margin:0; font-size:18px; color:#60a5fa;">${descrizione || codice}</h2>
-            <p style="margin:4px 0 0 0; font-size:12px; color:#9ca3af;">${brand} • ${codice}</p>
-          </div>
-          <button onclick="chiudiModalAbbinamenti()" style="width:32px; height:32px; background:transparent; border:1px solid #475569; border-radius:6px; cursor:pointer; color:#9ca3af; font-size:18px;">✕</button>
-        </div>
-
-        <div id="abbinamenti-container" style="margin-bottom:20px;">
-          <!-- Ufficiali -->
-          ${ufficiali.length > 0 ? `
-            <div style="margin-bottom:20px;">
-              <h3 style="font-size:13px; color:#60a5fa; text-transform:uppercase; margin:0 0 12px 0;">Abbinamenti Ufficiali</h3>
-              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px;">
-                ${ufficiali.map((acc, idx) => `
-                  <div style="background:#0f172a; border:1px solid #334155; border-radius:8px; padding:12px; cursor:pointer; position:relative;">
-                    <input type="checkbox" id="abb-${idx}" class="abbinamento-checkbox" data-codice="${acc.codice || acc.id}" data-brand="${acc.brand || brand}" data-descrizione="${acc.nome || acc.descrizione || ''}" data-prezzo="${acc.prezzo_cliente || acc.prezzo || 0}" checked style="position:absolute; top:8px; right:8px; width:18px; height:18px;">
-                    <div style="font-weight:500; font-size:13px; color:#e0e0e0; margin-bottom:4px;">${acc.nome || acc.descrizione || '?'}</div>
-                    <div style="font-size:11px; color:#9ca3af; margin-bottom:6px;">${acc.brand || brand}</div>
-                    <div style="font-size:12px; color:#10b981; font-weight:500;">€${(acc.prezzo_cliente || acc.prezzo || 0).toFixed(2)}</div>
-                  </div>
-                `).join('')}
-              </div>
-            </div>
-          ` : ''}
-
-          <!-- Alternative -->
-          ${alternative.length > 0 ? `
-            <div>
-              <h3 style="font-size:13px; color:#60a5fa; text-transform:uppercase; margin:0 0 12px 0;">Abbinamenti Alternativi</h3>
-              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px;">
-                ${alternative.map((acc, idx) => `
-                  <div style="background:#0f172a; border:1px solid #334155; border-radius:8px; padding:12px; cursor:pointer; position:relative; opacity:0.8;">
-                    <input type="checkbox" id="alt-${idx}" class="abbinamento-checkbox" data-codice="${acc.codice || acc.id}" data-brand="${acc.brand || brand}" data-descrizione="${acc.nome || acc.descrizione || ''}" data-prezzo="${acc.prezzo_cliente || acc.prezzo || 0}" style="position:absolute; top:8px; right:8px; width:18px; height:18px;">
-                    <div style="font-weight:500; font-size:13px; color:#e0e0e0; margin-bottom:4px;">${acc.nome || acc.descrizione || '?'}</div>
-                    <div style="font-size:11px; color:#9ca3af; margin-bottom:4px;">${acc.brand || brand}</div>
-                    <div style="font-size:10px; color:#f59e0b; font-style:italic; margin-bottom:6px;">Alternativa</div>
-                    <div style="font-size:12px; color:#10b981; font-weight:500;">€${(acc.prezzo_cliente || acc.prezzo || 0).toFixed(2)}</div>
-                  </div>
-                `).join('')}
-              </div>
-            </div>
-          ` : ''}
-        </div>
-
-        <div style="background:#0f172a; border-left:3px solid #3b82f6; border-radius:8px; padding:12px; margin-bottom:20px;">
-          <div style="font-size:12px; color:#9ca3af; margin-bottom:4px;">Abbinamenti selezionati</div>
-          <div style="font-size:14px; font-weight:500; color:#60a5fa;" id="abbinamenti-count">0 articoli</div>
-        </div>
-
-        <div style="display:flex; gap:12px; justify-content:flex-end;">
-          <button onclick="chiudiModalAbbinamenti()" style="padding:10px 20px; border:1px solid #475569; background:transparent; border-radius:6px; cursor:pointer; color:#e0e0e0; font-weight:500;">Annulla</button>
-          <button onclick="salvaAbbinamenti(${voceId})" style="padding:10px 20px; background:#10b981; border:1px solid #10b981; border-radius:6px; cursor:pointer; color:white; font-weight:500;">✓ Aggiungi</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  document.body.insertAdjacentHTML('beforeend', html);
-  aggiornaConteggioAbbinamenti();
-  
-  // Listener per checkbox
-  document.querySelectorAll('.abbinamento-checkbox').forEach(cb => {
-    cb.addEventListener('change', aggiornaConteggioAbbinamenti);
-  });
-}
-
-function aggiornaConteggioAbbinamenti() {
-  const checked = document.querySelectorAll('.abbinamento-checkbox:checked');
-  const count = document.getElementById('abbinamenti-count');
-  if (count) {
-    count.textContent = checked.length + ' articoli';
-  }
-}
-
-function salvaAbbinamenti(voceId) {
-  const abbinamenti = [];
-  document.querySelectorAll('.abbinamento-checkbox:checked').forEach(cb => {
-    abbinamenti.push({
-      codice: cb.dataset.codice,
-      brand: cb.dataset.brand,
-      descrizione: cb.dataset.descrizione,
-      prezzo: parseFloat(cb.dataset.prezzo),
-      quantita: 1,
-      sconto: 0
-    });
-  });
-
-  if (abbinamenti.length === 0) {
-    alert('Seleziona almeno un abbinamento');
-    return;
-  }
-
-  fetch('/api/stanza_voci/' + voceId + '/abbinamenti', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ abbinamenti: abbinamenti })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
-      chiudiModalAbbinamenti();
-      loadInterfacciaPiani(cantiereAttivo);
-    } else {
-      alert('❌ ' + (d.error || 'Errore'));
-    }
-  })
-  .catch(e => alert('❌ Errore: ' + e.message));
-}
-
-function chiudiModalAbbinamenti() {
-  const overlay = document.getElementById('overlay-abbinamenti');
-  if (overlay) overlay.remove();
 }
 
 // =============================================================================
@@ -5986,16 +6401,6 @@ document.addEventListener('click', function(event) {
         chiudiModalAbbinamenti();
     }
 });
-
-// Inizializzazione rightpanel inline
-setTimeout(function() {
-  if (currentUser && currentUser.ruolo) {
-    const sel = document.getElementById('sel-cliente');
-    if (sel && currentUser.ruolo === 'superadmin') {
-      caricaClienteInline();
-    }
-  }
-}, 500);
 </script>
 
 </body>
