@@ -5629,7 +5629,7 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
       <!-- FOOTER -->
       <div style="background:#0f172e; border-top:2px solid #3b82f6; padding:16px 20px; display:flex; gap:12px; justify-content:flex-end; flex-shrink:0;">
         <button onclick="chiudiModaleAbbinamenti()" style="padding:10px 20px; background:#6b7280; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✕ Annulla</button>
-        <button onclick="salvaConAbbinamenti()" style="padding:10px 20px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi alla Stanza</button>
+        <button onclick="event.preventDefault(); event.stopPropagation(); salvaConAbbinamenti();" style="padding:10px 20px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi alla Stanza</button>
       </div>
     </div>
   `;
@@ -5783,12 +5783,19 @@ function salvaConAbbinamenti() {
 }
 
 function chiudiModaleAbbinamenti() {
+  console.log('🔴 chiudiModaleAbbinamenti() INIZIATA');
+  
   const modal = document.getElementById('modal-abbinamenti');
   if (modal) {
-    modal.remove();
+    modal.style.display = 'none';  // Nascondi prima
+    modal.remove();  // Poi rimuovi
+    console.log('✅ Modale rimosso');
   }
+  
   window._prodottoSelezionatoPerAbbinamenti = null;
   window._abbinamenti_selezionati = [];
+  
+  console.log('✅ State resettato');
 }
 
 function aggiungiAlCarrello(idx) {
