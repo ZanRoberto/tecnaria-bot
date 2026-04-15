@@ -715,31 +715,51 @@ def get_struttura_piani(cid):
 
 @app.route('/api/stanze/<int:sid>/voci', methods=['POST'])
 def add_voce(sid):
-    """POST aggiunge voce a stanza"""
+    """POST aggiunge voce a stanza + eventuali abbinamenti selezionati"""
     try:
         data = request.get_json()
         
-        # Calcola subtotale
+        # Calcola subtotale padre
         qty = float(data.get('quantita', 1))
         prezzo = float(data.get('prezzo_unitario', 0))
         sconto = float(data.get('sconto_percentuale', 0))
         sub = calcola_subtotale(prezzo, qty, sconto)
         
+        now = datetime.now().isoformat()
+        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
+        # INSERT prodotto padre
         c.execute("""INSERT INTO stanza_voci 
                     (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   (sid, data.get('codice', ''), data.get('brand', ''), data.get('descrizione', ''),
-                   qty, prezzo, sconto, sub, data.get('colore', 'verde'),
-                   datetime.now().isoformat(), datetime.now().isoformat()))
+                   qty, prezzo, sconto, sub, data.get('colore', 'verde'), now, now))
+        
+        # INSERT abbinamenti selezionati (lista di oggetti {codice, nome, prezzo, brand})
+        abbinamenti = data.get('abbinamenti_selezionati', [])
+        if isinstance(abbinamenti, list):
+            for acc in abbinamenti:
+                if not isinstance(acc, dict):
+                    continue
+                acc_codice = acc.get('codice') or acc.get('accessorio_id') or ''
+                acc_nome = acc.get('nome', '')
+                acc_brand = acc.get('brand', data.get('brand', ''))
+                acc_prezzo = float(acc.get('prezzo', 0) or 0)
+                acc_desc = f"[{acc_codice}] {acc_nome}" if acc_codice else acc_nome
+                acc_sub = calcola_subtotale(acc_prezzo, 1, 0)
+                c.execute("""INSERT INTO stanza_voci 
+                            (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          (sid, acc_codice, acc_brand, acc_desc,
+                           1, acc_prezzo, 0, acc_sub, 'blu', now, now))
         
         conn.commit()
         conn.close()
         
         ricalcola_totali_stanza(sid)
-        return jsonify({'ok': True})
+        return jsonify({'ok': True, 'abbinamenti_aggiunti': len(abbinamenti) if isinstance(abbinamenti, list) else 0})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -5502,6 +5522,7 @@ function apriModaleAbbinamenti(idx) {
   // Salva state per il modale
   window._prodottoSelezionatoPerAbbinamenti = prodotto;
   window._abbinamenti_selezionati = [];
+  window._abbinamenti_correnti = [];
   
   // Carica abbinamenti da API
   fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(prodotto.codice))
@@ -5516,6 +5537,10 @@ function apriModaleAbbinamenti(idx) {
 }
 
 function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
+  // Salva abbinamenti correnti per accesso da toggleAbbinamento
+  window._abbinamenti_correnti = abbinamenti;
+  window._abbinamenti_selezionati = [];
+  
   const modalHtml = `
     <div id="modal-abbinamenti" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:7000; display:flex; flex-direction:column; padding:0; overflow:hidden;">
       
@@ -5579,9 +5604,8 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
               : 
               abbinamenti.map((a, aidx) => `
                 <div id="abbinamento-${aidx}" style="background:#1e293b; border:2px solid #334155; border-radius:6px; padding:10px; cursor:pointer; transition:all 0.2s;" 
-                     onclick="toggleAbbinamento(${aidx})" 
                      onmouseover="this.style.borderColor='#3b82f6'" 
-                     onmouseout="this.style.borderColor='#334155'">
+                     onmouseout="if(!document.getElementById('check-${aidx}').checked) this.style.borderColor='#334155'">
                   
                   <!-- Immagine abbinamento -->
                   <div style="width:100%; aspect-ratio:1; background:rgba(59,130,245,0.1); border-radius:4px; display:flex; align-items:center; justify-content:center; margin-bottom:8px; overflow:hidden;">
@@ -5595,7 +5619,7 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
                   <!-- Checkbox -->
                   <div style="display:flex; align-items:center; margin-bottom:6px;">
                     <input type="checkbox" id="check-${aidx}" style="width:16px; height:16px; cursor:pointer;" 
-                           onchange="toggleAbbinamento(${aidx})">
+                           onchange="toggleAbbinamento(${aidx}, this)">
                     <label for="check-${aidx}" style="flex:1; margin-left:6px; font-size:10px; font-weight:bold; color:#d1d5db; cursor:pointer;">Seleziona</label>
                   </div>
                   
@@ -5621,18 +5645,26 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
   document.body.insertAdjacentHTML('beforeend', modalHtml);
 }
 
-function toggleAbbinamento(idx) {
-  const checkbox = document.getElementById('check-' + idx);
+function toggleAbbinamento(idx, checkbox) {
+  if (!checkbox) checkbox = document.getElementById('check-' + idx);
   const card = document.getElementById('abbinamento-' + idx);
   
   if (checkbox.checked) {
-    window._abbinamenti_selezionati.push(idx);
-    card.style.borderColor = '#10b981';
-    card.style.background = 'rgba(16,185,129,0.1)';
+    // Salva oggetto completo dall'array abbinamenti
+    const abbData = window._abbinamenti_correnti ? window._abbinamenti_correnti[idx] : null;
+    if (abbData && !window._abbinamenti_selezionati.find(x => x._idx === idx)) {
+      window._abbinamenti_selezionati.push({...abbData, _idx: idx});
+    }
+    if (card) {
+      card.style.borderColor = '#10b981';
+      card.style.background = 'rgba(16,185,129,0.1)';
+    }
   } else {
-    window._abbinamenti_selezionati = window._abbinamenti_selezionati.filter(x => x !== idx);
-    card.style.borderColor = '#334155';
-    card.style.background = '#1e293b';
+    window._abbinamenti_selezionati = window._abbinamenti_selezionati.filter(x => x._idx !== idx);
+    if (card) {
+      card.style.borderColor = '#334155';
+      card.style.background = '#1e293b';
+    }
   }
 }
 
@@ -5674,22 +5706,25 @@ function salvaConAbbinamenti() {
   const stanzaId = window._gridStanzaId;
   const brand = window._gridBrandStanza;
   
-  if (!prodotto || !stanzaId) return;
+  if (!prodotto || !stanzaId) {
+    alert('Errore: dati stanza mancanti');
+    return;
+  }
   
   const descArricchita = document.getElementById('desc-arricchita').value.trim() || 
                          ((prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || ''));
   
-  // Carica abbinamenti selezionati
-  const abbinamenti_list = [];
+  // FIX: usa let, non const — e manda oggetti completi
+  let abbinamenti_list = [];
   if (window._abbinamenti_selezionati && window._abbinamenti_selezionati.length > 0) {
-    // Se hai modo di ottenere i dati completi, usa quelli
-    // Per adesso, salva solo gli indici
     abbinamenti_list = window._abbinamenti_selezionati;
   }
   
   const prezzo = prodotto.prezzo || 0;
   
-  // Salva nella stanza
+  console.log('💾 Salvo padre + ' + abbinamenti_list.length + ' abbinamenti in stanza', stanzaId);
+  
+  // Un solo POST: padre + abbinamenti tutti insieme
   fetch('/api/stanze/' + stanzaId + '/voci', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -5701,7 +5736,6 @@ function salvaConAbbinamenti() {
       prezzo_unitario: prezzo,
       sconto_percentuale: 0,
       colore: 'verde',
-      immagine_url: prodotto.immagine_url || '',
       abbinamenti_selezionati: abbinamenti_list
     })
   })
@@ -5709,11 +5743,17 @@ function salvaConAbbinamenti() {
   .then(d => {
     if (d.ok) {
       chiudiModaleAbbinamenti();
-      alert('✓ Aggiunto con abbinamenti: ' + (prodotto.nome || 'Prodotto'));
+      const msg = abbinamenti_list.length > 0 
+        ? `✓ ${prodotto.nome} + ${d.abbinamenti_aggiunti} abbinamenti aggiunti`
+        : `✓ ${prodotto.nome} aggiunto`;
+      alert(msg);
+      // Ricarica struttura piani se disponibile
+      if (typeof caricaStrutturaPiani === 'function') caricaStrutturaPiani();
     } else {
       alert('❌ ' + (d.error || 'Errore'));
     }
-  });
+  })
+  .catch(e => alert('❌ Errore rete: ' + e));
 }
 
 function chiudiModaleAbbinamenti() {
