@@ -3026,7 +3026,7 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
 </div>
 
 <!-- DRAWER PIANI/STANZE/VOCI (NASCOSTO FINCHE NON CLICCHI SWITCH) -->
-<div class="cantiere-drawer" id="cantiere-drawer-piani" style="display:none; position:relative;">
+<div class="cantiere-drawer" id="cantiere-drawer-piani" style="display:none;">
   <div class="drawer-header">
     <div>
       <div class="drawer-title" id="drawer-piani-nome"></div>
@@ -3039,19 +3039,6 @@ input[type=text]::placeholder, input[type=password]::placeholder { color: #6b728
   </div>
 
   <div class="drawer-body" style="display:flex; gap:8px;">
-    <!-- PANNELLO OFFERTA AI (sovrapposto, visibile solo durante generazione) -->
-    <div id="pannello-offerta-ai" style="display:none; flex-direction:column; position:absolute; top:0; left:0; right:0; bottom:60px; background:#0f172a; z-index:100; padding:16px; gap:12px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
-        <div style="font-size:13px; font-weight:bold; color:#60a5fa;">📄 Offerta Generata</div>
-        <div style="display:flex; gap:8px;">
-          <button onclick="copiaOffertaAI()" style="background:#8b5cf6; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:10px; font-weight:600;">📋 Copia</button>
-          <button onclick="chiudiOffertaAI()" style="background:#ef4444; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:10px; font-weight:600;">✕ Chiudi</button>
-        </div>
-      </div>
-      <div id="offerta-ai-output" style="flex:1; overflow-y:auto; background:rgba(30,41,59,0.8); border:1px solid #334155; border-radius:6px; padding:16px;">
-      </div>
-    </div>
-    
     <!-- SINISTRA: PIANI/STANZE -->
     <div id="pannello-piani" style="flex:1; overflow-y:auto; padding:12px; border-right:1px solid rgba(59,130,245,0.2);">
       <div style="padding:12px; background:rgba(59,130,245,0.1); border-radius:6px; color:#93c5fd; font-size:11px;">
@@ -3430,50 +3417,36 @@ function addCantiere() {
 function openCantiere(id, nome, stato) {
   cantiereAttivo = id;
   
-  // Chiudi entrambi i drawer prima
-  document.getElementById('cantiere-drawer').classList.remove('open');
-  document.getElementById('cantiere-drawer-piani').classList.remove('open');
-
-  // Legge modalita E struttura piani insieme
-  Promise.all([
-    fetch('/api/cantieri/' + id + '/modalita').then(r => r.json()),
-    fetch('/api/cantieri/' + id + '/struttura').then(r => r.json())
-  ]).then(([dm, ds]) => {
-    const modalita = dm.modalita || 'semplice';
-    const haPiani = ds.ok && ds.piani && ds.piani.length > 0;
-    
-    // Se ha già piani salvati → apri sempre in modalità PIANI
-    // anche se la modalità nel DB era 'semplice' (protezione)
-    const usaPiani = (modalita === 'piani') || haPiani;
-
-    setTimeout(() => {
-      if (!usaPiani) {
-        // DRAWER SEMPLICE
-        document.getElementById('drawer-nome').textContent = nome;
-        document.getElementById('cantiere-stato').value = stato;
-        document.getElementById('btn-switch-modalita').textContent = '🔄 PIANI';
-        document.getElementById('cantiere-drawer').style.display = 'flex';
-        document.getElementById('cantiere-drawer').classList.add('open');
-        precompilaBrandDrawer();
-        loadRighe();
-      } else {
-        // DRAWER PIANI — se ha piani, salva modalita nel DB per coerenza
-        if (haPiani && modalita !== 'piani') {
-          fetch('/api/cantieri/' + id + '/modalita', {
-            method: 'PUT', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ modalita: 'piani' })
-          });
+  // Fetch modalita PRIMA di aprire il drawer
+  fetch('/api/cantieri/' + id + '/modalita')
+    .then(r => r.json())
+    .then(d => {
+      const modalita = d.modalita || 'semplice';
+      
+      // Chiudi entrambi i drawer prima
+      document.getElementById('cantiere-drawer').classList.remove('open');
+      document.getElementById('cantiere-drawer-piani').classList.remove('open');
+      
+      setTimeout(() => {
+        if (modalita === 'semplice') {
+          // DRAWER SEMPLICE
+          document.getElementById('drawer-nome').textContent = nome;
+          document.getElementById('cantiere-stato').value = stato;
+          document.getElementById('btn-switch-modalita').textContent = '🔄 PIANI';
+          document.getElementById('cantiere-drawer').style.display = 'flex';
+          document.getElementById('cantiere-drawer').classList.add('open');
+          precompilaBrandDrawer();
+          loadRighe();
+        } else {
+          // DRAWER PIANI
+          document.getElementById('drawer-piani-nome').textContent = nome;
+          document.getElementById('btn-switch-indietro').textContent = '🔄 SEMPLICE';
+          document.getElementById('cantiere-drawer-piani').style.display = 'flex';
+          document.getElementById('cantiere-drawer-piani').classList.add('open');
+          loadInterfacciaPiani(id);
         }
-        document.getElementById('drawer-piani-nome').textContent = nome;
-        document.getElementById('btn-switch-indietro').textContent = '🔄 SEMPLICE';
-        document.getElementById('cantiere-drawer-piani').style.display = 'flex';
-        document.getElementById('cantiere-drawer-piani').classList.add('open');
-        // Usa i dati già caricati invece di rifetchare
-        pianiBrowserData = ds.piani || [];
-        renderInterfacciaPiani();
-      }
-    }, 50);
-  });
+      }, 50);
+    });
 }
 
 function switchModalita() {
@@ -3763,28 +3736,6 @@ function generaOffertaCantiere() {
 // GENERA OFFERTA AI — MODALITA PIANI
 // ============================================================================
 
-function chiudiOffertaAI() {
-  document.getElementById('pannello-offerta-ai').style.display = 'none';
-  document.getElementById('pannello-piani').style.display = '';
-}
-
-function copiaOffertaAI() {
-  const output = document.getElementById('offerta-ai-output');
-  if (!output) return;
-  const testo = output.innerText || output.textContent;
-  navigator.clipboard.writeText(testo).then(() => {
-    alert('✓ Offerta copiata negli appunti');
-  }).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = testo;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    alert('✓ Offerta copiata');
-  });
-}
-
 function generaOffertaPiani() {
   if (!cantiereAttivo) {
     alert('❌ Nessun cantiere selezionato');
@@ -3882,32 +3833,14 @@ BRANDS PROPOSTI: ${brandsArray.join(', ') || 'Vari'}
 
 Genera il testo da presentare direttamente al cliente.`;
       
-      // Mostra pannello offerta DENTRO il drawer piani — no chiusura
-      const pannelloOfferta = document.getElementById('pannello-offerta-ai');
-      if (pannelloOfferta) {
-        pannelloOfferta.style.display = 'flex';
-        document.getElementById('pannello-piani').style.display = 'none';
-        document.getElementById('offerta-ai-output').innerHTML = 
-          '<div style="color:#93c5fd; font-style:italic; padding:20px; text-align:center;">⏳ Oracolo sta elaborando l\'offerta...</div>';
-      }
+      console.log('💬 Prompt creato, lunghezza:', domanda.length);
       
-      fetch('/api/ask', { 
-        method: 'POST', 
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ question: domanda, brands: brandsArray, web: false, access_code: '' }) 
-      })
-      .then(r => r.json())
-      .then(d => {
-        const output = document.getElementById('offerta-ai-output');
-        if (output) {
-          const testo = d.answer || 'Nessuna risposta';
-          output.innerHTML = '<div style="font-size:11px; line-height:1.7; color:#e0e0e0; white-space:pre-wrap;">' + testo.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>';
-        }
-      })
-      .catch(e => {
-        const output = document.getElementById('offerta-ai-output');
-        if (output) output.innerHTML = '<div style="color:#ef4444;">❌ Errore: ' + e + '</div>';
-      });
+      // Chiudi il drawer e invia all'IA
+      document.getElementById('cantiere-drawer-piani').classList.remove('open');
+      setTimeout(() => {
+        console.log('📤 Invio a askDirect...');
+        askDirect(domanda, brandsArray);
+      }, 300);
     })
     .catch(e => {
       console.error('❌ ERRORE FETCH:', e);
@@ -5787,41 +5720,40 @@ function salvaConAbbinamenti() {
     abbinamenti_list = window._abbinamenti_selezionati;
   }
   
-  // Solo abbinamenti — il padre è già in stanza (aggiunto da "✓ Aggiungi")
-  if (abbinamenti_list.length === 0) {
-    chiudiModaleAbbinamenti();
-    return;
-  }
-
-  const promises = abbinamenti_list.map(acc => {
-    const acc_codice = acc.codice || acc.accessorio_id || '';
-    const acc_nome = acc.nome || '';
-    const acc_brand = acc.brand || brand;
-    const acc_prezzo = parseFloat(acc.prezzo || 0);
-    const acc_desc = acc_codice ? '[' + acc_codice + '] ' + acc_nome : acc_nome;
-    return fetch('/api/stanze/' + stanzaId + '/voci', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        codice: acc_codice,
-        brand: acc_brand,
-        descrizione: acc_desc,
-        quantita: 1,
-        prezzo_unitario: acc_prezzo,
-        sconto_percentuale: 0,
-        colore: 'blu'
-      })
-    }).then(r => r.json());
-  });
-
-  Promise.all(promises)
-    .then(results => {
-      chiudiModaleAbbinamenti();
-      const ok = results.filter(r => r.ok).length;
-      alert('✓ ' + ok + ' abbinamenti aggiunti');
-      if (typeof caricaStrutturaPiani === 'function') caricaStrutturaPiani();
+  const prezzo = prodotto.prezzo || 0;
+  
+  console.log('💾 Salvo padre + ' + abbinamenti_list.length + ' abbinamenti in stanza', stanzaId);
+  
+  // Un solo POST: padre + abbinamenti tutti insieme
+  fetch('/api/stanze/' + stanzaId + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: prodotto.codice || '',
+      brand: brand,
+      descrizione: descArricchita,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde',
+      abbinamenti_selezionati: abbinamenti_list
     })
-    .catch(e => alert('❌ Errore rete: ' + e));
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      chiudiModaleAbbinamenti();
+      const msg = abbinamenti_list.length > 0 
+        ? `✓ ${prodotto.nome} + ${d.abbinamenti_aggiunti} abbinamenti aggiunti`
+        : `✓ ${prodotto.nome} aggiunto`;
+      alert(msg);
+      // Ricarica struttura piani se disponibile
+      if (typeof caricaStrutturaPiani === 'function') caricaStrutturaPiani();
+    } else {
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  })
+  .catch(e => alert('❌ Errore rete: ' + e));
 }
 
 function chiudiModaleAbbinamenti() {
