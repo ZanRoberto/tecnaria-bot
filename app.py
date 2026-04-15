@@ -5581,6 +5581,9 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
               : 
               abbinamenti.map((a, aidx) => `
                 <div id="abbinamento-${aidx}" style="background:#1e293b; border:2px solid #334155; border-radius:6px; padding:10px; cursor:pointer; transition:all 0.2s;" 
+                     data-codice="${a.codice || ''}" 
+                     data-nome="${a.nome || ''}" 
+                     data-prezzo="${a.prezzo || 0}"
                      onclick="toggleAbbinamento(${aidx})" 
                      onmouseover="this.style.borderColor='#3b82f6'" 
                      onmouseout="this.style.borderColor='#334155'">
@@ -5627,12 +5630,32 @@ function toggleAbbinamento(idx) {
   const checkbox = document.getElementById('check-' + idx);
   const card = document.getElementById('abbinamento-' + idx);
   
+  if (!window._abbinamenti_selezionati) {
+    window._abbinamenti_selezionati = [];
+  }
+  
   if (checkbox.checked) {
-    window._abbinamenti_selezionati.push(idx);
+    // Salva i DATI veri, non solo l'indice
+    const codice = card.dataset.codice || '';
+    const nome = card.dataset.nome || '';
+    const prezzo = card.dataset.prezzo || 0;
+    
+    // Evita duplicati
+    if (!window._abbinamenti_selezionati.find(a => a.codice === codice)) {
+      window._abbinamenti_selezionati.push({
+        codice: codice,
+        nome: nome,
+        prezzo: prezzo
+      });
+    }
+    
     card.style.borderColor = '#10b981';
     card.style.background = 'rgba(16,185,129,0.1)';
   } else {
-    window._abbinamenti_selezionati = window._abbinamenti_selezionati.filter(x => x !== idx);
+    // Rimuovi per codice
+    const codice = card.dataset.codice || '';
+    window._abbinamenti_selezionati = window._abbinamenti_selezionati.filter(a => a.codice !== codice);
+    
     card.style.borderColor = '#334155';
     card.style.background = '#1e293b';
   }
@@ -5681,15 +5704,8 @@ function salvaConAbbinamenti() {
   const descArricchita = document.getElementById('desc-arricchita').value.trim() || 
                          ((prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || ''));
   
-  // ✅ CATTURA I CHECKBOX EFFETTIVI
-  const abbinamenti_list = [];
-  document.querySelectorAll('.abbinamento-checkbox:checked').forEach(cb => {
-    abbinamenti_list.push({
-      codice: cb.dataset.codice,
-      nome: cb.dataset.nome,
-      prezzo: cb.dataset.prezzo
-    });
-  });
+  // ✅ USA GLI ABBINAMENTI SELEZIONATI (da toggleAbbinamento)
+  const abbinamenti_list = window._abbinamenti_selezionati || [];
   
   const prezzo = prodotto.prezzo || 0;
   
