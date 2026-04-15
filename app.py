@@ -4974,8 +4974,13 @@ function aggiungiVoceStanza(stanzaId, stanzaNome) {
   stanzaAttivaPerCarrello = { id: stanzaId, nome: stanzaNome };
   stanzaSelezionataPiani = { id: stanzaId, nome: stanzaNome };
   
-  // Apri GRID FULLSCREEN con CARD del listino
-  apriGridProdottiStanza(brandScelto, stanzaId, stanzaNome);
+  // APRI IL LISTINO CENTRALE (quello che funziona!)
+  // Con un flag speciale per sapere che stiamo aggiungendo a una stanza
+  window._modalitaStanza = true;
+  window._stanzaAggiunta = { id: stanzaId, nome: stanzaNome };
+  
+  // Apri il listino del brand
+  apriListino(brandScelto);
 }
 
 function salvaVoceStanza() {
@@ -5257,6 +5262,35 @@ function aggiungiProdottoStanza(idx) {
   if (!window._gridProdottiStanza || !window._gridStanzaId) return;
   
   const prodotto = window._gridProdottiStanza[idx];
+  const brand = window._gridBrandStanza;
+  
+  // CONTROLLA SE CI SONO ABBINAMENTI PER QUESTO PRODOTTO
+  fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(prodotto.codice))
+    .then(r => r.json())
+    .then(d => {
+      const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
+      
+      if (abbinamenti.length > 0) {
+        // ✅ HA ABBINAMENTI → OBBLIGA A PASSARE DALLA MODALE
+        console.log('🔗 Prodotto ha ' + abbinamenti.length + ' abbinamenti. Apri modale.');
+        apriModaleAbbinamenti(idx);
+      } else {
+        // ❌ NESSUN ABBINAMENTO → AGGIUNGI DIRETTAMENTE
+        console.log('✓ Prodotto NON ha abbinamenti. Aggiungi direttamente.');
+        aggiungiProdottoSenzaAbbinamenti(idx);
+      }
+    })
+    .catch(e => {
+      // In caso di errore, aggiungi direttamente
+      console.error('Errore controllo abbinamenti, aggiungi comunque:', e);
+      aggiungiProdottoSenzaAbbinamenti(idx);
+    });
+}
+
+function aggiungiProdottoSenzaAbbinamenti(idx) {
+  if (!window._gridProdottiStanza || !window._gridStanzaId) return;
+  
+  const prodotto = window._gridProdottiStanza[idx];
   const stanzaId = window._gridStanzaId;
   const brand = window._gridBrandStanza;
   
@@ -5281,6 +5315,8 @@ function aggiungiProdottoStanza(idx) {
   .then(r => r.json())
   .then(d => {
     if (d.ok) {
+      console.log('✓ Aggiunto (senza abbinamenti):', prodotto.nome);
+      loadInterfacciaPiani(window.cantiere_attivo_id);
       alert('✓ Aggiunto: ' + (prodotto.nome || 'Prodotto'));
     } else {
       alert('❌ ' + (d.error || 'Errore'));
@@ -6226,6 +6262,13 @@ function aggiungiAccessorio(accId, accNome) {
 }
 
 function aggiungiDaListino(idx) {
+  // 🆕 SE SIAMO IN MODALITA' STANZA, AGGIUNG DIRETTAMENTE ALLA STANZA
+  if (window._modalitaStanza && window._stanzaAggiunta) {
+    aggiungiProdottoAllaStanza(idx);
+    return;
+  }
+  
+  // ALTRIMENTI: comportamento NORMALE (aggiungi al carrello cantieri)
   if (!cantiereAttivo) {
     if (confirm('Nessun cantiere aperto. Vuoi aprire il pannello cantieri?')) {
       chiudiListino();
@@ -6262,6 +6305,58 @@ function aggiungiDaListino(idx) {
     
     // Controlla abbinamenti e colora il bottone
     verificaAbbinamenti(idx, p.codice);
+  });
+}
+
+function aggiungiProdottoAllaStanza(idx) {
+  const p = listinoData[idx];
+  if (!p || !window._stanzaAggiunta) return;
+  
+  const stanza = window._stanzaAggiunta;
+  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
+  const prezzo = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
+  
+  const btn = document.getElementById('addbtn-' + idx);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  
+  // INVIA DIRETTAMENTE AL BACKEND STANZA
+  fetch('/api/stanze/' + stanza.id + '/voci', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      codice: p.codice || '',
+      brand: listinoBrand,
+      descrizione: descrizione,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde',
+      immagine_url: p.immagine_url || ''
+    })
+  })
+  .then(r => r.json())
+  .then(d => {
+    console.log('📦 Risposta aggiunta stanza:', d);
+    if (d.ok) {
+      if (btn) { btn.textContent = '✓ Aggiunto'; btn.style.background = '#10b981'; }
+      const card = document.getElementById('pcard-' + idx);
+      if (card) card.style.opacity = '0.6';
+      
+      // CHIUDI il listino e RICARICA la stanza
+      chiudiListino();
+      if (window.loadInterfacciaPiani) {
+        loadInterfacciaPiani(window.cantiere_attivo_id);
+      }
+      alert('✓ Aggiunto a ' + stanza.nome);
+    } else {
+      if (btn) { btn.textContent = '+ Aggiungi'; btn.disabled = false; }
+      alert('❌ ' + (d.error || 'Errore'));
+    }
+  })
+  .catch(e => {
+    console.error('Errore:', e);
+    if (btn) { btn.textContent = '+ Aggiungi'; btn.disabled = false; }
+    alert('❌ Errore: ' + e.message);
   });
 }
 
