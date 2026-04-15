@@ -1124,6 +1124,48 @@ def delete_cantiere(cid):
     return jsonify({"ok": True})
 
 # ---------------------------------------------------------------------------
+# API PIANI E STANZE — endpoint mancanti
+# ---------------------------------------------------------------------------
+
+@app.route('/api/cantieri/<int:cid>/piani', methods=['POST'])
+def add_piano(cid):
+    """Crea un nuovo piano nel cantiere"""
+    try:
+        data = request.get_json()
+        numero = data.get('numero', 1)
+        nome = data.get('nome', f'Piano {numero}').strip()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().isoformat()
+        c.execute("INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?,?,?,0,?,?)",
+                  (cid, numero, nome, now, now))
+        piano_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'id': piano_id})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/piani/<int:pid>/stanze', methods=['POST'])
+def add_stanza(pid):
+    """Crea una nuova stanza nel piano"""
+    try:
+        data = request.get_json()
+        nome = data.get('nome', 'Stanza').strip()
+        descrizione = data.get('descrizione', '')
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        now = datetime.now().isoformat()
+        c.execute("INSERT INTO stanze (piano_id, nome, descrizione, totale_stanza, created_at, updated_at) VALUES (?,?,?,0,?,?)",
+                  (pid, nome, descrizione, now, now))
+        stanza_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'id': stanza_id})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ---------------------------------------------------------------------------
 # API BI
 # ---------------------------------------------------------------------------
 
