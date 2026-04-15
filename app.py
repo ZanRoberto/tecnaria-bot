@@ -5627,8 +5627,14 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
 }
 
 function toggleAbbinamento(idx) {
+  console.log('🔵 toggleAbbinamento() chiamata con idx:', idx);
+  
   const checkbox = document.getElementById('check-' + idx);
   const card = document.getElementById('abbinamento-' + idx);
+  
+  console.log('✓ Checkbox trovato:', checkbox);
+  console.log('✓ Card trovata:', card);
+  console.log('✓ Card dataset:', card ? card.dataset : 'NULL');
   
   if (!window._abbinamenti_selezionati) {
     window._abbinamenti_selezionati = [];
@@ -5639,6 +5645,8 @@ function toggleAbbinamento(idx) {
     const codice = card.dataset.codice || '';
     const nome = card.dataset.nome || '';
     const prezzo = card.dataset.prezzo || 0;
+    
+    console.log('✅ AGGIUNTO abbinamento:', {codice, nome, prezzo});
     
     // Evita duplicati
     if (!window._abbinamenti_selezionati.find(a => a.codice === codice)) {
@@ -5656,9 +5664,13 @@ function toggleAbbinamento(idx) {
     const codice = card.dataset.codice || '';
     window._abbinamenti_selezionati = window._abbinamenti_selezionati.filter(a => a.codice !== codice);
     
+    console.log('❌ RIMOSSO abbinamento:', codice);
+    
     card.style.borderColor = '#334155';
     card.style.background = '#1e293b';
   }
+  
+  console.log('📊 State attuale window._abbinamenti_selezionati:', window._abbinamenti_selezionati);
 }
 
 function generaDescrizioneIA() {
@@ -5695,11 +5707,20 @@ function generaDescrizioneIA() {
 }
 
 function salvaConAbbinamenti() {
+  console.log('🟢 salvaConAbbinamenti() INIZIATA');
+  
   const prodotto = window._prodottoSelezionatoPerAbbinamenti;
   const stanzaId = window._gridStanzaId;
   const brand = window._gridBrandStanza;
   
-  if (!prodotto || !stanzaId) return;
+  console.log('📦 Prodotto:', prodotto);
+  console.log('🏠 StanzaId:', stanzaId);
+  console.log('🏢 Brand:', brand);
+  
+  if (!prodotto || !stanzaId) {
+    console.error('❌ ERRORE: Prodotto o StanzaId mancanti');
+    return;
+  }
   
   const descArricchita = document.getElementById('desc-arricchita').value.trim() || 
                          ((prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || ''));
@@ -5707,26 +5728,35 @@ function salvaConAbbinamenti() {
   // ✅ USA GLI ABBINAMENTI SELEZIONATI (da toggleAbbinamento)
   const abbinamenti_list = window._abbinamenti_selezionati || [];
   
+  console.log('🔗 Abbinamenti da salvare:', abbinamenti_list);
+  console.log('📊 Numero abbinamenti:', abbinamenti_list.length);
+  
   const prezzo = prodotto.prezzo || 0;
+  
+  const payload = {
+    codice: prodotto.codice || '',
+    brand: brand,
+    descrizione: descArricchita,
+    quantita: 1,
+    prezzo_unitario: prezzo,
+    sconto_percentuale: 0,
+    colore: 'verde',
+    immagine_url: prodotto.immagine_url || '',
+    abbinamenti_selezionati: abbinamenti_list
+  };
+  
+  console.log('📤 Payload inviato:', payload);
   
   // Salva nella stanza
   fetch('/api/stanze/' + stanzaId + '/voci', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      codice: prodotto.codice || '',
-      brand: brand,
-      descrizione: descArricchita,
-      quantita: 1,
-      prezzo_unitario: prezzo,
-      sconto_percentuale: 0,
-      colore: 'verde',
-      immagine_url: prodotto.immagine_url || '',
-      abbinamenti_selezionati: abbinamenti_list
-    })
+    body: JSON.stringify(payload)
   })
   .then(r => r.json())
   .then(d => {
+    console.log('📥 Risposta backend:', d);
+    
     if (d.ok) {
       chiudiModaleAbbinamenti();
       loadInterfacciaPiani(window.cantiere_attivo_id);
@@ -5736,6 +5766,7 @@ function salvaConAbbinamenti() {
     }
   })
   .catch(e => {
+    console.error('❌ Errore fetch:', e);
     alert('❌ Errore: ' + e.message);
   });
 }
