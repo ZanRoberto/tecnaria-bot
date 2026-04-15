@@ -5595,7 +5595,6 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
                      data-codice="${a.codice || ''}" 
                      data-nome="${a.nome || ''}" 
                      data-prezzo="${a.prezzo || 0}"
-                     onclick="toggleAbbinamento(${aidx})" 
                      onmouseover="this.style.borderColor='#3b82f6'" 
                      onmouseout="this.style.borderColor='#334155'">
                   
