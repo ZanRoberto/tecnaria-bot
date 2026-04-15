@@ -674,12 +674,12 @@ def get_struttura_piani(cid):
             stanze = []
             for sid, snome, sdescrizione, tot_stanza in stanze_rows:
                 c.execute("""SELECT id, codice, brand, descrizione, quantita, udm, prezzo_unitario, 
-                                    sconto_percentuale, sconto_fisso, subtotale
+                                    sconto_percentuale, sconto_fisso, subtotale, abbinamenti
                              FROM stanza_voci WHERE stanza_id = ? ORDER BY created_at""", (sid,))
                 voci_rows = c.fetchall()
                 
                 voci = []
-                for vid, codice, brand, descrizione, qty, udm, prezzo, sconto_perc, sconto_fisso, subtotale in voci_rows:
+                for vid, codice, brand, descrizione, qty, udm, prezzo, sconto_perc, sconto_fisso, subtotale, abbinamenti in voci_rows:
                     voci.append({
                         'id': vid,
                         'codice': codice,
@@ -690,7 +690,8 @@ def get_struttura_piani(cid):
                         'prezzo_unitario': prezzo or 0,
                         'sconto_percentuale': sconto_perc or 0,
                         'sconto_fisso': sconto_fisso or 0,
-                        'subtotale': subtotale or 0
+                        'subtotale': subtotale or 0,
+                        'abbinamenti': abbinamenti or None
                     })
                 
                 stanze.append({
@@ -5530,12 +5531,12 @@ function apriModaleAbbinamenti(idx) {
 
 function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
   const modalHtml = `
-    <div id="modal-abbinamenti" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:9999; display:flex; flex-direction:column; padding:0; overflow:hidden;">
+    <div id="modal-abbinamenti" style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:7000; display:flex; flex-direction:column; padding:0; overflow:hidden;">
       
       <!-- HEADER -->
       <div style="background:#0f172e; border-bottom:2px solid #3b82f6; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
         <div style="font-size:14px; font-weight:bold; color:#60a5fa;">🔗 Abbinamenti per: <strong>${prodotto.nome}</strong></div>
-        <button onclick="event.stopPropagation(); chiudiModaleAbbinamenti()" style="background:#ef4444; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">✕ Chiudi</button>
+        <button onclick="chiudiModaleAbbinamenti()" style="background:#ef4444; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">✕ Chiudi</button>
       </div>
       
       <!-- CONTENUTO -->
@@ -5628,8 +5629,8 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
       
       <!-- FOOTER -->
       <div style="background:#0f172e; border-top:2px solid #3b82f6; padding:16px 20px; display:flex; gap:12px; justify-content:flex-end; flex-shrink:0;">
-        <button onclick="event.stopPropagation(); chiudiModaleAbbinamenti()" style="padding:10px 20px; background:#6b7280; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✕ Annulla</button>
-        <button onclick="event.stopPropagation(); event.preventDefault(); salvaConAbbinamenti();" style="padding:10px 20px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi alla Stanza</button>
+        <button onclick="chiudiModaleAbbinamenti()" style="padding:10px 20px; background:#6b7280; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✕ Annulla</button>
+        <button onclick="event.preventDefault(); event.stopPropagation(); salvaConAbbinamenti();" style="padding:10px 20px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi alla Stanza</button>
       </div>
     </div>
   `;
