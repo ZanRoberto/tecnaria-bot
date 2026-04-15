@@ -6620,6 +6620,11 @@ fetch('/api/me').then(r => r.json()).then(d => {
         <div class="abbinamenti-section section-ufficiali" id="sezioneUfficiali"></div>
         <div class="abbinamenti-section section-alternative" id="sezioneAlternative"></div>
         <div class="abbinamenti-section section-esclusi" id="sezioneEsclusi"></div>
+        
+        <div style="display:flex; gap:10px; margin-top:20px; padding-top:15px; border-top:1px solid #e5e7eb;">
+            <button onclick="chiudiModalAbbinamenti()" style="flex:1; padding:12px; background:#d1d5db; color:#374151; border:none; border-radius:6px; cursor:pointer; font-weight:600;">Annulla</button>
+            <button onclick="aggiungiAbbinamenti()" style="flex:1; padding:12px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi Voce</button>
+        </div>
     </div>
 </div>
 
@@ -6730,9 +6735,10 @@ function creaCardAccessorio(acc, escluso = false) {
             ${htmlVincolo}
             ${htmlMotivo}
             <div class="accessorio-azioni">
-                <button class="btn-aggiungi" onclick="aggiungiAccessorio('${acc.id}')" ${escluso ? 'disabled' : ''}>
-                    ${escluso ? 'Non disponibile' : '➕ Aggiungi'}
-                </button>
+                <label style="display:flex; align-items:center; gap:8px; cursor:${escluso ? 'not-allowed' : 'pointer'};">
+                    <input type="checkbox" data-abbinamento-id="${acc.id}" ${escluso ? 'disabled' : ''} style="width:18px; height:18px;">
+                    <span>${escluso ? '❌ Non disponibile' : '✓ Seleziona'}</span>
+                </label>
             </div>
         </div>
     `;
@@ -6741,6 +6747,69 @@ function creaCardAccessorio(acc, escluso = false) {
 function aggiungiAccessorio(accessorioId) {
     console.log("Aggiunto accessorio:", accessorioId);
     alert("Accessorio aggiunto al cantiere");
+}
+
+function aggiungiAbbinamenti() {
+    // RACCOGLIAMO: 1 PADRE + N ABBINAMENTI SELEZIONATI
+    const modal = document.getElementById('modalAbbinamenti');
+    const prodPrincipaleDiv = document.getElementById('prodottoPrincipale');
+    
+    // Estrai il PADRE dal div (è il primo che abbiamo aperto)
+    const codicePadre = prodPrincipaleDiv.querySelector('.accessorio-codice')?.textContent || '';
+    const nomePadre = prodPrincipaleDiv.querySelector('.accessorio-nome')?.textContent || '';
+    const collezionePadre = prodPrincipaleDiv.querySelector('.accessorio-brand')?.textContent?.replace('Collezione: ', '') || '';
+    
+    // Raccogliamo SOLO gli abbinamenti SELEZIONATI (checkbox checked)
+    const checkboxSelezionati = Array.from(
+        document.querySelectorAll('input[data-abbinamento-id]:checked')
+    );
+    
+    if (checkboxSelezionati.length === 0) {
+        alert('Seleziona almeno un abbinamento');
+        return;
+    }
+    
+    const abbinamenti = checkboxSelezionati.map(checkbox => {
+        const card = checkbox.closest('.accessorio-card');
+        return {
+            id: checkbox.dataset.abbinamentoId,
+            codice: card.querySelector('.accessorio-codice')?.textContent || '',
+            nome: card.querySelector('.accessorio-nome')?.textContent || '',
+            brand: card.querySelector('.accessorio-brand')?.textContent || '',
+            categoria: card.querySelector('.accessorio-categoria')?.textContent || ''
+        };
+    });
+    
+    // PAYLOAD: 1 PADRE + N ABBINAMENTI (STESSA LOGICA DEL LISTINO)
+    const payload = {
+        padre: {
+            codice: codicePadre,
+            nome: nomePadre,
+            collezione: collezionePadre
+        },
+        abbinamenti: abbinamenti
+    };
+    
+    console.log('📦 Payload aggiungi abbinamenti:', payload);
+    
+    // INVIA AL BACKEND
+    fetch('/api/add-abbinamenti-voce', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            alert(`✅ Voce aggiunta: ${nomePadre} + ${abbinamenti.length} abbinamenti`);
+            chiudiModalAbbinamenti();
+            // Ricarica la tabella
+            if (window.caricaTabellaStanza) window.caricaTabellaStanza();
+        } else {
+            alert('❌ Errore: ' + (data.error || 'Sconosciuto'));
+        }
+    })
+    .catch(err => console.error('Errore:', err));
 }
 
 document.addEventListener('click', function(event) {
