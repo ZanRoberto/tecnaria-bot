@@ -5358,7 +5358,7 @@ function aggiungiProdottoSenzaAbbinamenti(idx) {
   .then(d => {
     if (d.ok) {
       console.log('✓ Aggiunto (senza abbinamenti):', prodotto.nome);
-      loadInterfacciaPiani(window.cantiere_attivo_id);
+      loadInterfacciaPiani(cantiereAttivo);
       alert('✓ Aggiunto: ' + (prodotto.nome || 'Prodotto'));
     } else {
       alert('❌ ' + (d.error || 'Errore'));
@@ -5849,7 +5849,7 @@ function salvaConAbbinamenti() {
     
     if (d.ok) {
       chiudiModaleAbbinamenti();
-      loadInterfacciaPiani(window.cantiere_attivo_id);
+      loadInterfacciaPiani(cantiereAttivo);
       alert('✓ Aggiunto con ' + abbinamenti_list.length + ' abbinamenti');
     } else {
       alert('❌ ' + (d.error || 'Errore'));
@@ -6387,7 +6387,7 @@ function aggiungiProdottoAllaStanza(idx) {
       // CHIUDI il listino e RICARICA la stanza
       chiudiListino();
       if (window.loadInterfacciaPiani) {
-        loadInterfacciaPiani(window.cantiere_attivo_id);
+        loadInterfacciaPiani(cantiereAttivo);
       }
       alert('✓ Aggiunto a ' + stanza.nome);
     } else {
