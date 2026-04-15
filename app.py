@@ -713,44 +713,8 @@ def get_struttura_piani(cid):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/stanze/<int:sid>/solo-abbinamenti', methods=['POST'])
-def add_solo_abbinamenti(sid):
-    """POST aggiunge solo abbinamenti a stanza (padre già presente)"""
-    try:
-        data = request.get_json()
-        brand = data.get('brand', '')
-        abbinamenti = data.get('abbinamenti_selezionati', [])
-        now = datetime.now().isoformat()
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        count = 0
-        for acc in abbinamenti:
-            if not isinstance(acc, dict):
-                continue
-            acc_codice = acc.get('codice') or acc.get('accessorio_id') or ''
-            acc_nome = acc.get('nome', '')
-            acc_brand = acc.get('brand', brand)
-            acc_prezzo = float(acc.get('prezzo', 0) or 0)
-            acc_desc = f"[{acc_codice}] {acc_nome}" if acc_codice else acc_nome
-            acc_sub = calcola_subtotale(acc_prezzo, 1, 0)
-            c.execute("""INSERT INTO stanza_voci 
-                        (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                      (sid, acc_codice, acc_brand, acc_desc, 1, acc_prezzo, 0, acc_sub, 'blu', now, now))
-            count += 1
-        
-        conn.commit()
-        conn.close()
-        
-        ricalcola_totali_stanza(sid)
-        return jsonify({'ok': True, 'abbinamenti_aggiunti': count})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-
+@app.route('/api/stanze/<int:sid>/voci', methods=['POST'])
+def add_voce(sid):
     """POST aggiunge voce a stanza + eventuali abbinamenti selezionati"""
     try:
         data = request.get_json()
@@ -5190,7 +5154,7 @@ function renderGridStanza(prodotti) {
             <!-- BOTTONI AZIONI -->
             <div style="display:flex; gap:6px; margin-top:auto; flex-direction:column;">
               <div style="display:flex; gap:6px;">
-                <button id="btn-abbina-${idx}" onclick="event.stopPropagation(); window._padreGiaInStanza=true; apriModaleAbbinamenti(${idx})" 
+                <button id="btn-abbina-${idx}" onclick="event.stopPropagation(); apriModaleAbbinamenti(${idx})" 
                         style="flex:1; padding:6px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s; display:none;" 
                         onmouseover="this.style.background='#dc2626'" 
                         onmouseout="this.style.background='#ef4444'">
@@ -5747,72 +5711,50 @@ function salvaConAbbinamenti() {
     return;
   }
   
+  const descArricchita = document.getElementById('desc-arricchita').value.trim() || 
+                         ((prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || ''));
+  
+  // FIX: usa let, non const — e manda oggetti completi
   let abbinamenti_list = [];
   if (window._abbinamenti_selezionati && window._abbinamenti_selezionati.length > 0) {
     abbinamenti_list = window._abbinamenti_selezionati;
   }
   
-  // _padreGiaInStanza = true quando il modale è aperto dal bottone "Abbina"
-  // (padre già inserito da aggiungiProdottoStanza) — inserisce SOLO abbinamenti
-  const padreGia = window._padreGiaInStanza === true;
-  
-  const descArricchita = document.getElementById('desc-arricchita').value.trim() || 
-                         ((prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || ''));
-  const prezzo = prodotto.prezzo || 0;
+  // Solo abbinamenti — il padre è già in stanza (aggiunto da "✓ Aggiungi")
+  if (abbinamenti_list.length === 0) {
+    chiudiModaleAbbinamenti();
+    return;
+  }
 
-  if (padreGia) {
-    // Solo abbinamenti — no re-insert padre
-    if (abbinamenti_list.length === 0) {
-      chiudiModaleAbbinamenti();
-      return;
-    }
-    fetch('/api/stanze/' + stanzaId + '/solo-abbinamenti', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ brand: brand, abbinamenti_selezionati: abbinamenti_list })
-    })
-    .then(r => r.json())
-    .then(d => {
-      if (d.ok) {
-        chiudiModaleAbbinamenti();
-        alert(`✓ ${d.abbinamenti_aggiunti} abbinamenti aggiunti`);
-        if (typeof caricaStrutturaPiani === 'function') caricaStrutturaPiani();
-      } else {
-        alert('❌ ' + (d.error || 'Errore'));
-      }
-    })
-    .catch(e => alert('❌ Errore rete: ' + e));
-  } else {
-    // Padre NON ancora in stanza — inserisce padre + abbinamenti insieme
-    fetch('/api/stanze/' + stanzaId + '/voci', {
+  const promises = abbinamenti_list.map(acc => {
+    const acc_codice = acc.codice || acc.accessorio_id || '';
+    const acc_nome = acc.nome || '';
+    const acc_brand = acc.brand || brand;
+    const acc_prezzo = parseFloat(acc.prezzo || 0);
+    const acc_desc = acc_codice ? '[' + acc_codice + '] ' + acc_nome : acc_nome;
+    return fetch('/api/stanze/' + stanzaId + '/voci', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        codice: prodotto.codice || '',
-        brand: brand,
-        descrizione: descArricchita,
+        codice: acc_codice,
+        brand: acc_brand,
+        descrizione: acc_desc,
         quantita: 1,
-        prezzo_unitario: prezzo,
+        prezzo_unitario: acc_prezzo,
         sconto_percentuale: 0,
-        colore: 'verde',
-        abbinamenti_selezionati: abbinamenti_list
+        colore: 'blu'
       })
-    })
-    .then(r => r.json())
-    .then(d => {
-      if (d.ok) {
-        chiudiModaleAbbinamenti();
-        const msg = abbinamenti_list.length > 0
-          ? `✓ ${prodotto.nome} + ${d.abbinamenti_aggiunti} abbinamenti aggiunti`
-          : `✓ ${prodotto.nome} aggiunto`;
-        alert(msg);
-        if (typeof caricaStrutturaPiani === 'function') caricaStrutturaPiani();
-      } else {
-        alert('❌ ' + (d.error || 'Errore'));
-      }
+    }).then(r => r.json());
+  });
+
+  Promise.all(promises)
+    .then(results => {
+      chiudiModaleAbbinamenti();
+      const ok = results.filter(r => r.ok).length;
+      alert('✓ ' + ok + ' abbinamenti aggiunti');
+      if (typeof caricaStrutturaPiani === 'function') caricaStrutturaPiani();
     })
     .catch(e => alert('❌ Errore rete: ' + e));
-  }
 }
 
 function chiudiModaleAbbinamenti() {
@@ -5822,7 +5764,6 @@ function chiudiModaleAbbinamenti() {
   }
   window._prodottoSelezionatoPerAbbinamenti = null;
   window._abbinamenti_selezionati = [];
-  window._padreGiaInStanza = false;
 }
 
 function aggiungiAlCarrello(idx) {
