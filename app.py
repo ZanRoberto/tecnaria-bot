@@ -4925,12 +4925,26 @@ function renderInterfacciaPiani() {
         html += '<div style="padding:6px; font-size:10px; color:#6b7280; font-style:italic;">Nessuna voce</div>';
       } else {
         voci.forEach(voce => {
-          html += '<div style="padding:5px 6px; margin:3px 0; background:rgba(59,130,245,0.1); border-radius:4px; font-size:10px; color:#e0e0e0; display:flex; justify-content:space-between; align-items:center;">' +
+          // Abbinamenti già salvati nel DB (JSON)
+          let abbHtml = '';
+          if (voce.abbinamenti) {
+            try {
+              const abbList = typeof voce.abbinamenti === 'string' ? JSON.parse(voce.abbinamenti) : voce.abbinamenti;
+              if (abbList && abbList.length > 0) {
+                abbHtml = '<div style="margin-top:4px; padding:4px 6px; background:rgba(139,92,246,0.15); border-radius:3px; border-left:2px solid #8b5cf6;">' +
+                  '<span style="font-size:8px; color:#c084fc; font-weight:700;">🔗 ABBINAMENTI: </span>' +
+                  abbList.map(a => '<span style="font-size:8px; color:#d1d5db; background:rgba(139,92,246,0.2); padding:1px 5px; border-radius:2px; margin-right:3px;">' + (a.nome || a.codice || a) + '</span>').join('') +
+                  '</div>';
+              }
+            } catch(e) {}
+          }
+          html += '<div style="padding:5px 6px; margin:3px 0; background:rgba(59,130,245,0.1); border-radius:4px; font-size:10px; color:#e0e0e0;">' +
+            '<div style="display:flex; justify-content:space-between; align-items:center;">' +
             '<div style="flex:1;"><div style="font-weight:600;">[' + (voce.codice||'—') + '] ' + (voce.brand || '—') + '</div>' +
             '<div style="font-size:9px; color:#9ca3af;">' + voce.descrizione + '</div>' +
             '<div style="font-size:9px; color:#6b7280; margin-top:2px;">Qty: ' + voce.quantita + ' | €' + voce.prezzo_unitario + ' = €' + voce.subtotale.toFixed(2) + '</div></div>' +
             '<button onclick="cancellaVoce(' + voce.id + ', ' + stanza.id + ')" class="btn-red btn-sm" style="padding:2px 4px; font-size:8px; margin-bottom:0; white-space:nowrap;">✕</button>' +
-            '</div>';
+            '</div>' + abbHtml + '</div>';
         });
       }
 
@@ -4958,6 +4972,21 @@ function toggleStanza(stanzaId) {
   const isOpen = body.style.display !== 'none';
   body.style.display = isOpen ? 'none' : 'block';
   localStorage.setItem('stanza_open_' + stanzaId, isOpen ? '0' : '1');
+  // Quando si apre una stanza, la segniamo come stanza attiva
+  if (!isOpen) {
+    // Cerca il nome della stanza dai dati in memoria
+    let nomeStanza = 'Stanza';
+    if (pianiBrowserData) {
+      pianiBrowserData.forEach(p => {
+        (p.stanze || []).forEach(s => {
+          if (s.id === stanzaId) nomeStanza = s.nome;
+        });
+      });
+    }
+    stanzaAttivaPerCarrello = { id: stanzaId, nome: nomeStanza };
+    stanzaSelezionataPiani  = { id: stanzaId, nome: nomeStanza };
+    // NON resettiamo _stanzaTarget qui — viene settato solo da + Voce
+  }
 }
 
 function aggiungiPianoUI() {
@@ -5012,15 +5041,15 @@ function aggiungiVoceStanza(stanzaId, stanzaNome) {
   // Brand FISSO dal sidebar (il primo / l'unico selezionato)
   const brandScelto = selected[0];
   
-  // State: ricorda quale stanza stiamo riempiendo
+  // Reset completo: nuova stanza = nuovo flusso pulito
   stanzaAttivaPerCarrello = { id: stanzaId, nome: stanzaNome };
-  stanzaSelezionataPiani = { id: stanzaId, nome: stanzaNome };
-  
-  // APRI IL LISTINO CENTRALE (quello che funziona!)
-  // Con un flag speciale per sapere che stiamo aggiungendo a una stanza
-  window._modalitaStanza = true;
-  window._stanzaAggiunta = { id: stanzaId, nome: stanzaNome };
-  
+  stanzaSelezionataPiani   = { id: stanzaId, nome: stanzaNome };
+  window._modalitaStanza   = true;
+  window._stanzaAggiunta   = { id: stanzaId, nome: stanzaNome };
+  window._stanzaTarget     = { id: stanzaId, nome: stanzaNome };
+  window._abbinamenti_selezionati = [];
+  window._prodottoSelezionatoPerAbbinamenti = null;
+
   // Apri il listino del brand
   apriListino(brandScelto);
 }
@@ -5239,8 +5268,9 @@ function caricaAbbinationiPerCards(prodotti) {
   
   prodotti.forEach((p, idx) => {
     fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(p.codice))
-      .then(r => r.json())
+      .then(r => { if (!r.ok) return null; return r.json(); })
       .then(d => {
+        if (!d) return;
         const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
         
         // Se ci sono abbinamenti:
@@ -5308,9 +5338,9 @@ function aggiungiProdottoStanza(idx) {
   
   // CONTROLLA SE CI SONO ABBINAMENTI PER QUESTO PRODOTTO
   fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(prodotto.codice))
-    .then(r => r.json())
+    .then(r => { if (!r.ok) return null; return r.json(); })
     .then(d => {
-      const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
+      const abbinamenti = (d && d.ok && d.abbinamenti) ? d.abbinamenti : [];
       
       if (abbinamenti.length > 0) {
         // ✅ HA ABBINAMENTI → OBBLIGA A PASSARE DALLA MODALE
@@ -5594,10 +5624,14 @@ function apriModaleAbbinamenti(idx) {
   // Salva state per il modale
   window._prodottoSelezionatoPerAbbinamenti = prodotto;
   window._abbinamenti_selezionati = [];
+  // Preserva la stanza target se arriva dal flusso + Voce
+  if (!window._stanzaTarget && window._stanzaAggiunta) {
+    window._stanzaTarget = window._stanzaAggiunta;
+  }
   
   // Carica abbinamenti da API
   fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(prodotto.codice))
-    .then(r => r.json())
+    .then(r => { if (!r.ok) return {ok:false, abbinamenti:[]}; return r.json(); })
     .then(d => {
       const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
       renderModaleAbbinamenti(prodotto, abbinamenti, brand);
@@ -5800,8 +5834,11 @@ function salvaConAbbinamenti() {
   console.log('🟢 salvaConAbbinamenti() INIZIATA');
   
   const prodotto = window._prodottoSelezionatoPerAbbinamenti;
-  const stanzaId = window._gridStanzaId;
-  const brand = window._gridBrandStanza;
+  // Usa _stanzaTarget (dal flusso +Voce) oppure _gridStanzaId (dal flusso grid modale)
+  const stanzaId = (window._stanzaTarget && window._stanzaTarget.id) 
+                    ? window._stanzaTarget.id 
+                    : window._gridStanzaId;
+  const brand = window._gridBrandStanza || (window._stanzaTarget ? listinoBrand : '');
   
   console.log('📦 Prodotto:', prodotto);
   console.log('🏠 StanzaId:', stanzaId);
@@ -5873,7 +5910,9 @@ function chiudiModaleAbbinamenti() {
   
   window._prodottoSelezionatoPerAbbinamenti = null;
   window._abbinamenti_selezionati = [];
-  
+  window._stanzaTarget = null;
+  window._modalitaStanza = false;
+  window._stanzaAggiunta = null;
   console.log('✅ State resettato');
 }
 
@@ -6352,9 +6391,8 @@ function aggiungiDaListino(idx) {
 
 function aggiungiProdottoAllaStanza(idx) {
   const p = listinoData[idx];
-  if (!p || !window._stanzaAggiunta) return;
-  
-  const stanza = window._stanzaAggiunta;
+  const stanza = window._stanzaTarget || window._stanzaAggiunta;
+  if (!p || !stanza) return;
   const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
   const prezzo = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
   
@@ -6404,38 +6442,23 @@ function aggiungiProdottoAllaStanza(idx) {
 
 function verificaAbbinamenti(idx, codice) {
   if (!codice) return;
-  
-  // Fetch diretto — controlla se abbinamenti sono nel DB
   fetch('/api/abbina/' + encodeURIComponent(codice))
-    .then(r => r.json())
+    .then(r => { if (!r.ok) return null; return r.json(); })
     .then(d => {
+      if (!d) return;
       const btn = document.getElementById('abbina-btn-' + idx);
       if (!btn) return;
-      
-      // Se ha abbinamenti ufficiali O alternative
-      const hasAbbinamenti = (d.ufficiali && d.ufficiali.length > 0) || 
-                             (d.alternative && d.alternative.length > 0);
-      
+      const hasAbbinamenti = (d.ufficiali && d.ufficiali.length > 0) || (d.alternative && d.alternative.length > 0);
       if (hasAbbinamenti) {
-        // 🔴 ROSSO - Ha abbinamenti
-        btn.style.background = '#ef4444';
-        btn.style.color = 'white';
-        btn.style.cursor = 'pointer';
-        btn.disabled = false;
+        btn.style.background = '#ef4444'; btn.style.color = 'white';
+        btn.style.cursor = 'pointer'; btn.disabled = false;
         btn.onclick = () => apriModalAbbinamenti(codice, d);
       } else {
-        // 🔘 Grigio - No abbinamenti
-        btn.style.background = 'rgba(107,114,128,0.3)';
-        btn.style.color = '#d1d5db';
-        btn.style.cursor = 'not-allowed';
-        btn.disabled = true;
+        btn.style.background = 'rgba(107,114,128,0.3)'; btn.style.color = '#d1d5db';
+        btn.style.cursor = 'not-allowed'; btn.disabled = true;
       }
     })
-    .catch(e => {
-      console.error('Errore verifica:', e);
-      const btn = document.getElementById('abbina-btn-' + idx);
-      if (btn) btn.style.background = 'rgba(107,114,128,0.3)';
-    });
+    .catch(() => {});
 }
 
 function apriModalAbbinamenti(codice, data) {
