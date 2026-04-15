@@ -152,7 +152,6 @@ def init_db():
         colore TEXT DEFAULT 'verde',
         note TEXT,
         immagine_b64 TEXT,
-        abbinamenti TEXT,
         created_at TEXT,
         updated_at TEXT,
         FOREIGN KEY (stanza_id) REFERENCES stanze(id)
@@ -674,12 +673,12 @@ def get_struttura_piani(cid):
             stanze = []
             for sid, snome, sdescrizione, tot_stanza in stanze_rows:
                 c.execute("""SELECT id, codice, brand, descrizione, quantita, udm, prezzo_unitario, 
-                                    sconto_percentuale, sconto_fisso, subtotale, abbinamenti
+                                    sconto_percentuale, sconto_fisso, subtotale
                              FROM stanza_voci WHERE stanza_id = ? ORDER BY created_at""", (sid,))
                 voci_rows = c.fetchall()
                 
                 voci = []
-                for vid, codice, brand, descrizione, qty, udm, prezzo, sconto_perc, sconto_fisso, subtotale, abbinamenti in voci_rows:
+                for vid, codice, brand, descrizione, qty, udm, prezzo, sconto_perc, sconto_fisso, subtotale in voci_rows:
                     voci.append({
                         'id': vid,
                         'codice': codice,
@@ -690,8 +689,7 @@ def get_struttura_piani(cid):
                         'prezzo_unitario': prezzo or 0,
                         'sconto_percentuale': sconto_perc or 0,
                         'sconto_fisso': sconto_fisso or 0,
-                        'subtotale': subtotale or 0,
-                        'abbinamenti': abbinamenti or None
+                        'subtotale': subtotale or 0
                     })
                 
                 stanze.append({
@@ -727,33 +725,21 @@ def add_voce(sid):
         sconto = float(data.get('sconto_percentuale', 0))
         sub = calcola_subtotale(prezzo, qty, sconto)
         
-        # Abbinamenti da salvare
-        abbinamenti = data.get('abbinamenti_selezionati', [])
-        abbinamenti_json = json.dumps(abbinamenti)
-        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
         c.execute("""INSERT INTO stanza_voci 
-                    (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore, abbinamenti, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (stanza_id, codice, brand, descrizione, quantita, prezzo_unitario, sconto_percentuale, subtotale, colore, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   (sid, data.get('codice', ''), data.get('brand', ''), data.get('descrizione', ''),
                    qty, prezzo, sconto, sub, data.get('colore', 'verde'),
-                   abbinamenti_json,
                    datetime.now().isoformat(), datetime.now().isoformat()))
         
-        voce_id = c.lastrowid
         conn.commit()
         conn.close()
         
         ricalcola_totali_stanza(sid)
-        
-        # ✅ RITORNA ANCHE GLI ABBINAMENTI SALVATI
-        return jsonify({
-            'ok': True,
-            'voce_id': voce_id,
-            'abbinamenti': abbinamenti
-        })
+        return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1122,48 +1108,6 @@ def delete_cantiere(cid):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
-
-# ---------------------------------------------------------------------------
-# API PIANI E STANZE — endpoint mancanti
-# ---------------------------------------------------------------------------
-
-@app.route('/api/cantieri/<int:cid>/piani', methods=['POST'])
-def add_piano(cid):
-    """Crea un nuovo piano nel cantiere"""
-    try:
-        data = request.get_json()
-        numero = data.get('numero', 1)
-        nome = data.get('nome', f'Piano {numero}').strip()
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        now = datetime.now().isoformat()
-        c.execute("INSERT INTO piani (cantiere_id, numero, nome, totale_piano, created_at, updated_at) VALUES (?,?,?,0,?,?)",
-                  (cid, numero, nome, now, now))
-        piano_id = c.lastrowid
-        conn.commit()
-        conn.close()
-        return jsonify({'ok': True, 'id': piano_id})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/piani/<int:pid>/stanze', methods=['POST'])
-def add_stanza(pid):
-    """Crea una nuova stanza nel piano"""
-    try:
-        data = request.get_json()
-        nome = data.get('nome', 'Stanza').strip()
-        descrizione = data.get('descrizione', '')
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        now = datetime.now().isoformat()
-        c.execute("INSERT INTO stanze (piano_id, nome, descrizione, totale_stanza, created_at, updated_at) VALUES (?,?,?,0,?,?)",
-                  (pid, nome, descrizione, now, now))
-        stanza_id = c.lastrowid
-        conn.commit()
-        conn.close()
-        return jsonify({'ok': True, 'id': stanza_id})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 # ---------------------------------------------------------------------------
 # API BI
@@ -4925,26 +4869,12 @@ function renderInterfacciaPiani() {
         html += '<div style="padding:6px; font-size:10px; color:#6b7280; font-style:italic;">Nessuna voce</div>';
       } else {
         voci.forEach(voce => {
-          // Abbinamenti già salvati nel DB (JSON)
-          let abbHtml = '';
-          if (voce.abbinamenti) {
-            try {
-              const abbList = typeof voce.abbinamenti === 'string' ? JSON.parse(voce.abbinamenti) : voce.abbinamenti;
-              if (abbList && abbList.length > 0) {
-                abbHtml = '<div style="margin-top:4px; padding:4px 6px; background:rgba(139,92,246,0.15); border-radius:3px; border-left:2px solid #8b5cf6;">' +
-                  '<span style="font-size:8px; color:#c084fc; font-weight:700;">🔗 ABBINAMENTI: </span>' +
-                  abbList.map(a => '<span style="font-size:8px; color:#d1d5db; background:rgba(139,92,246,0.2); padding:1px 5px; border-radius:2px; margin-right:3px;">' + (a.nome || a.codice || a) + '</span>').join('') +
-                  '</div>';
-              }
-            } catch(e) {}
-          }
-          html += '<div style="padding:5px 6px; margin:3px 0; background:rgba(59,130,245,0.1); border-radius:4px; font-size:10px; color:#e0e0e0;">' +
-            '<div style="display:flex; justify-content:space-between; align-items:center;">' +
+          html += '<div style="padding:5px 6px; margin:3px 0; background:rgba(59,130,245,0.1); border-radius:4px; font-size:10px; color:#e0e0e0; display:flex; justify-content:space-between; align-items:center;">' +
             '<div style="flex:1;"><div style="font-weight:600;">[' + (voce.codice||'—') + '] ' + (voce.brand || '—') + '</div>' +
             '<div style="font-size:9px; color:#9ca3af;">' + voce.descrizione + '</div>' +
             '<div style="font-size:9px; color:#6b7280; margin-top:2px;">Qty: ' + voce.quantita + ' | €' + voce.prezzo_unitario + ' = €' + voce.subtotale.toFixed(2) + '</div></div>' +
             '<button onclick="cancellaVoce(' + voce.id + ', ' + stanza.id + ')" class="btn-red btn-sm" style="padding:2px 4px; font-size:8px; margin-bottom:0; white-space:nowrap;">✕</button>' +
-            '</div>' + abbHtml + '</div>';
+            '</div>';
         });
       }
 
@@ -4972,21 +4902,6 @@ function toggleStanza(stanzaId) {
   const isOpen = body.style.display !== 'none';
   body.style.display = isOpen ? 'none' : 'block';
   localStorage.setItem('stanza_open_' + stanzaId, isOpen ? '0' : '1');
-  // Quando si apre una stanza, la segniamo come stanza attiva
-  if (!isOpen) {
-    // Cerca il nome della stanza dai dati in memoria
-    let nomeStanza = 'Stanza';
-    if (pianiBrowserData) {
-      pianiBrowserData.forEach(p => {
-        (p.stanze || []).forEach(s => {
-          if (s.id === stanzaId) nomeStanza = s.nome;
-        });
-      });
-    }
-    stanzaAttivaPerCarrello = { id: stanzaId, nome: nomeStanza };
-    stanzaSelezionataPiani  = { id: stanzaId, nome: nomeStanza };
-    // NON resettiamo _stanzaTarget qui — viene settato solo da + Voce
-  }
 }
 
 function aggiungiPianoUI() {
@@ -5041,17 +4956,12 @@ function aggiungiVoceStanza(stanzaId, stanzaNome) {
   // Brand FISSO dal sidebar (il primo / l'unico selezionato)
   const brandScelto = selected[0];
   
-  // Reset completo: nuova stanza = nuovo flusso pulito
+  // State: ricorda quale stanza stiamo riempiendo
   stanzaAttivaPerCarrello = { id: stanzaId, nome: stanzaNome };
-  stanzaSelezionataPiani   = { id: stanzaId, nome: stanzaNome };
-  window._modalitaStanza   = true;
-  window._stanzaAggiunta   = { id: stanzaId, nome: stanzaNome };
-  window._stanzaTarget     = { id: stanzaId, nome: stanzaNome };
-  window._abbinamenti_selezionati = [];
-  window._prodottoSelezionatoPerAbbinamenti = null;
-
-  // Apri il listino del brand
-  apriListino(brandScelto);
+  stanzaSelezionataPiani = { id: stanzaId, nome: stanzaNome };
+  
+  // Apri GRID FULLSCREEN con CARD del listino
+  apriGridProdottiStanza(brandScelto, stanzaId, stanzaNome);
 }
 
 function salvaVoceStanza() {
@@ -5268,9 +5178,8 @@ function caricaAbbinationiPerCards(prodotti) {
   
   prodotti.forEach((p, idx) => {
     fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(p.codice))
-      .then(r => { if (!r.ok) return null; return r.json(); })
+      .then(r => r.json())
       .then(d => {
-        if (!d) return;
         const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
         
         // Se ci sono abbinamenti:
@@ -5334,35 +5243,6 @@ function aggiungiProdottoStanza(idx) {
   if (!window._gridProdottiStanza || !window._gridStanzaId) return;
   
   const prodotto = window._gridProdottiStanza[idx];
-  const brand = window._gridBrandStanza;
-  
-  // CONTROLLA SE CI SONO ABBINAMENTI PER QUESTO PRODOTTO
-  fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(prodotto.codice))
-    .then(r => { if (!r.ok) return null; return r.json(); })
-    .then(d => {
-      const abbinamenti = (d && d.ok && d.abbinamenti) ? d.abbinamenti : [];
-      
-      if (abbinamenti.length > 0) {
-        // ✅ HA ABBINAMENTI → OBBLIGA A PASSARE DALLA MODALE
-        console.log('🔗 Prodotto ha ' + abbinamenti.length + ' abbinamenti. Apri modale.');
-        apriModaleAbbinamenti(idx);
-      } else {
-        // ❌ NESSUN ABBINAMENTO → AGGIUNGI DIRETTAMENTE
-        console.log('✓ Prodotto NON ha abbinamenti. Aggiungi direttamente.');
-        aggiungiProdottoSenzaAbbinamenti(idx);
-      }
-    })
-    .catch(e => {
-      // In caso di errore, aggiungi direttamente
-      console.error('Errore controllo abbinamenti, aggiungi comunque:', e);
-      aggiungiProdottoSenzaAbbinamenti(idx);
-    });
-}
-
-function aggiungiProdottoSenzaAbbinamenti(idx) {
-  if (!window._gridProdottiStanza || !window._gridStanzaId) return;
-  
-  const prodotto = window._gridProdottiStanza[idx];
   const stanzaId = window._gridStanzaId;
   const brand = window._gridBrandStanza;
   
@@ -5387,8 +5267,6 @@ function aggiungiProdottoSenzaAbbinamenti(idx) {
   .then(r => r.json())
   .then(d => {
     if (d.ok) {
-      console.log('✓ Aggiunto (senza abbinamenti):', prodotto.nome);
-      loadInterfacciaPiani(cantiereAttivo);
       alert('✓ Aggiunto: ' + (prodotto.nome || 'Prodotto'));
     } else {
       alert('❌ ' + (d.error || 'Errore'));
@@ -5468,8 +5346,8 @@ function apriModaleImmagine(idx) {
   
   document.body.insertAdjacentHTML('beforeend', modalHtml);
   
-  // RICERCA AUTOMATICA subito
-  cercaImmaginiAutomatica(idx, prodotto, brand);
+  // RICERCA AUTOMATICA disabilitata temporaneamente (manca endpoint /api/cerca-immagine-prodotto)
+  // cercaImmaginiAutomatica(idx, prodotto, brand);
 }
 
 function cercaImmaginiAutomatica(idx, prodotto, brand) {
@@ -5624,14 +5502,10 @@ function apriModaleAbbinamenti(idx) {
   // Salva state per il modale
   window._prodottoSelezionatoPerAbbinamenti = prodotto;
   window._abbinamenti_selezionati = [];
-  // Preserva la stanza target se arriva dal flusso + Voce
-  if (!window._stanzaTarget && window._stanzaAggiunta) {
-    window._stanzaTarget = window._stanzaAggiunta;
-  }
   
   // Carica abbinamenti da API
   fetch('/api/abbinamenti/' + encodeURIComponent(brand) + '/' + encodeURIComponent(prodotto.codice))
-    .then(r => { if (!r.ok) return {ok:false, abbinamenti:[]}; return r.json(); })
+    .then(r => r.json())
     .then(d => {
       const abbinamenti = (d.ok && d.abbinamenti) ? d.abbinamenti : [];
       renderModaleAbbinamenti(prodotto, abbinamenti, brand);
@@ -5705,9 +5579,6 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
               : 
               abbinamenti.map((a, aidx) => `
                 <div id="abbinamento-${aidx}" style="background:#1e293b; border:2px solid #334155; border-radius:6px; padding:10px; cursor:pointer; transition:all 0.2s;" 
-                     data-codice="${a.codice || ''}" 
-                     data-nome="${a.nome || ''}" 
-                     data-prezzo="${a.prezzo || 0}"
                      onclick="toggleAbbinamento(${aidx})" 
                      onmouseover="this.style.borderColor='#3b82f6'" 
                      onmouseout="this.style.borderColor='#334155'">
@@ -5742,7 +5613,7 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
       <!-- FOOTER -->
       <div style="background:#0f172e; border-top:2px solid #3b82f6; padding:16px 20px; display:flex; gap:12px; justify-content:flex-end; flex-shrink:0;">
         <button onclick="chiudiModaleAbbinamenti()" style="padding:10px 20px; background:#6b7280; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✕ Annulla</button>
-        <button onclick="event.preventDefault(); event.stopPropagation(); salvaConAbbinamenti();" style="padding:10px 20px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi alla Stanza</button>
+        <button onclick="salvaConAbbinamenti()" style="padding:10px 20px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi alla Stanza</button>
       </div>
     </div>
   `;
@@ -5751,50 +5622,18 @@ function renderModaleAbbinamenti(prodotto, abbinamenti, brand) {
 }
 
 function toggleAbbinamento(idx) {
-  console.log('🔵 toggleAbbinamento() chiamata con idx:', idx);
-  
   const checkbox = document.getElementById('check-' + idx);
   const card = document.getElementById('abbinamento-' + idx);
   
-  console.log('✓ Checkbox trovato:', checkbox);
-  console.log('✓ Card trovata:', card);
-  console.log('✓ Card dataset:', card ? card.dataset : 'NULL');
-  
-  if (!window._abbinamenti_selezionati) {
-    window._abbinamenti_selezionati = [];
-  }
-  
   if (checkbox.checked) {
-    // Salva i DATI veri, non solo l'indice
-    const codice = card.dataset.codice || '';
-    const nome = card.dataset.nome || '';
-    const prezzo = card.dataset.prezzo || 0;
-    
-    console.log('✅ AGGIUNTO abbinamento:', {codice, nome, prezzo});
-    
-    // Evita duplicati
-    if (!window._abbinamenti_selezionati.find(a => a.codice === codice)) {
-      window._abbinamenti_selezionati.push({
-        codice: codice,
-        nome: nome,
-        prezzo: prezzo
-      });
-    }
-    
+    window._abbinamenti_selezionati.push(idx);
     card.style.borderColor = '#10b981';
     card.style.background = 'rgba(16,185,129,0.1)';
   } else {
-    // Rimuovi per codice
-    const codice = card.dataset.codice || '';
-    window._abbinamenti_selezionati = window._abbinamenti_selezionati.filter(a => a.codice !== codice);
-    
-    console.log('❌ RIMOSSO abbinamento:', codice);
-    
+    window._abbinamenti_selezionati = window._abbinamenti_selezionati.filter(x => x !== idx);
     card.style.borderColor = '#334155';
     card.style.background = '#1e293b';
   }
-  
-  console.log('📊 State attuale window._abbinamenti_selezionati:', window._abbinamenti_selezionati);
 }
 
 function generaDescrizioneIA() {
@@ -5831,89 +5670,59 @@ function generaDescrizioneIA() {
 }
 
 function salvaConAbbinamenti() {
-  console.log('🟢 salvaConAbbinamenti() INIZIATA');
-  
   const prodotto = window._prodottoSelezionatoPerAbbinamenti;
-  // Usa _stanzaTarget (dal flusso +Voce) oppure _gridStanzaId (dal flusso grid modale)
-  const stanzaId = (window._stanzaTarget && window._stanzaTarget.id) 
-                    ? window._stanzaTarget.id 
-                    : window._gridStanzaId;
-  const brand = window._gridBrandStanza || (window._stanzaTarget ? listinoBrand : '');
+  const stanzaId = window._gridStanzaId;
+  const brand = window._gridBrandStanza;
   
-  console.log('📦 Prodotto:', prodotto);
-  console.log('🏠 StanzaId:', stanzaId);
-  console.log('🏢 Brand:', brand);
-  
-  if (!prodotto || !stanzaId) {
-    console.error('❌ ERRORE: Prodotto o StanzaId mancanti');
-    return;
-  }
+  if (!prodotto || !stanzaId) return;
   
   const descArricchita = document.getElementById('desc-arricchita').value.trim() || 
                          ((prodotto.codice ? '[' + prodotto.codice + '] ' : '') + (prodotto.nome || ''));
   
-  // ✅ USA GLI ABBINAMENTI SELEZIONATI (da toggleAbbinamento)
-  const abbinamenti_list = window._abbinamenti_selezionati || [];
-  
-  console.log('🔗 Abbinamenti da salvare:', abbinamenti_list);
-  console.log('📊 Numero abbinamenti:', abbinamenti_list.length);
+  // Carica abbinamenti selezionati
+  const abbinamenti_list = [];
+  if (window._abbinamenti_selezionati && window._abbinamenti_selezionati.length > 0) {
+    // Se hai modo di ottenere i dati completi, usa quelli
+    // Per adesso, salva solo gli indici
+    abbinamenti_list = window._abbinamenti_selezionati;
+  }
   
   const prezzo = prodotto.prezzo || 0;
-  
-  const payload = {
-    codice: prodotto.codice || '',
-    brand: brand,
-    descrizione: descArricchita,
-    quantita: 1,
-    prezzo_unitario: prezzo,
-    sconto_percentuale: 0,
-    colore: 'verde',
-    immagine_url: prodotto.immagine_url || '',
-    abbinamenti_selezionati: abbinamenti_list
-  };
-  
-  console.log('📤 Payload inviato:', payload);
   
   // Salva nella stanza
   fetch('/api/stanze/' + stanzaId + '/voci', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
+    body: JSON.stringify({
+      codice: prodotto.codice || '',
+      brand: brand,
+      descrizione: descArricchita,
+      quantita: 1,
+      prezzo_unitario: prezzo,
+      sconto_percentuale: 0,
+      colore: 'verde',
+      immagine_url: prodotto.immagine_url || '',
+      abbinamenti_selezionati: abbinamenti_list
+    })
   })
   .then(r => r.json())
   .then(d => {
-    console.log('📥 Risposta backend:', d);
-    
     if (d.ok) {
       chiudiModaleAbbinamenti();
-      loadInterfacciaPiani(cantiereAttivo);
-      alert('✓ Aggiunto con ' + abbinamenti_list.length + ' abbinamenti');
+      alert('✓ Aggiunto con abbinamenti: ' + (prodotto.nome || 'Prodotto'));
     } else {
       alert('❌ ' + (d.error || 'Errore'));
     }
-  })
-  .catch(e => {
-    console.error('❌ Errore fetch:', e);
-    alert('❌ Errore: ' + e.message);
   });
 }
 
 function chiudiModaleAbbinamenti() {
-  console.log('🔴 chiudiModaleAbbinamenti() INIZIATA');
-  
   const modal = document.getElementById('modal-abbinamenti');
   if (modal) {
-    modal.style.display = 'none';  // Nascondi prima
-    modal.remove();  // Poi rimuovi
-    console.log('✅ Modale rimosso');
+    modal.remove();
   }
-  
   window._prodottoSelezionatoPerAbbinamenti = null;
   window._abbinamenti_selezionati = [];
-  window._stanzaTarget = null;
-  window._modalitaStanza = false;
-  window._stanzaAggiunta = null;
-  console.log('✅ State resettato');
 }
 
 function aggiungiAlCarrello(idx) {
@@ -6343,13 +6152,6 @@ function aggiungiAccessorio(accId, accNome) {
 }
 
 function aggiungiDaListino(idx) {
-  // 🆕 SE SIAMO IN MODALITA' STANZA, AGGIUNG DIRETTAMENTE ALLA STANZA
-  if (window._modalitaStanza && window._stanzaAggiunta) {
-    aggiungiProdottoAllaStanza(idx);
-    return;
-  }
-  
-  // ALTRIMENTI: comportamento NORMALE (aggiungi al carrello cantieri)
   if (!cantiereAttivo) {
     if (confirm('Nessun cantiere aperto. Vuoi aprire il pannello cantieri?')) {
       chiudiListino();
@@ -6389,76 +6191,40 @@ function aggiungiDaListino(idx) {
   });
 }
 
-function aggiungiProdottoAllaStanza(idx) {
-  const p = listinoData[idx];
-  const stanza = window._stanzaTarget || window._stanzaAggiunta;
-  if (!p || !stanza) return;
-  const descrizione = (p.codice ? '[' + p.codice + '] ' : '') + (p.nome || p.descrizione || '');
-  const prezzo = listinoTipo === 'rivenditore' && p.prezzo_rivenditore ? p.prezzo_rivenditore : (p.prezzo || 0);
-  
-  const btn = document.getElementById('addbtn-' + idx);
-  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
-  
-  // INVIA DIRETTAMENTE AL BACKEND STANZA
-  fetch('/api/stanze/' + stanza.id + '/voci', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      codice: p.codice || '',
-      brand: listinoBrand,
-      descrizione: descrizione,
-      quantita: 1,
-      prezzo_unitario: prezzo,
-      sconto_percentuale: 0,
-      colore: 'verde',
-      immagine_url: p.immagine_url || ''
-    })
-  })
-  .then(r => r.json())
-  .then(d => {
-    console.log('📦 Risposta aggiunta stanza:', d);
-    if (d.ok) {
-      if (btn) { btn.textContent = '✓ Aggiunto'; btn.style.background = '#10b981'; }
-      const card = document.getElementById('pcard-' + idx);
-      if (card) card.style.opacity = '0.6';
-      
-      // CHIUDI il listino e RICARICA la stanza
-      chiudiListino();
-      if (window.loadInterfacciaPiani) {
-        loadInterfacciaPiani(cantiereAttivo);
-      }
-      alert('✓ Aggiunto a ' + stanza.nome);
-    } else {
-      if (btn) { btn.textContent = '+ Aggiungi'; btn.disabled = false; }
-      alert('❌ ' + (d.error || 'Errore'));
-    }
-  })
-  .catch(e => {
-    console.error('Errore:', e);
-    if (btn) { btn.textContent = '+ Aggiungi'; btn.disabled = false; }
-    alert('❌ Errore: ' + e.message);
-  });
-}
-
 function verificaAbbinamenti(idx, codice) {
   if (!codice) return;
+  
+  // Fetch diretto — controlla se abbinamenti sono nel DB
   fetch('/api/abbina/' + encodeURIComponent(codice))
-    .then(r => { if (!r.ok) return null; return r.json(); })
+    .then(r => r.json())
     .then(d => {
-      if (!d) return;
       const btn = document.getElementById('abbina-btn-' + idx);
       if (!btn) return;
-      const hasAbbinamenti = (d.ufficiali && d.ufficiali.length > 0) || (d.alternative && d.alternative.length > 0);
+      
+      // Se ha abbinamenti ufficiali O alternative
+      const hasAbbinamenti = (d.ufficiali && d.ufficiali.length > 0) || 
+                             (d.alternative && d.alternative.length > 0);
+      
       if (hasAbbinamenti) {
-        btn.style.background = '#ef4444'; btn.style.color = 'white';
-        btn.style.cursor = 'pointer'; btn.disabled = false;
+        // 🔴 ROSSO - Ha abbinamenti
+        btn.style.background = '#ef4444';
+        btn.style.color = 'white';
+        btn.style.cursor = 'pointer';
+        btn.disabled = false;
         btn.onclick = () => apriModalAbbinamenti(codice, d);
       } else {
-        btn.style.background = 'rgba(107,114,128,0.3)'; btn.style.color = '#d1d5db';
-        btn.style.cursor = 'not-allowed'; btn.disabled = true;
+        // 🔘 Grigio - No abbinamenti
+        btn.style.background = 'rgba(107,114,128,0.3)';
+        btn.style.color = '#d1d5db';
+        btn.style.cursor = 'not-allowed';
+        btn.disabled = true;
       }
     })
-    .catch(() => {});
+    .catch(e => {
+      console.error('Errore verifica:', e);
+      const btn = document.getElementById('abbina-btn-' + idx);
+      if (btn) btn.style.background = 'rgba(107,114,128,0.3)';
+    });
 }
 
 function apriModalAbbinamenti(codice, data) {
@@ -6780,11 +6546,6 @@ fetch('/api/me').then(r => r.json()).then(d => {
         <div class="abbinamenti-section section-ufficiali" id="sezioneUfficiali"></div>
         <div class="abbinamenti-section section-alternative" id="sezioneAlternative"></div>
         <div class="abbinamenti-section section-esclusi" id="sezioneEsclusi"></div>
-        
-        <div style="display:flex; gap:10px; margin-top:20px; padding-top:15px; border-top:1px solid #e5e7eb;">
-            <button onclick="chiudiModalAbbinamenti()" style="flex:1; padding:12px; background:#d1d5db; color:#374151; border:none; border-radius:6px; cursor:pointer; font-weight:600;">Annulla</button>
-            <button onclick="aggiungiAbbinamenti()" style="flex:1; padding:12px; background:#10b981; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">✓ Aggiungi Voce</button>
-        </div>
     </div>
 </div>
 
@@ -6895,10 +6656,9 @@ function creaCardAccessorio(acc, escluso = false) {
             ${htmlVincolo}
             ${htmlMotivo}
             <div class="accessorio-azioni">
-                <label style="display:flex; align-items:center; gap:8px; cursor:${escluso ? 'not-allowed' : 'pointer'};">
-                    <input type="checkbox" data-abbinamento-id="${acc.id}" ${escluso ? 'disabled' : ''} style="width:18px; height:18px;">
-                    <span>${escluso ? '❌ Non disponibile' : '✓ Seleziona'}</span>
-                </label>
+                <button class="btn-aggiungi" onclick="aggiungiAccessorio('${acc.id}')" ${escluso ? 'disabled' : ''}>
+                    ${escluso ? 'Non disponibile' : '➕ Aggiungi'}
+                </button>
             </div>
         </div>
     `;
@@ -6907,69 +6667,6 @@ function creaCardAccessorio(acc, escluso = false) {
 function aggiungiAccessorio(accessorioId) {
     console.log("Aggiunto accessorio:", accessorioId);
     alert("Accessorio aggiunto al cantiere");
-}
-
-function aggiungiAbbinamenti() {
-    // RACCOGLIAMO: 1 PADRE + N ABBINAMENTI SELEZIONATI
-    const modal = document.getElementById('modalAbbinamenti');
-    const prodPrincipaleDiv = document.getElementById('prodottoPrincipale');
-    
-    // Estrai il PADRE dal div (è il primo che abbiamo aperto)
-    const codicePadre = prodPrincipaleDiv.querySelector('.accessorio-codice')?.textContent || '';
-    const nomePadre = prodPrincipaleDiv.querySelector('.accessorio-nome')?.textContent || '';
-    const collezionePadre = prodPrincipaleDiv.querySelector('.accessorio-brand')?.textContent?.replace('Collezione: ', '') || '';
-    
-    // Raccogliamo SOLO gli abbinamenti SELEZIONATI (checkbox checked)
-    const checkboxSelezionati = Array.from(
-        document.querySelectorAll('input[data-abbinamento-id]:checked')
-    );
-    
-    if (checkboxSelezionati.length === 0) {
-        alert('Seleziona almeno un abbinamento');
-        return;
-    }
-    
-    const abbinamenti = checkboxSelezionati.map(checkbox => {
-        const card = checkbox.closest('.accessorio-card');
-        return {
-            id: checkbox.dataset.abbinamentoId,
-            codice: card.querySelector('.accessorio-codice')?.textContent || '',
-            nome: card.querySelector('.accessorio-nome')?.textContent || '',
-            brand: card.querySelector('.accessorio-brand')?.textContent || '',
-            categoria: card.querySelector('.accessorio-categoria')?.textContent || ''
-        };
-    });
-    
-    // PAYLOAD: 1 PADRE + N ABBINAMENTI (STESSA LOGICA DEL LISTINO)
-    const payload = {
-        padre: {
-            codice: codicePadre,
-            nome: nomePadre,
-            collezione: collezionePadre
-        },
-        abbinamenti: abbinamenti
-    };
-    
-    console.log('📦 Payload aggiungi abbinamenti:', payload);
-    
-    // INVIA AL BACKEND
-    fetch('/api/add-abbinamenti-voce', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (data.success) {
-            alert(`✅ Voce aggiunta: ${nomePadre} + ${abbinamenti.length} abbinamenti`);
-            chiudiModalAbbinamenti();
-            // Ricarica la tabella
-            if (window.caricaTabellaStanza) window.caricaTabellaStanza();
-        } else {
-            alert('❌ Errore: ' + (data.error || 'Sconosciuto'));
-        }
-    })
-    .catch(err => console.error('Errore:', err));
 }
 
 document.addEventListener('click', function(event) {
