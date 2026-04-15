@@ -5152,24 +5152,32 @@ function renderGridStanza(prodotti) {
             <div style="font-size:14px; color:#10b981; font-weight:bold; margin-bottom:12px;">€${p.prezzo ? parseFloat(p.prezzo).toFixed(0) : '—'}</div>
             
             <!-- BOTTONI AZIONI -->
-            <div style="display:flex; gap:6px; margin-top:auto;">
-              <button id="btn-abbina-${idx}" onclick="event.stopPropagation(); apriModaleAbbinamenti(${idx})" 
-                      style="flex:1; padding:6px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s; display:none;" 
-                      onmouseover="this.style.background='#dc2626'" 
-                      onmouseout="this.style.background='#ef4444'">
-                🔗 Abbina
-              </button>
-              <button onclick="event.stopPropagation(); aggiungiProdottoStanza(${idx})" 
-                      style="flex:1; padding:6px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
-                      onmouseover="this.style.background='#2563eb'" 
-                      onmouseout="this.style.background='#3b82f6'">
-                📦 Carica Prodotto
-              </button>
+            <div style="display:flex; gap:6px; margin-top:auto; flex-direction:column;">
+              <div style="display:flex; gap:6px;">
+                <button id="btn-abbina-${idx}" onclick="event.stopPropagation(); apriModaleAbbinamenti(${idx})" 
+                        style="flex:1; padding:6px; background:#ef4444; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s; display:none;" 
+                        onmouseover="this.style.background='#dc2626'" 
+                        onmouseout="this.style.background='#ef4444'">
+                  🔗 Abbina
+                </button>
+                <button onclick="event.stopPropagation(); aggiungiProdottoStanza(${idx})" 
+                        style="flex:1; padding:6px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                        onmouseover="this.style.background='#2563eb'" 
+                        onmouseout="this.style.background='#3b82f6'">
+                  📦 Carica Prodotto
+                </button>
+                <button onclick="event.stopPropagation(); aggiungiAlCarrello(${idx})" 
+                        style="flex:1; padding:6px; background:#10b981; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                        onmouseover="this.style.background='#059669'" 
+                        onmouseout="this.style.background='#10b981'">
+                  🛒 Carrello
+                </button>
+              </div>
               <button onclick="event.stopPropagation(); apriModaleImmagine(${idx})" 
-                      style="flex:1; padding:6px; background:#8b5cf6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
+                      style="width:100%; padding:6px; background:#8b5cf6; color:white; border:none; border-radius:4px; font-size:10px; cursor:pointer; font-weight:600; transition:background 0.2s;" 
                       onmouseover="this.style.background='#7c3aed'" 
                       onmouseout="this.style.background='#8b5cf6'">
-                🖼️ Immagine
+                🖼️ Cerca Immagine
               </button>
             </div>
           </div>
