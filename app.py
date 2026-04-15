@@ -726,6 +726,10 @@ def add_voce(sid):
         sconto = float(data.get('sconto_percentuale', 0))
         sub = calcola_subtotale(prezzo, qty, sconto)
         
+        # Abbinamenti da salvare
+        abbinamenti = data.get('abbinamenti_selezionati', [])
+        abbinamenti_json = json.dumps(abbinamenti)
+        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
@@ -734,14 +738,21 @@ def add_voce(sid):
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   (sid, data.get('codice', ''), data.get('brand', ''), data.get('descrizione', ''),
                    qty, prezzo, sconto, sub, data.get('colore', 'verde'),
-                   json.dumps(data.get('abbinamenti_selezionati', [])),
+                   abbinamenti_json,
                    datetime.now().isoformat(), datetime.now().isoformat()))
         
+        voce_id = c.lastrowid
         conn.commit()
         conn.close()
         
         ricalcola_totali_stanza(sid)
-        return jsonify({'ok': True})
+        
+        # ✅ RITORNA ANCHE GLI ABBINAMENTI SALVATI
+        return jsonify({
+            'ok': True,
+            'voce_id': voce_id,
+            'abbinamenti': abbinamenti
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
