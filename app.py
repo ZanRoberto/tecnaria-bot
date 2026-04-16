@@ -5720,40 +5720,41 @@ function salvaConAbbinamenti() {
     abbinamenti_list = window._abbinamenti_selezionati;
   }
   
-  const prezzo = prodotto.prezzo || 0;
-  
-  console.log('💾 Salvo padre + ' + abbinamenti_list.length + ' abbinamenti in stanza', stanzaId);
-  
-  // Un solo POST: padre + abbinamenti tutti insieme
-  fetch('/api/stanze/' + stanzaId + '/voci', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      codice: prodotto.codice || '',
-      brand: brand,
-      descrizione: descArricchita,
-      quantita: 1,
-      prezzo_unitario: prezzo,
-      sconto_percentuale: 0,
-      colore: 'verde',
-      abbinamenti_selezionati: abbinamenti_list
-    })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (d.ok) {
+  // Solo abbinamenti — il padre è già in stanza (aggiunto da "📦 Carica Prodotto")
+  if (abbinamenti_list.length === 0) {
+    chiudiModaleAbbinamenti();
+    return;
+  }
+
+  const promises = abbinamenti_list.map(acc => {
+    const acc_codice = acc.codice || acc.accessorio_id || '';
+    const acc_nome = acc.nome || '';
+    const acc_brand = acc.brand || brand;
+    const acc_prezzo = parseFloat(acc.prezzo || 0);
+    const acc_desc = acc_codice ? '[' + acc_codice + '] ' + acc_nome : acc_nome;
+    return fetch('/api/stanze/' + stanzaId + '/voci', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        codice: acc_codice,
+        brand: acc_brand,
+        descrizione: acc_desc,
+        quantita: 1,
+        prezzo_unitario: acc_prezzo,
+        sconto_percentuale: 0,
+        colore: 'blu'
+      })
+    }).then(r => r.json());
+  });
+
+  Promise.all(promises)
+    .then(results => {
       chiudiModaleAbbinamenti();
-      const msg = abbinamenti_list.length > 0 
-        ? `✓ ${prodotto.nome} + ${d.abbinamenti_aggiunti} abbinamenti aggiunti`
-        : `✓ ${prodotto.nome} aggiunto`;
-      alert(msg);
-      // Ricarica struttura piani se disponibile
+      const ok = results.filter(r => r.ok).length;
+      alert('✓ ' + ok + ' abbinamenti aggiunti');
       if (typeof caricaStrutturaPiani === 'function') caricaStrutturaPiani();
-    } else {
-      alert('❌ ' + (d.error || 'Errore'));
-    }
-  })
-  .catch(e => alert('❌ Errore rete: ' + e));
+    })
+    .catch(e => alert('❌ Errore rete: ' + e));
 }
 
 function chiudiModaleAbbinamenti() {
